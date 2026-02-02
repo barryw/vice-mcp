@@ -24,6 +24,26 @@
  *
  */
 
+/*
+ * THREAD SAFETY WARNING:
+ *
+ * Phase 1 implementation does NOT provide thread safety between the
+ * HTTP server thread and the emulator thread. All MCP operations
+ * should be performed while the emulator is paused.
+ *
+ * Race conditions can occur if:
+ * - Reading memory or registers while emulation is running
+ * - Writing memory or registers while emulation is running
+ * - The emulated CPU is executing when MCP tools access state
+ *
+ * Phase 2 will implement proper synchronization using VICE's
+ * interrupt system (IK_MONITOR) to pause emulation during MCP
+ * operations, similar to how the built-in monitor works.
+ *
+ * For now, users should manually pause the emulator before using
+ * MCP tools, or ensure MCP is only used during stopped state.
+ */
+
 #ifndef VICE_MCP_SERVER_H
 #define VICE_MCP_SERVER_H
 

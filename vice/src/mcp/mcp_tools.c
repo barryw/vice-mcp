@@ -42,6 +42,18 @@
 
 static log_t mcp_tools_log = LOG_ERR;
 
+/* Error response helper */
+static json_t* mcp_error(int code, const char *message)
+{
+    cJSON *response = cJSON_CreateObject();
+    if (response == NULL) {
+        return NULL;
+    }
+    cJSON_AddNumberToObject(response, "code", code);
+    cJSON_AddStringToObject(response, "message", message);
+    return response;
+}
+
 /* Tool registry */
 static mcp_tool_t tool_registry[] = {
     { "vice.ping", "Check if VICE is responding", mcp_tool_ping },
@@ -122,35 +134,33 @@ json_t* mcp_tool_execution_run(json_t *params)
 {
     log_message(mcp_tools_log, "Handling vice.execution.run");
 
-    /* TODO: Resume emulation */
-    /* TODO: Return execution state */
+    /* TODO: Implement using VICE's interrupt system (IK_MONITOR) */
+    /* This requires integration with monitor/interrupt.h */
+    /* For now, return unimplemented error */
 
-    mcp_notify_execution_state_changed("RUNNING");
-
-    return NULL;
+    return mcp_error(-32601, "Execution control not yet implemented - use VICE monitor");
 }
 
 json_t* mcp_tool_execution_pause(json_t *params)
 {
     log_message(mcp_tools_log, "Handling vice.execution.pause");
 
-    /* TODO: Pause emulation */
-    /* TODO: Return current PC and execution state */
+    /* TODO: Implement using VICE's interrupt system (IK_MONITOR) */
+    /* This requires integration with monitor/interrupt.h */
+    /* For now, return unimplemented error */
 
-    mcp_notify_execution_state_changed("PAUSED");
-
-    return NULL;
+    return mcp_error(-32601, "Execution control not yet implemented - use VICE monitor");
 }
 
 json_t* mcp_tool_execution_step(json_t *params)
 {
     log_message(mcp_tools_log, "Handling vice.execution.step");
 
-    /* TODO: Extract step count from params */
-    /* TODO: Step CPU instructions */
-    /* TODO: Return new PC and register values */
+    /* TODO: Implement using VICE's step mechanism */
+    /* This requires integration with monitor code */
+    /* For now, return unimplemented error */
 
-    return NULL;
+    return mcp_error(-32601, "Execution control not yet implemented - use VICE monitor");
 }
 
 json_t* mcp_tool_registers_get(json_t *params)
@@ -186,19 +196,75 @@ json_t* mcp_tool_registers_get(json_t *params)
 
 json_t* mcp_tool_registers_set(json_t *params)
 {
+    cJSON *response;
+    cJSON *register_item, *value_item;
+    const char *register_name;
+    int value;
+
     log_message(mcp_tools_log, "Handling vice.registers.set");
 
-    /* TODO: Extract register name and value from params */
-    /* TODO: Write to CPU register using VICE internal functions */
+    if (params == NULL) {
+        return mcp_error(-32602, "Missing parameters");
+    }
 
-    return NULL;
+    register_item = cJSON_GetObjectItem(params, "register");
+    value_item = cJSON_GetObjectItem(params, "value");
+
+    if (!cJSON_IsString(register_item) || !cJSON_IsNumber(value_item)) {
+        return mcp_error(-32602, "Invalid parameter types");
+    }
+
+    register_name = register_item->valuestring;
+    value = value_item->valueint;
+
+    /* Set register using VICE APIs */
+    if (strcmp(register_name, "PC") == 0) {
+        if (value < 0 || value > 0xFFFF) {
+            return mcp_error(-32602, "PC value out of range (must be 0-65535)");
+        }
+        maincpu_set_pc(value);
+    } else if (strcmp(register_name, "A") == 0) {
+        if (value < 0 || value > 0xFF) {
+            return mcp_error(-32602, "A value out of range (must be 0-255)");
+        }
+        maincpu_set_a(value);
+    } else if (strcmp(register_name, "X") == 0) {
+        if (value < 0 || value > 0xFF) {
+            return mcp_error(-32602, "X value out of range (must be 0-255)");
+        }
+        maincpu_set_x(value);
+    } else if (strcmp(register_name, "Y") == 0) {
+        if (value < 0 || value > 0xFF) {
+            return mcp_error(-32602, "Y value out of range (must be 0-255)");
+        }
+        maincpu_set_y(value);
+    } else if (strcmp(register_name, "SP") == 0) {
+        /* TODO: maincpu_set_sp() does not exist in VICE */
+        /* Need to add this function to VICE or find workaround */
+        return mcp_error(-32601, "SP register setting not supported");
+    } else {
+        return mcp_error(-32602, "Unknown register name (must be PC, A, X, Y, or SP)");
+    }
+
+    /* Build success response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(-32603, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddStringToObject(response, "register", register_name);
+    cJSON_AddNumberToObject(response, "value", value);
+
+    return response;
 }
 
 json_t* mcp_tool_memory_read(json_t *params)
 {
     cJSON *response, *data_array;
     cJSON *addr_item, *size_item;
-    uint16_t address, i;
+    uint16_t address;
+    unsigned int i; /* Changed from uint16_t to prevent infinite loop */
     int size;
     uint8_t value;
     char hex_str[3];
@@ -207,27 +273,33 @@ json_t* mcp_tool_memory_read(json_t *params)
 
     /* Extract address and size from params */
     if (params == NULL) {
-        return NULL;
+        return mcp_error(-32602, "Missing parameters");
     }
 
     addr_item = cJSON_GetObjectItem(params, "address");
     size_item = cJSON_GetObjectItem(params, "size");
 
     if (!cJSON_IsNumber(addr_item) || !cJSON_IsNumber(size_item)) {
-        return NULL;
+        return mcp_error(-32602, "Invalid parameter types");
+    }
+
+    /* Validate address range */
+    if (addr_item->valueint < 0 || addr_item->valueint > 0xFFFF) {
+        return mcp_error(-32602, "Address out of range (must be 0-65535)");
     }
 
     address = (uint16_t)addr_item->valueint;
     size = size_item->valueint;
 
-    if (size < 1 || size > 65536) {
-        return NULL;
+    /* Limit size to prevent infinite loop and excessive memory */
+    if (size < 1 || size > 65535) {
+        return mcp_error(-32602, "Size out of range (must be 1-65535)");
     }
 
     /* Build JSON response */
     response = cJSON_CreateObject();
     if (response == NULL) {
-        return NULL;
+        return mcp_error(-32603, "Out of memory");
     }
 
     cJSON_AddNumberToObject(response, "address", address);
@@ -236,14 +308,25 @@ json_t* mcp_tool_memory_read(json_t *params)
     data_array = cJSON_CreateArray();
     if (data_array == NULL) {
         cJSON_Delete(response);
-        return NULL;
+        return mcp_error(-32603, "Out of memory");
     }
 
-    /* Read memory and add to array */
-    for (i = 0; i < size; i++) {
-        value = mem_read((uint16_t)(address + i));
+    /* Read memory with explicit wrapping at 64KB boundary */
+    for (i = 0; i < (unsigned int)size; i++) {
+        cJSON *hex_item;
+        uint16_t addr;
+
+        addr = (uint16_t)(address + i);  /* Wrap at 64KB */
+        value = mem_read(addr);
         snprintf(hex_str, sizeof(hex_str), "%02X", value);
-        cJSON_AddItemToArray(data_array, cJSON_CreateString(hex_str));
+
+        hex_item = cJSON_CreateString(hex_str);
+        if (hex_item == NULL) {
+            cJSON_Delete(response);
+            return mcp_error(-32603, "Out of memory");
+        }
+
+        cJSON_AddItemToArray(data_array, hex_item);
     }
 
     cJSON_AddItemToObject(response, "data", data_array);
@@ -263,39 +346,53 @@ json_t* mcp_tool_memory_write(json_t *params)
 
     /* Extract address and data from params */
     if (params == NULL) {
-        return NULL;
+        return mcp_error(-32602, "Missing parameters");
     }
 
     addr_item = cJSON_GetObjectItem(params, "address");
     data_item = cJSON_GetObjectItem(params, "data");
 
-    if (!cJSON_IsNumber(addr_item) || !cJSON_IsArray(data_item)) {
-        return NULL;
+    if (!cJSON_IsNumber(addr_item)) {
+        return mcp_error(-32602, "Missing or invalid address parameter");
+    }
+
+    if (!cJSON_IsArray(data_item)) {
+        return mcp_error(-32602, "Missing or invalid data parameter (must be array)");
+    }
+
+    /* Validate address range */
+    if (addr_item->valueint < 0 || addr_item->valueint > 0xFFFF) {
+        return mcp_error(-32602, "Address out of range (must be 0-65535)");
     }
 
     address = (uint16_t)addr_item->valueint;
     array_size = cJSON_GetArraySize(data_item);
 
-    if (array_size < 1 || array_size > 65536) {
-        return NULL;
+    if (array_size < 1 || array_size > 65535) {
+        return mcp_error(-32602, "Data array size out of range (must be 1-65535)");
     }
 
-    /* Write to memory */
+    /* Write to memory with validation */
     for (i = 0; i < array_size; i++) {
         value_item = cJSON_GetArrayItem(data_item, i);
+
         if (!cJSON_IsNumber(value_item)) {
-            /* TODO: Better error handling */
-            return NULL;
+            return mcp_error(-32602, "Data array must contain only numbers");
         }
 
-        byte_val = (uint8_t)(value_item->valueint & 0xFF);
+        /* Validate byte range */
+        if (value_item->valueint < 0 || value_item->valueint > 0xFF) {
+            return mcp_error(-32602, "Byte values must be 0-255");
+        }
+
+        byte_val = (uint8_t)value_item->valueint;
         mem_store((uint16_t)(address + i), byte_val);
     }
 
     /* Build success response */
     response = cJSON_CreateObject();
     if (response == NULL) {
-        return NULL;
+        return mcp_error(-32603, "Out of memory");
     }
 
     cJSON_AddStringToObject(response, "status", "ok");
