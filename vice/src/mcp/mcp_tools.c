@@ -32,12 +32,13 @@
 
 #include "mcp_tools.h"
 #include "mcp_transport.h"
+#include "cJSON.h"
 #include "log.h"
-
-/* TODO: Include VICE internal headers for CPU, memory, etc. */
-/* #include "6510core.h" */
-/* #include "mem.h" */
-/* #include "machine.h" */
+#include "maincpu.h"
+#include "mem.h"
+#include "machine.h"
+#include "interrupt.h"
+#include "vsync.h"
 
 static log_t mcp_tools_log = LOG_ERR;
 
@@ -101,12 +102,20 @@ json_t* mcp_tools_dispatch(const char *tool_name, json_t *params)
 
 json_t* mcp_tool_ping(json_t *params)
 {
+    cJSON *response;
+
     log_message(mcp_tools_log, "Handling vice.ping");
 
-    /* TODO: Create JSON response with VICE version info */
-    /* Example: {"status": "ok", "version": "3.10", "machine": "C64"} */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return NULL;
+    }
 
-    return NULL;
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddStringToObject(response, "version", VERSION);
+    cJSON_AddStringToObject(response, "machine", machine_get_name());
+
+    return response;
 }
 
 json_t* mcp_tool_execution_run(json_t *params)
@@ -146,21 +155,33 @@ json_t* mcp_tool_execution_step(json_t *params)
 
 json_t* mcp_tool_registers_get(json_t *params)
 {
+    cJSON *response;
+    unsigned int pc, a, x, y, sp;
+
     log_message(mcp_tools_log, "Handling vice.registers.get");
 
-    /* TODO: Read CPU registers directly from VICE internal state */
-    /* Example implementation:
-     * uint16_t pc = (uint16_t)reg_pc_read();
-     * uint8_t a = (uint8_t)reg_a_read();
-     * uint8_t x = (uint8_t)reg_x_read();
-     * uint8_t y = (uint8_t)reg_y_read();
-     * uint8_t sp = (uint8_t)reg_sp_read();
-     * uint8_t flags = (uint8_t)reg_p_read();
-     */
+    /* Read CPU registers from VICE */
+    pc = maincpu_get_pc();
+    a = maincpu_get_a();
+    x = maincpu_get_x();
+    y = maincpu_get_y();
+    sp = maincpu_get_sp();
 
-    /* TODO: Build JSON response */
+    /* Build JSON response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return NULL;
+    }
 
-    return NULL;
+    cJSON_AddNumberToObject(response, "PC", pc);
+    cJSON_AddNumberToObject(response, "A", a);
+    cJSON_AddNumberToObject(response, "X", x);
+    cJSON_AddNumberToObject(response, "Y", y);
+    cJSON_AddNumberToObject(response, "SP", sp);
+
+    /* TODO: Add flags (N, V, B, D, I, Z, C) */
+
+    return response;
 }
 
 json_t* mcp_tool_registers_set(json_t *params)
@@ -175,24 +196,113 @@ json_t* mcp_tool_registers_set(json_t *params)
 
 json_t* mcp_tool_memory_read(json_t *params)
 {
+    cJSON *response, *data_array;
+    cJSON *addr_item, *size_item;
+    uint16_t address, i;
+    int size;
+    uint8_t value;
+    char hex_str[3];
+
     log_message(mcp_tools_log, "Handling vice.memory.read");
 
-    /* TODO: Extract address and size from params */
-    /* TODO: Read directly from memory using mem_read() */
-    /* TODO: Format as hex and return JSON response */
+    /* Extract address and size from params */
+    if (params == NULL) {
+        return NULL;
+    }
 
-    return NULL;
+    addr_item = cJSON_GetObjectItem(params, "address");
+    size_item = cJSON_GetObjectItem(params, "size");
+
+    if (!cJSON_IsNumber(addr_item) || !cJSON_IsNumber(size_item)) {
+        return NULL;
+    }
+
+    address = (uint16_t)addr_item->valueint;
+    size = size_item->valueint;
+
+    if (size < 1 || size > 65536) {
+        return NULL;
+    }
+
+    /* Build JSON response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return NULL;
+    }
+
+    cJSON_AddNumberToObject(response, "address", address);
+    cJSON_AddNumberToObject(response, "size", size);
+
+    data_array = cJSON_CreateArray();
+    if (data_array == NULL) {
+        cJSON_Delete(response);
+        return NULL;
+    }
+
+    /* Read memory and add to array */
+    for (i = 0; i < size; i++) {
+        value = mem_read((uint16_t)(address + i));
+        snprintf(hex_str, sizeof(hex_str), "%02X", value);
+        cJSON_AddItemToArray(data_array, cJSON_CreateString(hex_str));
+    }
+
+    cJSON_AddItemToObject(response, "data", data_array);
+
+    return response;
 }
 
 json_t* mcp_tool_memory_write(json_t *params)
 {
+    cJSON *response;
+    cJSON *addr_item, *data_item, *value_item;
+    uint16_t address;
+    int i, array_size;
+    uint8_t byte_val;
+
     log_message(mcp_tools_log, "Handling vice.memory.write");
 
-    /* TODO: Extract address and data from params */
-    /* TODO: Write to memory using mem_store() */
-    /* TODO: Return success/error */
+    /* Extract address and data from params */
+    if (params == NULL) {
+        return NULL;
+    }
 
-    return NULL;
+    addr_item = cJSON_GetObjectItem(params, "address");
+    data_item = cJSON_GetObjectItem(params, "data");
+
+    if (!cJSON_IsNumber(addr_item) || !cJSON_IsArray(data_item)) {
+        return NULL;
+    }
+
+    address = (uint16_t)addr_item->valueint;
+    array_size = cJSON_GetArraySize(data_item);
+
+    if (array_size < 1 || array_size > 65536) {
+        return NULL;
+    }
+
+    /* Write to memory */
+    for (i = 0; i < array_size; i++) {
+        value_item = cJSON_GetArrayItem(data_item, i);
+        if (!cJSON_IsNumber(value_item)) {
+            /* TODO: Better error handling */
+            return NULL;
+        }
+
+        byte_val = (uint8_t)(value_item->valueint & 0xFF);
+        mem_store((uint16_t)(address + i), byte_val);
+    }
+
+    /* Build success response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return NULL;
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "address", address);
+    cJSON_AddNumberToObject(response, "bytes_written", array_size);
+
+    return response;
 }
 
 /* ------------------------------------------------------------------------- */

@@ -1,0 +1,17 @@
+cJSON Library
+=============
+
+Version: master (as of 2026-02-02)
+Source: https://github.com/DaveGamble/cJSON
+License: MIT
+
+This library is vendored into VICE for JSON parsing/generation in the MCP server.
+
+cJSON is a ultra-lightweight, portable, single-file JSON parser/generator
+written in ANSI C.
+
+Files:
+- cJSON.h - Header file
+- cJSON.c - Implementation
+
+The library is used as-is without modifications.

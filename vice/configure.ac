@@ -140,6 +140,9 @@ VICE_ARG_ENABLE_LIST(experimental-devices,  [  --enable-experimental-devices    
 dnl Needed for WIC64
 VICE_ARG_WITH_LIST(libcurl,                 [  --without-libcurl       disable libcurl support [[default=no]]])
 
+dnl Needed for MCP server
+VICE_ARG_ENABLE_LIST(mcp-server,            [  --enable-mcp-server     enable MCP server support [[default=no]]])
+
 dnl
 dnl UI options
 dnl
@@ -2221,6 +2224,20 @@ if test x"$with_libcurl" != "xno"; then
   AC_DEFINE(HAVE_LIBCURL, , [libcurl support])
 fi
 
+dnl ----- MCP Server Support -----
+if test x"$enable_mcp_server" = "xyes"; then
+  PKG_CHECK_MODULES(LIBMICROHTTPD, [libmicrohttpd >= 0.9.0], [have_libmicrohttpd=yes], [have_libmicrohttpd=no])
+  if test x"$have_libmicrohttpd" = "xno"; then
+    AC_MSG_ERROR([MCP server support requested, but libmicrohttpd was not found.])
+  fi
+  HAVE_MCP_SERVER="yes"
+  VICE_CFLAGS="$VICE_CFLAGS $LIBMICROHTTPD_CFLAGS"
+  VICE_LDFLAGS="$VICE_LDFLAGS $LIBMICROHTTPD_LDFLAGS"
+  LIBS="$LIBS $LIBMICROHTTPD_LIBS"
+  AC_DEFINE(HAVE_MCP_SERVER, , [MCP server support])
+fi
+AM_CONDITIONAL(HAVE_MCP_SERVER, test x"$HAVE_MCP_SERVER" = "xyes")
+
 dnl ----- Netplay Support -----
 NETPLAY_LIBS=
 old_LIBS="$LIBS"
@@ -3773,6 +3790,7 @@ echo "RS232 network support            : $HAVE_RS232NET_SUPPORT"
 echo "IPv6 network support             : $HAVE_IPV6_SUPPORT (--enable/disable-ipv6)"
 echo "Network capture/injection support: $HAVE_RAWNET_SUPPORT (--enable/disable-ethernet)"
 echo "libcurl support                  : $HAVE_LIBCURL_SUPPORT (--with/without-libcurl)"
+echo "MCP server support               : $HAVE_MCP_SERVER (--enable/disable-mcp-server)"
 
 echo ""
 echo "DRIVE"

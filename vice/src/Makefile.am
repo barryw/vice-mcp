@@ -60,6 +60,7 @@ SUBDIRS = \
 	rs232drv \
 	samplerdrv \
 	sid \
+	mcp \
 	monitor \
 	core \
 	userport \
@@ -104,6 +105,7 @@ DIST_SUBDIRS = \
 	rs232drv \
 	samplerdrv \
 	sid \
+	mcp \
 	monitor \
 	core \
 	diag \
