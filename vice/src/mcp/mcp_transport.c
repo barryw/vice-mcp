@@ -55,6 +55,40 @@ static struct {
     int active;                          /* 1 if connection is open, 0 if free slot */
 } sse_connections[MAX_SSE_CONNECTIONS] = {{NULL, 0}};
 
+/* Request context for POST body accumulation */
+struct request_context {
+    char *body;
+    size_t body_size;
+    size_t body_capacity;
+};
+
+static void request_context_free(struct request_context *ctx)
+{
+    if (ctx != NULL) {
+        if (ctx->body != NULL) {
+            free(ctx->body);
+        }
+        free(ctx);
+    }
+}
+
+/* Called when request processing is complete */
+static void request_completed(void *cls,
+                              struct MHD_Connection *connection,
+                              void **con_cls,
+                              enum MHD_RequestTerminationCode toe)
+{
+    (void)cls;
+    (void)connection;
+    (void)toe;
+
+    struct request_context *ctx = *con_cls;
+    if (ctx != NULL) {
+        request_context_free(ctx);
+        *con_cls = NULL;
+    }
+}
+
 /* HTTP request handler callback for libmicrohttpd */
 static enum MHD_Result http_handler(void *cls,
                                      struct MHD_Connection *connection,
@@ -72,7 +106,50 @@ static enum MHD_Result http_handler(void *cls,
 
     /* Route requests */
     if (strcmp(url, "/mcp") == 0 && strcmp(method, "POST") == 0) {
-        /* JSON-RPC endpoint - handle in next task */
+        struct request_context *ctx = *con_cls;
+
+        /* First call - initialize context */
+        if (ctx == NULL) {
+            ctx = calloc(1, sizeof(struct request_context));
+            if (ctx == NULL) {
+                log_error(mcp_transport_log, "Failed to allocate request context");
+                return MHD_NO;
+            }
+            *con_cls = ctx;
+            return MHD_YES;  /* Wait for upload data */
+        }
+
+        /* Accumulate upload data */
+        if (*upload_data_size > 0) {
+            size_t new_size = ctx->body_size + *upload_data_size;
+
+            /* Resize buffer if needed */
+            if (new_size > ctx->body_capacity) {
+                size_t new_capacity = ctx->body_capacity * 2;
+                if (new_capacity < new_size) {
+                    new_capacity = new_size + 1024;
+                }
+
+                char *new_body = realloc(ctx->body, new_capacity);
+                if (new_body == NULL) {
+                    log_error(mcp_transport_log, "Failed to allocate request body buffer");
+                    request_context_free(ctx);
+                    return MHD_NO;
+                }
+
+                ctx->body = new_body;
+                ctx->body_capacity = new_capacity;
+            }
+
+            /* Append data */
+            memcpy(ctx->body + ctx->body_size, upload_data, *upload_data_size);
+            ctx->body_size += *upload_data_size;
+            *upload_data_size = 0;  /* Mark as processed */
+
+            return MHD_YES;  /* Continue receiving */
+        }
+
+        /* All data received - process request in next task */
         return MHD_NO;  /* Placeholder */
     } else if (strcmp(url, "/events") == 0 && strcmp(method, "GET") == 0) {
         /* SSE endpoint - handle in later task */
@@ -139,6 +216,7 @@ int mcp_transport_start(const char *host, int port)
         port,
         NULL, NULL,  /* No accept policy */
         &http_handler, NULL,  /* Request handler */
+        MHD_OPTION_NOTIFY_COMPLETED, request_completed, NULL,
         MHD_OPTION_END);
 
     if (http_daemon == NULL) {
