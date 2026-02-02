@@ -55,6 +55,45 @@ static struct {
     int active;                          /* 1 if connection is open, 0 if free slot */
 } sse_connections[MAX_SSE_CONNECTIONS] = {{NULL, 0}};
 
+/* HTTP request handler callback for libmicrohttpd */
+static enum MHD_Result http_handler(void *cls,
+                                     struct MHD_Connection *connection,
+                                     const char *url,
+                                     const char *method,
+                                     const char *version,
+                                     const char *upload_data,
+                                     size_t *upload_data_size,
+                                     void **con_cls)
+{
+    (void)cls;
+    (void)version;
+    (void)upload_data;
+    (void)upload_data_size;
+    (void)con_cls;
+
+    log_message(mcp_transport_log, "HTTP %s %s", method, url);
+
+    /* Route requests */
+    if (strcmp(url, "/mcp") == 0 && strcmp(method, "POST") == 0) {
+        /* JSON-RPC endpoint - handle in next task */
+        return MHD_NO;  /* Placeholder */
+    } else if (strcmp(url, "/events") == 0 && strcmp(method, "GET") == 0) {
+        /* SSE endpoint - handle in later task */
+        return MHD_NO;  /* Placeholder */
+    } else {
+        /* 404 Not Found */
+        const char *not_found = "{\"error\":\"Not Found\"}";
+        struct MHD_Response *response = MHD_create_response_from_buffer(
+            strlen(not_found),
+            (void*)not_found,
+            MHD_RESPMEM_PERSISTENT);
+
+        enum MHD_Result ret = MHD_queue_response(connection, 404, response);
+        MHD_destroy_response(response);
+        return ret;
+    }
+}
+
 int mcp_transport_init(void)
 {
     mcp_transport_log = log_open("MCP-Transport");
