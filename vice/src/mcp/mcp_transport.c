@@ -116,13 +116,39 @@ void mcp_transport_shutdown(void)
 
 int mcp_transport_start(const char *host, int port)
 {
+    if (host == NULL) {
+        log_error(mcp_transport_log, "Invalid host parameter (NULL)");
+        return -1;
+    }
+
+    if (port < 0 || port > 65535) {
+        log_error(mcp_transport_log, "Invalid port number: %d (must be 0-65535)", port);
+        return -1;
+    }
+
     log_message(mcp_transport_log, "Starting MCP transport on %s:%d", host, port);
 
-    /* TODO: Start HTTP server on specified host:port */
-    /* TODO: Register POST /mcp endpoint for JSON-RPC requests */
-    /* TODO: Set up SSE endpoint for streaming responses */
+    if (server_running) {
+        log_warning(mcp_transport_log, "Server already running");
+        return -1;
+    }
 
-    log_message(mcp_transport_log, "MCP transport started");
+    /* Start HTTP daemon */
+    http_daemon = MHD_start_daemon(
+        MHD_USE_THREAD_PER_CONNECTION | MHD_USE_INTERNAL_POLLING_THREAD,
+        port,
+        NULL, NULL,  /* No accept policy */
+        &http_handler, NULL,  /* Request handler */
+        MHD_OPTION_END);
+
+    if (http_daemon == NULL) {
+        server_running = 0;  /* Reset state on failure */
+        log_error(mcp_transport_log, "Failed to start HTTP server on port %d", port);
+        return -1;
+    }
+
+    server_running = 1;
+    log_message(mcp_transport_log, "MCP transport started on port %d", port);
 
     return 0;
 }
@@ -131,9 +157,18 @@ void mcp_transport_stop(void)
 {
     log_message(mcp_transport_log, "Stopping MCP transport");
 
-    /* TODO: Stop HTTP server */
-    /* TODO: Close all SSE connections */
+    if (!server_running) {
+        log_warning(mcp_transport_log, "Server not running");
+        return;
+    }
 
+    /* Stop HTTP daemon */
+    if (http_daemon != NULL) {
+        MHD_stop_daemon(http_daemon);
+        http_daemon = NULL;
+    }
+
+    server_running = 0;
     log_message(mcp_transport_log, "MCP transport stopped");
 }
 
