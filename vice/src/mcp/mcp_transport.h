@@ -29,6 +29,9 @@
 
 #include "types.h"
 
+/* Forward declarations for libmicrohttpd types */
+struct MHD_Connection;
+
 /* Transport initialization and cleanup */
 extern int mcp_transport_init(void);
 extern void mcp_transport_shutdown(void);
@@ -39,5 +42,15 @@ extern void mcp_transport_stop(void);
 
 /* SSE (Server-Sent Events) for notifications */
 extern int mcp_transport_sse_send_event(const char *event_type, const char *data);
+
+/* HTTP endpoint handlers (internal) */
+int mcp_http_handler(void *cls,
+                     struct MHD_Connection *connection,
+                     const char *url,
+                     const char *method,
+                     const char *version,
+                     const char *upload_data,
+                     size_t *upload_data_size,
+                     void **con_cls);
 
 #endif /* VICE_MCP_TRANSPORT_H */

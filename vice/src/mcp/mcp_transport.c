@@ -29,13 +29,31 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <microhttpd.h>
 
 #include "mcp_transport.h"
 #include "log.h"
 
-/* TODO: Add HTTP server library (libmicrohttpd or similar) */
+static log_t mcp_transport_log = LOG_DEFAULT;
 
-static log_t mcp_transport_log = LOG_ERR;
+/* HTTP server state - owned by mcp_transport, cleaned up in shutdown */
+static struct MHD_Daemon *http_daemon = NULL;
+static int server_running = 0;  /* 1 when HTTP server is active */
+
+/* SSE connection tracking (Phase 2 requires manual pause before use)
+ * Lifecycle:
+ * - Slots set to {NULL, 0} when freed
+ * - Must call MHD_Connection cleanup before setting to NULL
+ * - All connections must be closed before daemon shutdown
+ */
+/* Maximum concurrent SSE connections. Typical usage expects 1-3 clients
+ * (Claude, web UI, debug tools). 10 provides headroom without excessive
+ * memory overhead (10 * sizeof(struct) = 160 bytes on 64-bit). */
+#define MAX_SSE_CONNECTIONS 10
+static struct {
+    struct MHD_Connection *connection;  /* libmicrohttpd connection handle */
+    int active;                          /* 1 if connection is open, 0 if free slot */
+} sse_connections[MAX_SSE_CONNECTIONS] = {{NULL, 0}};
 
 int mcp_transport_init(void)
 {
