@@ -111,6 +111,11 @@ static char* process_jsonrpc_request(const char *request_body, size_t body_size)
 
         response_str = cJSON_PrintUnformatted(response);
         cJSON_Delete(response);
+
+        if (response_str == NULL) {
+            return strdup(CATASTROPHIC_ERROR_JSON);
+        }
+
         return response_str;
     }
 
@@ -121,16 +126,32 @@ static char* process_jsonrpc_request(const char *request_body, size_t body_size)
 
     if (!cJSON_IsString(method_item)) {
         log_error(mcp_transport_log, "Missing or invalid method field");
+
+        /* Copy ID before deleting request */
+        cJSON *id_copy = NULL;
+        if (id_item != NULL) {
+            if (cJSON_IsNumber(id_item)) {
+                id_copy = cJSON_CreateNumber(id_item->valuedouble);
+            } else if (cJSON_IsString(id_item)) {
+                id_copy = cJSON_CreateString(id_item->valuestring);
+            } else if (cJSON_IsNull(id_item) || cJSON_IsBool(id_item)) {
+                id_copy = cJSON_Duplicate(id_item, 1);
+            }
+        }
+
         cJSON_Delete(request);
 
         /* Return invalid request error */
         response = cJSON_CreateObject();
         if (response == NULL) {
+            if (id_copy != NULL) {
+                cJSON_Delete(id_copy);
+            }
             return strdup(CATASTROPHIC_ERROR_JSON);
         }
         cJSON_AddStringToObject(response, "jsonrpc", "2.0");
-        if (id_item != NULL) {
-            cJSON_AddItemReferenceToObject(response, "id", id_item);
+        if (id_copy != NULL) {
+            cJSON_AddItemToObject(response, "id", id_copy);
         } else {
             cJSON_AddNullToObject(response, "id");
         }
@@ -142,6 +163,11 @@ static char* process_jsonrpc_request(const char *request_body, size_t body_size)
 
         response_str = cJSON_PrintUnformatted(response);
         cJSON_Delete(response);
+
+        if (response_str == NULL) {
+            return strdup(CATASTROPHIC_ERROR_JSON);
+        }
+
         return response_str;
     }
 
@@ -151,10 +177,26 @@ static char* process_jsonrpc_request(const char *request_body, size_t body_size)
 
     cJSON *result = mcp_tools_dispatch(method_name, params_item);
 
+    /* Copy ID before deleting request */
+    cJSON *id_copy = NULL;
+    if (id_item != NULL) {
+        if (cJSON_IsNumber(id_item)) {
+            id_copy = cJSON_CreateNumber(id_item->valuedouble);
+        } else if (cJSON_IsString(id_item)) {
+            id_copy = cJSON_CreateString(id_item->valuestring);
+        } else if (cJSON_IsNull(id_item) || cJSON_IsBool(id_item)) {
+            id_copy = cJSON_Duplicate(id_item, 1);
+        }
+    }
+
+    cJSON_Delete(request);
+
     /* Build JSON-RPC response */
     response = cJSON_CreateObject();
     if (response == NULL) {
-        cJSON_Delete(request);
+        if (id_copy != NULL) {
+            cJSON_Delete(id_copy);
+        }
         if (result != NULL) {
             cJSON_Delete(result);
         }
@@ -163,9 +205,9 @@ static char* process_jsonrpc_request(const char *request_body, size_t body_size)
 
     cJSON_AddStringToObject(response, "jsonrpc", "2.0");
 
-    /* Copy request ID to response */
-    if (id_item != NULL) {
-        cJSON_AddItemReferenceToObject(response, "id", id_item);
+    /* Add ID to response */
+    if (id_copy != NULL) {
+        cJSON_AddItemToObject(response, "id", id_copy);
     } else {
         cJSON_AddNullToObject(response, "id");
     }
@@ -191,7 +233,10 @@ static char* process_jsonrpc_request(const char *request_body, size_t body_size)
 
     response_str = cJSON_PrintUnformatted(response);
     cJSON_Delete(response);
-    cJSON_Delete(request);
+
+    if (response_str == NULL) {
+        return strdup(CATASTROPHIC_ERROR_JSON);
+    }
 
     return response_str;
 }
