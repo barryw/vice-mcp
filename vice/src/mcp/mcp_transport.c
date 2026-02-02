@@ -67,9 +67,6 @@ static enum MHD_Result http_handler(void *cls,
 {
     (void)cls;
     (void)version;
-    (void)upload_data;
-    (void)upload_data_size;
-    (void)con_cls;
 
     log_message(mcp_transport_log, "HTTP %s %s", method, url);
 
@@ -88,6 +85,7 @@ static enum MHD_Result http_handler(void *cls,
             (void*)not_found,
             MHD_RESPMEM_PERSISTENT);
 
+        MHD_add_response_header(response, "Content-Type", "application/json");
         enum MHD_Result ret = MHD_queue_response(connection, 404, response);
         MHD_destroy_response(response);
         return ret;
