@@ -842,6 +842,10 @@ void maincpu_set_y(int y) {
     MOS6510_REGS_SET_Y(&maincpu_regs, y);
 }
 
+void maincpu_set_sp(int sp) {
+    MOS6510_REGS_SET_SP(&maincpu_regs, sp);
+}
+
 void maincpu_set_sign(int n) {
     MOS6510_REGS_SET_SIGN(&maincpu_regs, n);
 }
@@ -856,6 +860,18 @@ void maincpu_set_carry(int c) {
 
 void maincpu_set_interrupt(int i) {
     MOS6510_REGS_SET_INTERRUPT(&maincpu_regs, i);
+}
+
+void maincpu_set_overflow(int v) {
+    MOS6510_REGS_SET_OVERFLOW(&maincpu_regs, v);
+}
+
+void maincpu_set_break(int b) {
+    MOS6510_REGS_SET_BREAK(&maincpu_regs, b);
+}
+
+void maincpu_set_decimal(int d) {
+    MOS6510_REGS_SET_DECIMAL(&maincpu_regs, d);
 }
 
 unsigned int maincpu_get_pc(void) {

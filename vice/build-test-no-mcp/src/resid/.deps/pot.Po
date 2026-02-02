@@ -1,0 +1,5 @@
+pot.o: ../../../src/resid/pot.cc ../../../src/resid/pot.h \
+  ../../../src/resid/resid-config.h siddefs.h
+../../../src/resid/pot.h:
+../../../src/resid/resid-config.h:
+siddefs.h:

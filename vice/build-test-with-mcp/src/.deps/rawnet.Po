@@ -1,0 +1,3 @@
+rawnet.o: ../../src/rawnet.c ../../src/vice.h config.h
+../../src/vice.h:
+config.h:

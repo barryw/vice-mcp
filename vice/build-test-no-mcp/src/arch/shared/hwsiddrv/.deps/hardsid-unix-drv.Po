@@ -1,0 +1,5 @@
+hardsid-unix-drv.o: \
+  ../../../../../src/arch/shared/hwsiddrv/hardsid-unix-drv.c \
+  ../../../../../src/vice.h ../../../../src/config.h
+../../../../../src/vice.h:
+../../../../src/config.h:

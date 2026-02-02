@@ -1,0 +1,4 @@
+version.o: ../../../src/resid/version.cc \
+  ../../../src/resid/resid-config.h siddefs.h
+../../../src/resid/resid-config.h:
+siddefs.h:

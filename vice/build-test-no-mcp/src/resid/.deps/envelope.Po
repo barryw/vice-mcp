@@ -1,0 +1,6 @@
+envelope.o: ../../../src/resid/envelope.cc ../../../src/resid/envelope.h \
+  ../../../src/resid/resid-config.h siddefs.h ../../../src/resid/dac.h
+../../../src/resid/envelope.h:
+../../../src/resid/resid-config.h:
+siddefs.h:
+../../../src/resid/dac.h:

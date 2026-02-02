@@ -1,0 +1,5 @@
+mididevicewidget.o: \
+  ../../../../../src/arch/gtk3/widgets/mididevicewidget.c \
+  ../../../../../src/vice.h ../../../../src/config.h
+../../../../../src/vice.h:
+../../../../src/config.h:

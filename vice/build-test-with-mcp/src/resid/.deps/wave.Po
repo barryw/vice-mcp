@@ -1,0 +1,16 @@
+wave.o: ../../../src/resid/wave.cc ../../../src/resid/wave.h \
+  ../../../src/resid/resid-config.h siddefs.h ../../../src/resid/dac.h \
+  wave6581__ST.h wave6581_P_T.h wave6581_PS_.h wave6581_PST.h \
+  wave8580__ST.h wave8580_P_T.h wave8580_PS_.h wave8580_PST.h
+../../../src/resid/wave.h:
+../../../src/resid/resid-config.h:
+siddefs.h:
+../../../src/resid/dac.h:
+wave6581__ST.h:
+wave6581_P_T.h:
+wave6581_PS_.h:
+wave6581_PST.h:
+wave8580__ST.h:
+wave8580_P_T.h:
+wave8580_PS_.h:
+wave8580_PST.h:

@@ -1,0 +1,4 @@
+ethernetcart.o: ../../../../src/c64/cart/ethernetcart.c \
+  ../../../../src/vice.h ../../../src/config.h
+../../../../src/vice.h:
+../../../src/config.h:

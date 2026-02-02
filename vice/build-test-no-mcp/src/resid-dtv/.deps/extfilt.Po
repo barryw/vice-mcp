@@ -1,0 +1,6 @@
+extfilt.o: ../../../src/resid-dtv/extfilt.cc \
+  ../../../src/resid-dtv/extfilt.h \
+  ../../../src/resid-dtv/residdtv-config.h siddtvdefs.h
+../../../src/resid-dtv/extfilt.h:
+../../../src/resid-dtv/residdtv-config.h:
+siddtvdefs.h:

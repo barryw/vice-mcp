@@ -1,0 +1,6 @@
+filter.o: ../../../src/resid-dtv/filter.cc \
+  ../../../src/resid-dtv/filter.h \
+  ../../../src/resid-dtv/residdtv-config.h siddtvdefs.h
+../../../src/resid-dtv/filter.h:
+../../../src/resid-dtv/residdtv-config.h:
+siddtvdefs.h:

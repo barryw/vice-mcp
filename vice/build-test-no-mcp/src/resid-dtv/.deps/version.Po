@@ -1,0 +1,4 @@
+version.o: ../../../src/resid-dtv/version.cc \
+  ../../../src/resid-dtv/residdtv-config.h siddtvdefs.h
+../../../src/resid-dtv/residdtv-config.h:
+siddtvdefs.h:

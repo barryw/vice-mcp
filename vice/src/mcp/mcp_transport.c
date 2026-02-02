@@ -33,7 +33,12 @@
 #include <microhttpd.h>
 
 #include "mcp_transport.h"
+#include "mcp_tools.h"
+#include "cJSON.h"
 #include "log.h"
+
+/* From mcp_tools.c */
+extern const char *CATASTROPHIC_ERROR_JSON;
 
 /* Maximum request body size - 10MB for MCP JSON-RPC requests */
 #define MAX_REQUEST_BODY_SIZE (10 * 1024 * 1024)
@@ -74,6 +79,121 @@ static void request_context_free(struct request_context *ctx)
         }
         free(ctx);
     }
+}
+
+/* Process JSON-RPC 2.0 request and return response */
+static char* process_jsonrpc_request(const char *request_body, size_t body_size)
+{
+    cJSON *request = NULL;
+    cJSON *response = NULL;
+    cJSON *method_item, *params_item, *id_item;
+    char *response_str = NULL;
+
+    (void)body_size;  /* Currently unused - body is already null-terminated */
+
+    /* Parse JSON */
+    request = cJSON_Parse(request_body);
+
+    if (request == NULL) {
+        log_error(mcp_transport_log, "Invalid JSON in request");
+        /* Return parse error */
+        response = cJSON_CreateObject();
+        if (response == NULL) {
+            return strdup(CATASTROPHIC_ERROR_JSON);
+        }
+        cJSON_AddStringToObject(response, "jsonrpc", "2.0");
+        cJSON_AddNullToObject(response, "id");
+
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddNumberToObject(error, "code", MCP_ERROR_PARSE_ERROR);
+        cJSON_AddStringToObject(error, "message", "Parse error");
+        cJSON_AddItemToObject(response, "error", error);
+
+        response_str = cJSON_PrintUnformatted(response);
+        cJSON_Delete(response);
+        return response_str;
+    }
+
+    /* Extract request fields */
+    method_item = cJSON_GetObjectItem(request, "method");
+    params_item = cJSON_GetObjectItem(request, "params");
+    id_item = cJSON_GetObjectItem(request, "id");
+
+    if (!cJSON_IsString(method_item)) {
+        log_error(mcp_transport_log, "Missing or invalid method field");
+        cJSON_Delete(request);
+
+        /* Return invalid request error */
+        response = cJSON_CreateObject();
+        if (response == NULL) {
+            return strdup(CATASTROPHIC_ERROR_JSON);
+        }
+        cJSON_AddStringToObject(response, "jsonrpc", "2.0");
+        if (id_item != NULL) {
+            cJSON_AddItemReferenceToObject(response, "id", id_item);
+        } else {
+            cJSON_AddNullToObject(response, "id");
+        }
+
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddNumberToObject(error, "code", MCP_ERROR_INVALID_REQUEST);
+        cJSON_AddStringToObject(error, "message", "Invalid Request");
+        cJSON_AddItemToObject(response, "error", error);
+
+        response_str = cJSON_PrintUnformatted(response);
+        cJSON_Delete(response);
+        return response_str;
+    }
+
+    /* Dispatch to tool */
+    const char *method_name = method_item->valuestring;
+    log_message(mcp_transport_log, "JSON-RPC request: %s", method_name);
+
+    cJSON *result = mcp_tools_dispatch(method_name, params_item);
+
+    /* Build JSON-RPC response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        cJSON_Delete(request);
+        if (result != NULL) {
+            cJSON_Delete(result);
+        }
+        return strdup(CATASTROPHIC_ERROR_JSON);
+    }
+
+    cJSON_AddStringToObject(response, "jsonrpc", "2.0");
+
+    /* Copy request ID to response */
+    if (id_item != NULL) {
+        cJSON_AddItemReferenceToObject(response, "id", id_item);
+    } else {
+        cJSON_AddNullToObject(response, "id");
+    }
+
+    /* Add result or error */
+    if (result == NULL) {
+        /* NULL result = catastrophic error */
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddNumberToObject(error, "code", MCP_ERROR_INTERNAL_ERROR);
+        cJSON_AddStringToObject(error, "message", "Internal error: out of memory");
+        cJSON_AddItemToObject(response, "error", error);
+    } else {
+        /* Check if result is an error object (has "code" field) */
+        cJSON *code_item = cJSON_GetObjectItem(result, "code");
+        if (code_item != NULL && cJSON_IsNumber(code_item)) {
+            /* It's an error */
+            cJSON_AddItemToObject(response, "error", result);
+        } else {
+            /* It's a success result */
+            cJSON_AddItemToObject(response, "result", result);
+        }
+    }
+
+    response_str = cJSON_PrintUnformatted(response);
+    cJSON_Delete(response);
+    cJSON_Delete(request);
+
+    return response_str;
 }
 
 /* Called when request processing is complete */

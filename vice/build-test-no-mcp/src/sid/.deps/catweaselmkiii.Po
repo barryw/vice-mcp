@@ -1,0 +1,4 @@
+catweaselmkiii.o: ../../../src/sid/catweaselmkiii.c ../../../src/vice.h \
+  ../../src/config.h
+../../../src/vice.h:
+../../src/config.h:

@@ -1,0 +1,7 @@
+archdep_is_windows_nt.o: \
+  ../../../../src/arch/shared/archdep_is_windows_nt.c \
+  ../../../../src/vice.h ../../../src/config.h \
+  ../../../../src/arch/shared/archdep_is_windows_nt.h
+../../../../src/vice.h:
+../../../src/config.h:
+../../../../src/arch/shared/archdep_is_windows_nt.h:

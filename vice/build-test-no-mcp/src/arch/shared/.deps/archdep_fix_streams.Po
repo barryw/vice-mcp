@@ -1,0 +1,6 @@
+archdep_fix_streams.o: ../../../../src/arch/shared/archdep_fix_streams.c \
+  ../../../../src/vice.h ../../../src/config.h \
+  ../../../../src/arch/shared/archdep_fix_streams.h
+../../../../src/vice.h:
+../../../src/config.h:
+../../../../src/arch/shared/archdep_fix_streams.h:

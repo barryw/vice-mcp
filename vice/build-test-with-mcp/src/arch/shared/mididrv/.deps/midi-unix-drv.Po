@@ -1,0 +1,4 @@
+midi-unix-drv.o: ../../../../../src/arch/shared/mididrv/midi-unix-drv.c \
+  ../../../../../src/vice.h ../../../../src/config.h
+../../../../../src/vice.h:
+../../../../src/config.h:

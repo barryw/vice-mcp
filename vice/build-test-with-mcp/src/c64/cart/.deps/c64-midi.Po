@@ -1,0 +1,4 @@
+c64-midi.o: ../../../../src/c64/cart/c64-midi.c ../../../../src/vice.h \
+  ../../../src/config.h
+../../../../src/vice.h:
+../../../src/config.h:

@@ -1,0 +1,4 @@
+userport_funmp3.o: ../../../src/userport/userport_funmp3.c \
+  ../../../src/vice.h ../../src/config.h
+../../../src/vice.h:
+../../src/config.h:

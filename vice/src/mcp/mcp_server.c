@@ -44,7 +44,7 @@ static int mcp_port = MCP_DEFAULT_PORT;
 static char *mcp_host = NULL;
 static int mcp_running = 0;
 
-static log_t mcp_log = LOG_ERR;
+static log_t mcp_log = LOG_DEFAULT;
 
 /* ------------------------------------------------------------------------- */
 /* Resources */

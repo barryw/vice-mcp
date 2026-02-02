@@ -28,13 +28,23 @@
 #define VICE_MCP_TOOLS_H
 
 #include "types.h"
+#include "cJSON.h"
 
-/* Forward declaration for JSON type */
-/* TODO: Include actual JSON library header (cJSON or jansson) */
-typedef void json_t;
+/* JSON-RPC 2.0 error codes */
+#define MCP_ERROR_PARSE_ERROR      -32700  /* Invalid JSON */
+#define MCP_ERROR_INVALID_REQUEST  -32600  /* JSON is not valid Request */
+#define MCP_ERROR_METHOD_NOT_FOUND -32601  /* Method does not exist */
+#define MCP_ERROR_INVALID_PARAMS   -32602  /* Invalid method parameters */
+#define MCP_ERROR_INTERNAL_ERROR   -32603  /* Internal JSON-RPC error */
+
+/* MCP-specific errors (use -32000 to -32099 range per spec) */
+#define MCP_ERROR_NOT_IMPLEMENTED  -32000  /* Feature not yet implemented */
+#define MCP_ERROR_EMULATOR_RUNNING -32001  /* Operation requires pause */
+#define MCP_ERROR_INVALID_ADDRESS  -32002  /* Address out of range */
+#define MCP_ERROR_INVALID_VALUE    -32003  /* Value out of range */
 
 /* Tool handler function signature */
-typedef json_t* (*mcp_tool_handler_t)(json_t *params);
+typedef cJSON* (*mcp_tool_handler_t)(cJSON *params);
 
 /* Tool registration */
 typedef struct mcp_tool_s {
@@ -48,17 +58,25 @@ extern int mcp_tools_init(void);
 extern void mcp_tools_shutdown(void);
 
 /* Tool dispatch */
-extern json_t* mcp_tools_dispatch(const char *tool_name, json_t *params);
+extern cJSON* mcp_tools_dispatch(const char *tool_name, cJSON *params);
 
-/* Tool handlers - Phase 1: Core tools */
-extern json_t* mcp_tool_ping(json_t *params);
-extern json_t* mcp_tool_execution_run(json_t *params);
-extern json_t* mcp_tool_execution_pause(json_t *params);
-extern json_t* mcp_tool_execution_step(json_t *params);
-extern json_t* mcp_tool_registers_get(json_t *params);
-extern json_t* mcp_tool_registers_set(json_t *params);
-extern json_t* mcp_tool_memory_read(json_t *params);
-extern json_t* mcp_tool_memory_write(json_t *params);
+/* Tool handlers - Phase 1: Core tools
+ *
+ * THREAD SAFETY WARNING:
+ * Phase 1 tools do NOT synchronize with the emulator. Callers MUST ensure
+ * emulation is paused before calling any tool except ping(). Calling tools
+ * while emulation is running may cause race conditions or incorrect results.
+ *
+ * Phase 2 will add proper synchronization via VICE's IK_MONITOR interrupt.
+ */
+extern cJSON* mcp_tool_ping(cJSON *params);
+extern cJSON* mcp_tool_execution_run(cJSON *params);
+extern cJSON* mcp_tool_execution_pause(cJSON *params);
+extern cJSON* mcp_tool_execution_step(cJSON *params);
+extern cJSON* mcp_tool_registers_get(cJSON *params);
+extern cJSON* mcp_tool_registers_set(cJSON *params);
+extern cJSON* mcp_tool_memory_read(cJSON *params);
+extern cJSON* mcp_tool_memory_write(cJSON *params);
 
 /* Notification helpers */
 extern void mcp_notify_breakpoint(uint16_t pc, uint32_t bp_id);

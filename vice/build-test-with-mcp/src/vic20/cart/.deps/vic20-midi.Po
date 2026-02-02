@@ -1,0 +1,4 @@
+vic20-midi.o: ../../../../src/vic20/cart/vic20-midi.c \
+  ../../../../src/vice.h ../../../src/config.h
+../../../../src/vice.h:
+../../../src/config.h:

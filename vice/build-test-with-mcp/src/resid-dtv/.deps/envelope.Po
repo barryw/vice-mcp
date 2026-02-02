@@ -1,0 +1,8 @@
+envelope.o: ../../../src/resid-dtv/envelope.cc \
+  ../../../src/resid-dtv/envelope.h \
+  ../../../src/resid-dtv/residdtv-config.h siddtvdefs.h \
+  ../../../src/resid-dtv/bittrain.h
+../../../src/resid-dtv/envelope.h:
+../../../src/resid-dtv/residdtv-config.h:
+siddtvdefs.h:
+../../../src/resid-dtv/bittrain.h:
