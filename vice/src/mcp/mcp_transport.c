@@ -337,8 +337,37 @@ static enum MHD_Result http_handler(void *cls,
             return MHD_YES;  /* Continue receiving */
         }
 
-        /* All data received - process request in next task */
-        return MHD_NO;  /* Placeholder */
+        /* All data received - process request */
+        char *response_json = process_jsonrpc_request(ctx->body, ctx->body_size);
+        if (response_json == NULL) {
+            log_error(mcp_transport_log, "Failed to generate response");
+            request_context_free(ctx);
+            return MHD_NO;
+        }
+
+        /* Create HTTP response */
+        struct MHD_Response *response = MHD_create_response_from_buffer(
+            strlen(response_json),
+            (void*)response_json,
+            MHD_RESPMEM_MUST_FREE);  /* libmicrohttpd will free response_json */
+
+        if (response == NULL) {
+            log_error(mcp_transport_log, "Failed to create HTTP response");
+            free(response_json);
+            request_context_free(ctx);
+            return MHD_NO;
+        }
+
+        /* Add headers */
+        MHD_add_response_header(response, "Content-Type", "application/json");
+        MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+
+        /* Queue response */
+        enum MHD_Result ret = MHD_queue_response(connection, 200, response);
+        MHD_destroy_response(response);
+        request_context_free(ctx);
+
+        return ret;
     } else if (strcmp(url, "/events") == 0 && strcmp(method, "GET") == 0) {
         /* SSE endpoint - handle in later task */
         return MHD_NO;  /* Placeholder */

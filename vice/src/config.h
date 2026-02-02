@@ -11,7 +11,7 @@
 /* #undef BSD_COMPILE */
 
 /* Flags passed to configure */
-#define CONFIGURE_FLAGS "--enable-headless --disable-pdf-docs --enable-mcp"
+#define CONFIGURE_FLAGS "--enable-mcp-server"
 
 /* Enable plain darwin compilation */
 /* #undef DARWIN_COMPILE */
@@ -334,7 +334,7 @@
 #define HAVE_MATH_H 1
 
 /* MCP server support */
-/* #undef HAVE_MCP_SERVER */
+#define HAVE_MCP_SERVER /**/
 
 /* Define to 1 if you have the 'memmove' function. */
 #define HAVE_MEMMOVE 1
