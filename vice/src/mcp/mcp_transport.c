@@ -29,10 +29,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <microhttpd.h>
 
 #include "mcp_transport.h"
 #include "log.h"
+
+/* Maximum request body size - 10MB for MCP JSON-RPC requests */
+#define MAX_REQUEST_BODY_SIZE (10 * 1024 * 1024)
 
 static log_t mcp_transport_log = LOG_DEFAULT;
 
@@ -121,12 +125,29 @@ static enum MHD_Result http_handler(void *cls,
 
         /* Accumulate upload data */
         if (*upload_data_size > 0) {
+            /* Check for integer overflow */
+            if (*upload_data_size > SIZE_MAX - ctx->body_size) {
+                log_error(mcp_transport_log, "Request body size overflow");
+                request_context_free(ctx);
+                *con_cls = NULL;
+                return MHD_NO;
+            }
+
             size_t new_size = ctx->body_size + *upload_data_size;
 
-            /* Resize buffer if needed */
-            if (new_size > ctx->body_capacity) {
+            /* Enforce maximum request size */
+            if (new_size > MAX_REQUEST_BODY_SIZE) {
+                log_error(mcp_transport_log, "Request body too large: %zu bytes (max %d)",
+                          new_size, MAX_REQUEST_BODY_SIZE);
+                request_context_free(ctx);
+                *con_cls = NULL;
+                return MHD_NO;
+            }
+
+            /* Resize buffer if needed (+1 for null terminator) */
+            if (new_size + 1 > ctx->body_capacity) {
                 size_t new_capacity = ctx->body_capacity * 2;
-                if (new_capacity < new_size) {
+                if (new_capacity < new_size + 1) {
                     new_capacity = new_size + 1024;
                 }
 
@@ -134,6 +155,7 @@ static enum MHD_Result http_handler(void *cls,
                 if (new_body == NULL) {
                     log_error(mcp_transport_log, "Failed to allocate request body buffer");
                     request_context_free(ctx);
+                    *con_cls = NULL;
                     return MHD_NO;
                 }
 
@@ -144,6 +166,7 @@ static enum MHD_Result http_handler(void *cls,
             /* Append data */
             memcpy(ctx->body + ctx->body_size, upload_data, *upload_data_size);
             ctx->body_size += *upload_data_size;
+            ctx->body[ctx->body_size] = '\0';  /* Null terminate for JSON parsing */
             *upload_data_size = 0;  /* Mark as processed */
 
             return MHD_YES;  /* Continue receiving */
