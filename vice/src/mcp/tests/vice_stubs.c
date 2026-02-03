@@ -519,3 +519,49 @@ void interrupt_maincpu_trigger_trap(void (*trap_func)(uint16_t, void *data), voi
         trap_func(0, data);
     }
 }
+
+/* Snapshot stubs for testing */
+static char test_snapshot_last_saved[256] = "";
+static char test_snapshot_last_loaded[256] = "";
+static int test_snapshot_save_result = 0;
+static int test_snapshot_load_result = 0;
+
+int machine_write_snapshot(const char *name, int save_roms, int save_disks, int event_mode)
+{
+    (void)save_roms;
+    (void)save_disks;
+    (void)event_mode;
+    if (name) {
+        strncpy(test_snapshot_last_saved, name, sizeof(test_snapshot_last_saved) - 1);
+        test_snapshot_last_saved[sizeof(test_snapshot_last_saved) - 1] = '\0';
+    }
+    return test_snapshot_save_result;
+}
+
+int machine_read_snapshot(const char *name, int event_mode)
+{
+    (void)event_mode;
+    if (name) {
+        strncpy(test_snapshot_last_loaded, name, sizeof(test_snapshot_last_loaded) - 1);
+        test_snapshot_last_loaded[sizeof(test_snapshot_last_loaded) - 1] = '\0';
+    }
+    return test_snapshot_load_result;
+}
+
+/* Test helpers for snapshot stubs */
+const char *test_snapshot_get_last_saved(void) { return test_snapshot_last_saved; }
+const char *test_snapshot_get_last_loaded(void) { return test_snapshot_last_loaded; }
+void test_snapshot_set_save_result(int result) { test_snapshot_save_result = result; }
+void test_snapshot_set_load_result(int result) { test_snapshot_load_result = result; }
+void test_snapshot_reset(void) {
+    test_snapshot_last_saved[0] = '\0';
+    test_snapshot_last_loaded[0] = '\0';
+    test_snapshot_save_result = 0;
+    test_snapshot_load_result = 0;
+}
+
+/* archdep stub for config path */
+const char *archdep_user_config_path(void)
+{
+    return "/tmp/vice-test-config";
+}
