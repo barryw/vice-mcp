@@ -57,6 +57,14 @@ extern cJSON* mcp_tool_snapshot_list(cJSON *params);
 /* Memory search tool declaration */
 extern cJSON* mcp_tool_memory_search(cJSON *params);
 
+/* Cycles stopwatch tool declaration */
+extern cJSON* mcp_tool_cycles_stopwatch(cJSON *params);
+
+/* Test stopwatch helpers from vice_stubs.c */
+extern void test_stopwatch_reset(void);
+extern void test_stopwatch_set_cycles(unsigned long cycles);
+extern unsigned long test_stopwatch_get_cycles(void);
+
 /* Test memory helpers from vice_stubs.c */
 extern void test_memory_set(uint16_t addr, const uint8_t *data, size_t len);
 extern void test_memory_set_byte(uint16_t addr, uint8_t value);
@@ -2407,6 +2415,191 @@ TEST(memory_search_dispatch_works)
     cJSON_Delete(response);
 }
 
+/* =================================================================
+ * Cycles Stopwatch Tests
+ * ================================================================= */
+
+/* Test: cycles.stopwatch requires action parameter */
+TEST(cycles_stopwatch_requires_action)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    /* No action parameter */
+
+    response = mcp_tool_cycles_stopwatch(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: cycles.stopwatch with null params returns error */
+TEST(cycles_stopwatch_null_params_returns_error)
+{
+    cJSON *response, *code_item;
+
+    response = mcp_tool_cycles_stopwatch(NULL);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(response);
+}
+
+/* Test: cycles.stopwatch with invalid action returns error */
+TEST(cycles_stopwatch_invalid_action_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "action", "invalid");
+
+    response = mcp_tool_cycles_stopwatch(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: cycles.stopwatch reset action works */
+TEST(cycles_stopwatch_reset_works)
+{
+    cJSON *response, *params, *cycles_item, *memspace_item;
+
+    /* Set some cycles first */
+    test_stopwatch_set_cycles(12345);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "action", "reset");
+
+    response = mcp_tool_cycles_stopwatch(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return cycles = 0 after reset */
+    cycles_item = cJSON_GetObjectItem(response, "cycles");
+    ASSERT_NOT_NULL(cycles_item);
+    ASSERT_INT_EQ(cycles_item->valueint, 0);
+
+    /* Should return memspace */
+    memspace_item = cJSON_GetObjectItem(response, "memspace");
+    ASSERT_NOT_NULL(memspace_item);
+    ASSERT_STR_EQ(memspace_item->valuestring, "computer");
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: cycles.stopwatch read action returns cycle count */
+TEST(cycles_stopwatch_read_returns_cycles)
+{
+    cJSON *response, *params, *cycles_item, *memspace_item;
+
+    /* Set specific cycle count */
+    test_stopwatch_reset();
+    test_stopwatch_set_cycles(19656);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "action", "read");
+
+    response = mcp_tool_cycles_stopwatch(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return cycles count */
+    cycles_item = cJSON_GetObjectItem(response, "cycles");
+    ASSERT_NOT_NULL(cycles_item);
+    ASSERT_INT_EQ(cycles_item->valueint, 19656);
+
+    /* Should return memspace */
+    memspace_item = cJSON_GetObjectItem(response, "memspace");
+    ASSERT_NOT_NULL(memspace_item);
+    ASSERT_STR_EQ(memspace_item->valuestring, "computer");
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: cycles.stopwatch reset_and_read action works */
+TEST(cycles_stopwatch_reset_and_read_works)
+{
+    cJSON *response, *params, *cycles_item, *previous_item, *memspace_item;
+
+    /* Set specific cycle count */
+    test_stopwatch_reset();
+    test_stopwatch_set_cycles(5000);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "action", "reset_and_read");
+
+    response = mcp_tool_cycles_stopwatch(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return previous_cycles with old value */
+    previous_item = cJSON_GetObjectItem(response, "previous_cycles");
+    ASSERT_NOT_NULL(previous_item);
+    ASSERT_INT_EQ(previous_item->valueint, 5000);
+
+    /* Should return cycles = 0 after reset */
+    cycles_item = cJSON_GetObjectItem(response, "cycles");
+    ASSERT_NOT_NULL(cycles_item);
+    ASSERT_INT_EQ(cycles_item->valueint, 0);
+
+    /* Should return memspace */
+    memspace_item = cJSON_GetObjectItem(response, "memspace");
+    ASSERT_NOT_NULL(memspace_item);
+    ASSERT_STR_EQ(memspace_item->valuestring, "computer");
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: cycles.stopwatch dispatch works */
+TEST(cycles_stopwatch_dispatch_works)
+{
+    cJSON *response, *params, *cycles_item;
+
+    test_stopwatch_reset();
+    test_stopwatch_set_cycles(1000);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "action", "read");
+
+    response = mcp_tools_dispatch("vice.cycles.stopwatch", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    cycles_item = cJSON_GetObjectItem(response, "cycles");
+    ASSERT_NOT_NULL(cycles_item);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -2545,6 +2738,15 @@ int main(void)
     RUN_TEST(memory_search_empty_pattern_returns_error);
     RUN_TEST(memory_search_mask_length_mismatch_returns_error);
     RUN_TEST(memory_search_dispatch_works);
+
+    /* Cycles stopwatch tests */
+    RUN_TEST(cycles_stopwatch_requires_action);
+    RUN_TEST(cycles_stopwatch_null_params_returns_error);
+    RUN_TEST(cycles_stopwatch_invalid_action_returns_error);
+    RUN_TEST(cycles_stopwatch_reset_works);
+    RUN_TEST(cycles_stopwatch_read_returns_cycles);
+    RUN_TEST(cycles_stopwatch_reset_and_read_works);
+    RUN_TEST(cycles_stopwatch_dispatch_works);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);

@@ -1481,6 +1481,13 @@ void mon_stopwatch_reset(void)
     mon_out("Stopwatch reset to 0.\n");
 }
 
+unsigned long mon_stopwatch_get_elapsed(void)
+{
+    monitor_interface_t *vice_interface;
+    vice_interface = mon_interfaces[default_memspace];
+    return (unsigned long)(*vice_interface->clk - stopwatch_start_time[default_memspace]);
+}
+
 /* Local helper functions for building the lists */
 static monitor_cpu_type_t *find_monitor_cpu_type(CPU_TYPE_t cputype)
 {

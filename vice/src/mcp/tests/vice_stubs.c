@@ -664,3 +664,46 @@ void test_memory_clear(void)
     memset(test_memory_buffer, 0, sizeof(test_memory_buffer));
     test_memory_buffer_initialized = 1;
 }
+
+/* =============================================================================
+ * Cycles stopwatch test support
+ *
+ * Simulates the monitor stopwatch functionality for testing the
+ * vice.cycles.stopwatch tool without requiring the full VICE runtime.
+ * ============================================================================= */
+
+/* Simulated stopwatch state */
+static unsigned long test_stopwatch_start = 0;
+static unsigned long test_stopwatch_current_clock = 0;
+
+/* Reset test stopwatch to initial state */
+void test_stopwatch_reset(void)
+{
+    test_stopwatch_start = 0;
+    test_stopwatch_current_clock = 0;
+}
+
+/* Set the elapsed cycles for testing */
+void test_stopwatch_set_cycles(unsigned long cycles)
+{
+    /* Set current clock so that elapsed = cycles */
+    test_stopwatch_current_clock = test_stopwatch_start + cycles;
+}
+
+/* Get the current elapsed cycles */
+unsigned long test_stopwatch_get_cycles(void)
+{
+    return test_stopwatch_current_clock - test_stopwatch_start;
+}
+
+/* Monitor stopwatch stubs - called by the actual tool implementation */
+void mon_stopwatch_reset(void)
+{
+    /* Reset: set start to current clock, so elapsed becomes 0 */
+    test_stopwatch_start = test_stopwatch_current_clock;
+}
+
+unsigned long mon_stopwatch_get_elapsed(void)
+{
+    return test_stopwatch_current_clock - test_stopwatch_start;
+}

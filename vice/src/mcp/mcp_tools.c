@@ -496,6 +496,13 @@ static const mcp_tool_t tool_registry[] = {
       "Use this to find the right snapshot to load for debugging.",
       mcp_tool_snapshot_list },
 
+    /* Phase 5.1: Enhanced Debugging Tools */
+    { "vice.cycles.stopwatch",
+      "Measure elapsed CPU cycles for timing-critical code analysis. "
+      "Use 'reset' to start timing, 'read' to get elapsed cycles, or 'reset_and_read' "
+      "for atomic read-and-reset. Ideal for measuring raster routine timing.",
+      mcp_tool_cycles_stopwatch },
+
     { NULL, NULL, NULL } /* Sentinel */
 };
 
@@ -1179,6 +1186,24 @@ cJSON* mcp_tool_tools_list(cJSON *params)
 
         } else if (strcmp(name, "vice.snapshot.list") == 0) {
             schema = mcp_schema_empty();
+
+        } else if (strcmp(name, "vice.cycles.stopwatch") == 0) {
+            cJSON *action_prop;
+            props = cJSON_CreateObject();
+            action_prop = mcp_prop_string(
+                "Action to perform: 'reset' (start timing), "
+                "'read' (get elapsed cycles), or 'reset_and_read' (atomic read and reset)");
+            if (action_prop) {
+                cJSON *enum_arr = cJSON_CreateArray();
+                cJSON_AddItemToArray(enum_arr, cJSON_CreateString("reset"));
+                cJSON_AddItemToArray(enum_arr, cJSON_CreateString("read"));
+                cJSON_AddItemToArray(enum_arr, cJSON_CreateString("reset_and_read"));
+                cJSON_AddItemToObject(action_prop, "enum", enum_arr);
+                cJSON_AddItemToObject(props, "action", action_prop);
+            }
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("action"));
+            schema = mcp_schema_object(props, required);
 
         } else {
             /* Default: empty schema for unknown tools */
@@ -5417,5 +5442,98 @@ cJSON* mcp_tool_snapshot_list(cJSON *params)
     }
 
     lib_free(snapshots_dir);
+    return response;
+}
+
+/* ========================================================================= */
+/* Phase 5.1: Cycles Stopwatch Tool                                          */
+/* ========================================================================= */
+
+/**
+ * @brief Measure elapsed CPU cycles for timing-critical code analysis.
+ *
+ * Parameters:
+ *   action: (required) string - One of:
+ *           "reset"         - Reset stopwatch to 0, return new cycle count (0)
+ *           "read"          - Read current elapsed cycles
+ *           "reset_and_read" - Atomically read current value and reset
+ *
+ * Returns:
+ *   cycles: Current cycle count (after any reset operation)
+ *   previous_cycles: (only for reset_and_read) Value before reset
+ *   memspace: Which CPU was measured ("computer" for main CPU)
+ *
+ * Use case: Measure raster routine timing - reset at raster line start,
+ * read at end to verify the routine fits within the available cycles.
+ */
+cJSON* mcp_tool_cycles_stopwatch(cJSON *params)
+{
+    cJSON *response, *action_item;
+    const char *action;
+    unsigned long elapsed_cycles;
+    unsigned long previous_cycles = 0;
+    int do_reset = 0;
+    int do_read = 0;
+    int include_previous = 0;
+
+    log_message(mcp_tools_log, "Handling vice.cycles.stopwatch");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Get and validate action parameter */
+    action_item = cJSON_GetObjectItem(params, "action");
+    if (action_item == NULL || !cJSON_IsString(action_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "action parameter required (string)");
+    }
+    action = action_item->valuestring;
+
+    /* Parse action */
+    if (strcmp(action, "reset") == 0) {
+        do_reset = 1;
+        do_read = 1;  /* Return 0 after reset */
+    } else if (strcmp(action, "read") == 0) {
+        do_read = 1;
+    } else if (strcmp(action, "reset_and_read") == 0) {
+        do_reset = 1;
+        do_read = 1;
+        include_previous = 1;  /* Return previous value before reset */
+    } else {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid action. Must be 'reset', 'read', or 'reset_and_read'");
+    }
+
+    /* Read current elapsed cycles if needed for previous value */
+    if (include_previous) {
+        previous_cycles = mon_stopwatch_get_elapsed();
+    }
+
+    /* Perform reset if requested */
+    if (do_reset) {
+        mon_stopwatch_reset();
+    }
+
+    /* Read current (possibly post-reset) cycle count */
+    if (do_read) {
+        elapsed_cycles = mon_stopwatch_get_elapsed();
+    } else {
+        elapsed_cycles = 0;
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddNumberToObject(response, "cycles", (double)elapsed_cycles);
+
+    if (include_previous) {
+        cJSON_AddNumberToObject(response, "previous_cycles", (double)previous_cycles);
+    }
+
+    cJSON_AddStringToObject(response, "memspace", "computer");
+
     return response;
 }

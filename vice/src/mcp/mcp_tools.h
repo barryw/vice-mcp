@@ -157,6 +157,9 @@ extern cJSON* mcp_tool_snapshot_save(cJSON *params);
 extern cJSON* mcp_tool_snapshot_load(cJSON *params);
 extern cJSON* mcp_tool_snapshot_list(cJSON *params);
 
+/* Tool handlers - Phase 5.1: Enhanced Debugging */
+extern cJSON* mcp_tool_cycles_stopwatch(cJSON *params);
+
 /** @brief Send a breakpoint hit notification to SSE clients.
  *
  *  Called when a breakpoint is hit during execution. Sends an SSE event
