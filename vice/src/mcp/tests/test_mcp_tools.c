@@ -54,6 +54,14 @@ extern cJSON* mcp_tool_snapshot_save(cJSON *params);
 extern cJSON* mcp_tool_snapshot_load(cJSON *params);
 extern cJSON* mcp_tool_snapshot_list(cJSON *params);
 
+/* Memory search tool declaration */
+extern cJSON* mcp_tool_memory_search(cJSON *params);
+
+/* Test memory helpers from vice_stubs.c */
+extern void test_memory_set(uint16_t addr, const uint8_t *data, size_t len);
+extern void test_memory_set_byte(uint16_t addr, uint8_t value);
+extern void test_memory_clear(void);
+
 static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -2063,6 +2071,342 @@ TEST(snapshot_list_returns_directory)
     cJSON_Delete(response);
 }
 
+/* ========================================================================= */
+/* Memory Search Tests                                                       */
+/* ========================================================================= */
+
+/* Test: memory.search requires start parameter */
+TEST(memory_search_requires_start)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "end", 0x1000);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0x4C}, 1));
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search requires end parameter */
+TEST(memory_search_requires_end)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0000);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0x4C}, 1));
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search requires pattern parameter */
+TEST(memory_search_requires_pattern)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0000);
+    cJSON_AddNumberToObject(params, "end", 0x1000);
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search finds single byte pattern */
+TEST(memory_search_finds_single_byte)
+{
+    cJSON *response, *params, *matches_item, *match_item;
+
+    /* Set up memory with pattern at known locations */
+    test_memory_clear();
+    test_memory_set_byte(0x1000, 0xEA);
+    test_memory_set_byte(0x2000, 0xEA);
+    test_memory_set_byte(0x3000, 0xEA);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0000);
+    cJSON_AddNumberToObject(params, "end", 0x4000);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0xEA}, 1));
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    matches_item = cJSON_GetObjectItem(response, "matches");
+    ASSERT_NOT_NULL(matches_item);
+    ASSERT_TRUE(cJSON_IsArray(matches_item));
+    ASSERT_INT_EQ(cJSON_GetArraySize(matches_item), 3);
+
+    /* Check first match is $1000 */
+    match_item = cJSON_GetArrayItem(matches_item, 0);
+    ASSERT_NOT_NULL(match_item);
+    ASSERT_TRUE(cJSON_IsString(match_item));
+    ASSERT_STR_EQ(match_item->valuestring, "$1000");
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search finds multi-byte pattern (JMP instruction) */
+TEST(memory_search_finds_jmp_instruction)
+{
+    cJSON *response, *params, *matches_item, *total_item;
+    /* JMP $A000 = 4C 00 A0 */
+    uint8_t pattern[] = { 0x4C, 0x00, 0xA0 };
+
+    test_memory_clear();
+    /* Place JMP $A000 at a few locations */
+    test_memory_set(0x1000, pattern, 3);
+    test_memory_set(0x2000, pattern, 3);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0000);
+    cJSON_AddNumberToObject(params, "end", 0x3000);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0x4C, 0x00, 0xA0}, 3));
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    matches_item = cJSON_GetObjectItem(response, "matches");
+    ASSERT_NOT_NULL(matches_item);
+    ASSERT_INT_EQ(cJSON_GetArraySize(matches_item), 2);
+
+    total_item = cJSON_GetObjectItem(response, "total_matches");
+    ASSERT_NOT_NULL(total_item);
+    ASSERT_INT_EQ(total_item->valueint, 2);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search with wildcard mask */
+TEST(memory_search_with_wildcard_mask)
+{
+    cJSON *response, *params, *matches_item;
+    /* Search for JMP to any low-byte, high-byte A0 */
+    /* 4C xx A0 where xx is wildcard */
+    uint8_t jmp1[] = { 0x4C, 0x00, 0xA0 };  /* JMP $A000 */
+    uint8_t jmp2[] = { 0x4C, 0x50, 0xA0 };  /* JMP $A050 */
+    uint8_t jmp3[] = { 0x4C, 0xFF, 0xA0 };  /* JMP $A0FF */
+
+    test_memory_clear();
+    test_memory_set(0x1000, jmp1, 3);
+    test_memory_set(0x2000, jmp2, 3);
+    test_memory_set(0x3000, jmp3, 3);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0000);
+    cJSON_AddNumberToObject(params, "end", 0x4000);
+    /* Pattern: 4C xx A0 with mask FF 00 FF (00 = wildcard) */
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0x4C, 0x00, 0xA0}, 3));
+    cJSON_AddItemToObject(params, "mask", cJSON_CreateIntArray((const int[]){0xFF, 0x00, 0xFF}, 3));
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    matches_item = cJSON_GetObjectItem(response, "matches");
+    ASSERT_NOT_NULL(matches_item);
+    ASSERT_INT_EQ(cJSON_GetArraySize(matches_item), 3);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search respects max_results limit */
+TEST(memory_search_respects_max_results)
+{
+    cJSON *response, *params, *matches_item, *truncated_item;
+    int i;
+
+    test_memory_clear();
+    /* Place pattern at many locations */
+    for (i = 0; i < 200; i++) {
+        test_memory_set_byte(i * 256, 0xEA);
+    }
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0000);
+    cJSON_AddNumberToObject(params, "end", 0xFFFF);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0xEA}, 1));
+    cJSON_AddNumberToObject(params, "max_results", 10);
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    matches_item = cJSON_GetObjectItem(response, "matches");
+    ASSERT_NOT_NULL(matches_item);
+    ASSERT_INT_EQ(cJSON_GetArraySize(matches_item), 10);
+
+    truncated_item = cJSON_GetObjectItem(response, "truncated");
+    ASSERT_NOT_NULL(truncated_item);
+    ASSERT_TRUE(cJSON_IsTrue(truncated_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search returns truncated=false when not truncated */
+TEST(memory_search_truncated_false_when_not_truncated)
+{
+    cJSON *response, *params, *truncated_item;
+
+    test_memory_clear();
+    test_memory_set_byte(0x1000, 0xEA);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0000);
+    cJSON_AddNumberToObject(params, "end", 0x2000);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0xEA}, 1));
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    truncated_item = cJSON_GetObjectItem(response, "truncated");
+    ASSERT_NOT_NULL(truncated_item);
+    ASSERT_TRUE(cJSON_IsFalse(truncated_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search with hex string addresses */
+TEST(memory_search_hex_string_addresses)
+{
+    cJSON *response, *params, *matches_item;
+
+    test_memory_clear();
+    test_memory_set_byte(0xC100, 0xEA);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "start", "$C000");
+    cJSON_AddStringToObject(params, "end", "$C200");
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0xEA}, 1));
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    matches_item = cJSON_GetObjectItem(response, "matches");
+    ASSERT_NOT_NULL(matches_item);
+    ASSERT_INT_EQ(cJSON_GetArraySize(matches_item), 1);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search end must be greater than start */
+TEST(memory_search_invalid_range_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x2000);
+    cJSON_AddNumberToObject(params, "end", 0x1000);  /* end < start */
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0xEA}, 1));
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search empty pattern returns error */
+TEST(memory_search_empty_pattern_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0000);
+    cJSON_AddNumberToObject(params, "end", 0x1000);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateArray());  /* Empty array */
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search mask length must match pattern length */
+TEST(memory_search_mask_length_mismatch_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0000);
+    cJSON_AddNumberToObject(params, "end", 0x1000);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0x4C, 0x00, 0xA0}, 3));
+    cJSON_AddItemToObject(params, "mask", cJSON_CreateIntArray((const int[]){0xFF, 0xFF}, 2));  /* Wrong length */
+
+    response = mcp_tool_memory_search(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.search via dispatch */
+TEST(memory_search_dispatch_works)
+{
+    cJSON *response, *params, *matches_item;
+
+    test_memory_clear();
+    test_memory_set_byte(0x1000, 0xEA);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0000);
+    cJSON_AddNumberToObject(params, "end", 0x2000);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0xEA}, 1));
+
+    response = mcp_tools_dispatch("vice.memory.search", params);
+    ASSERT_NOT_NULL(response);
+
+    matches_item = cJSON_GetObjectItem(response, "matches");
+    ASSERT_NOT_NULL(matches_item);
+    ASSERT_TRUE(cJSON_IsArray(matches_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -2186,6 +2530,21 @@ int main(void)
     RUN_TEST(snapshot_load_failure_returns_error);
     RUN_TEST(snapshot_list_returns_array);
     RUN_TEST(snapshot_list_returns_directory);
+
+    /* Memory search tests */
+    RUN_TEST(memory_search_requires_start);
+    RUN_TEST(memory_search_requires_end);
+    RUN_TEST(memory_search_requires_pattern);
+    RUN_TEST(memory_search_finds_single_byte);
+    RUN_TEST(memory_search_finds_jmp_instruction);
+    RUN_TEST(memory_search_with_wildcard_mask);
+    RUN_TEST(memory_search_respects_max_results);
+    RUN_TEST(memory_search_truncated_false_when_not_truncated);
+    RUN_TEST(memory_search_hex_string_addresses);
+    RUN_TEST(memory_search_invalid_range_returns_error);
+    RUN_TEST(memory_search_empty_pattern_returns_error);
+    RUN_TEST(memory_search_mask_length_mismatch_returns_error);
+    RUN_TEST(memory_search_dispatch_works);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);

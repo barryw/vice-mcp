@@ -426,6 +426,7 @@ static const mcp_tool_t tool_registry[] = {
     { "vice.memory.read", "Read memory range (with optional bank selection)", mcp_tool_memory_read },
     { "vice.memory.write", "Write to memory", mcp_tool_memory_write },
     { "vice.memory.banks", "List available memory banks", mcp_tool_memory_banks },
+    { "vice.memory.search", "Search for byte patterns in memory with optional wildcards", mcp_tool_memory_search },
 
     /* Phase 2.1: Checkpoints/Breakpoints */
     { "vice.checkpoint.add", "Add checkpoint/breakpoint", mcp_tool_checkpoint_add },
@@ -1005,6 +1006,19 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("address"));
             cJSON_AddItemToArray(required, cJSON_CreateString("data"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.memory.search") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "start", mcp_prop_string("Start address: number, hex string ($C000), or symbol name"));
+            cJSON_AddItemToObject(props, "end", mcp_prop_string("End address: number, hex string ($FFFF), or symbol name"));
+            cJSON_AddItemToObject(props, "pattern", mcp_prop_array("number", "Byte pattern to find, e.g., [0x4C, 0x00, 0xA0] for JMP $A000"));
+            cJSON_AddItemToObject(props, "mask", mcp_prop_array("number", "Per-byte mask: 0xFF=exact match, 0x00=wildcard (optional)"));
+            cJSON_AddItemToObject(props, "max_results", mcp_prop_number("Maximum matches to return (default: 100, max: 10000)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("start"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("end"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("pattern"));
             schema = mcp_schema_object(props, required);
 
         } else if (strcmp(name, "vice.checkpoint.add") == 0) {
@@ -1663,6 +1677,201 @@ cJSON* mcp_tool_memory_banks(cJSON *params)
 
     cJSON_AddItemToObject(response, "banks", banks_array);
     cJSON_AddStringToObject(response, "machine", machine_get_name());
+
+    return response;
+}
+
+/* Search for byte patterns in memory with optional wildcard masks.
+ *
+ * Parameters:
+ *   start: Start address (required) - number, hex string, or symbol
+ *   end: End address (required) - number, hex string, or symbol
+ *   pattern: Array of bytes to search for (required)
+ *   mask: Per-byte mask array (optional) - 0xFF=exact match, 0x00=wildcard
+ *   max_results: Maximum matches to return (optional, default 100)
+ *
+ * Returns:
+ *   matches: Array of addresses where pattern was found (as hex strings)
+ *   total_matches: Total number of matches found
+ *   truncated: True if results were limited by max_results
+ */
+cJSON* mcp_tool_memory_search(cJSON *params)
+{
+    cJSON *response, *matches_array;
+    cJSON *start_item, *end_item, *pattern_item, *mask_item, *max_item;
+    int start_addr, end_addr;
+    int pattern_len, mask_len;
+    uint8_t *pattern_buf = NULL;
+    uint8_t *mask_buf = NULL;
+    int max_results = 100;  /* Default max results */
+    int total_matches = 0;
+    int results_returned = 0;
+    long search_len;
+    long search_idx;
+    int i;  /* for array indexing in cJSON functions */
+    const char *error_msg;
+    char addr_str[8];
+
+    log_message(mcp_tools_log, "Handling vice.memory.search");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Get and validate start address */
+    start_item = cJSON_GetObjectItem(params, "start");
+    if (start_item == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "start address required");
+    }
+    start_addr = mcp_resolve_address(start_item, &error_msg);
+    if (start_addr < 0) {
+        char err_buf[128];
+        snprintf(err_buf, sizeof(err_buf), "Cannot resolve start address: %s", error_msg);
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+    }
+
+    /* Get and validate end address */
+    end_item = cJSON_GetObjectItem(params, "end");
+    if (end_item == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "end address required");
+    }
+    end_addr = mcp_resolve_address(end_item, &error_msg);
+    if (end_addr < 0) {
+        char err_buf[128];
+        snprintf(err_buf, sizeof(err_buf), "Cannot resolve end address: %s", error_msg);
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+    }
+
+    /* Validate range */
+    if (end_addr < start_addr) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "end address must be >= start address");
+    }
+
+    /* Get and validate pattern */
+    pattern_item = cJSON_GetObjectItem(params, "pattern");
+    if (pattern_item == NULL || !cJSON_IsArray(pattern_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "pattern required (array of bytes)");
+    }
+    pattern_len = cJSON_GetArraySize(pattern_item);
+    if (pattern_len == 0) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "pattern cannot be empty");
+    }
+    if (pattern_len > 256) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "pattern too long (max 256 bytes)");
+    }
+
+    /* Allocate and fill pattern buffer */
+    pattern_buf = lib_malloc(pattern_len);
+    if (pattern_buf == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    for (i = 0; i < pattern_len; i++) {
+        cJSON *byte_item = cJSON_GetArrayItem(pattern_item, i);
+        if (!cJSON_IsNumber(byte_item)) {
+            lib_free(pattern_buf);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "pattern must contain numbers only");
+        }
+        pattern_buf[i] = (uint8_t)(byte_item->valueint & 0xFF);
+    }
+
+    /* Get optional mask (default: all 0xFF for exact match) */
+    mask_buf = lib_malloc(pattern_len);
+    if (mask_buf == NULL) {
+        lib_free(pattern_buf);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    mask_item = cJSON_GetObjectItem(params, "mask");
+    if (mask_item != NULL && cJSON_IsArray(mask_item)) {
+        mask_len = cJSON_GetArraySize(mask_item);
+        if (mask_len != pattern_len) {
+            lib_free(pattern_buf);
+            lib_free(mask_buf);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "mask length must match pattern length");
+        }
+        for (i = 0; i < mask_len; i++) {
+            cJSON *byte_item = cJSON_GetArrayItem(mask_item, i);
+            if (!cJSON_IsNumber(byte_item)) {
+                lib_free(pattern_buf);
+                lib_free(mask_buf);
+                return mcp_error(MCP_ERROR_INVALID_PARAMS, "mask must contain numbers only");
+            }
+            mask_buf[i] = (uint8_t)(byte_item->valueint & 0xFF);
+        }
+    } else {
+        /* Default: exact match for all bytes */
+        for (i = 0; i < pattern_len; i++) {
+            mask_buf[i] = 0xFF;
+        }
+    }
+
+    /* Get optional max_results */
+    max_item = cJSON_GetObjectItem(params, "max_results");
+    if (max_item != NULL && cJSON_IsNumber(max_item)) {
+        max_results = max_item->valueint;
+        if (max_results < 1) max_results = 1;
+        if (max_results > 10000) max_results = 10000;  /* Reasonable upper limit */
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        lib_free(pattern_buf);
+        lib_free(mask_buf);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    matches_array = cJSON_CreateArray();
+    if (matches_array == NULL) {
+        cJSON_Delete(response);
+        lib_free(pattern_buf);
+        lib_free(mask_buf);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Perform the search */
+    search_len = (long)end_addr - (long)start_addr + 1;
+
+    for (search_idx = 0; search_idx <= search_len - pattern_len; search_idx++) {
+        int found = 1;
+        uint16_t check_addr = (uint16_t)(start_addr + search_idx);
+
+        /* Check if pattern matches at this position */
+        for (i = 0; i < pattern_len; i++) {
+            uint8_t mem_byte = mem_read((uint16_t)(check_addr + i));
+            uint8_t masked_mem = mem_byte & mask_buf[i];
+            uint8_t masked_pattern = pattern_buf[i] & mask_buf[i];
+
+            if (masked_mem != masked_pattern) {
+                found = 0;
+                break;
+            }
+        }
+
+        if (found) {
+            total_matches++;
+
+            /* Add to results if under limit */
+            if (results_returned < max_results) {
+                cJSON *match_item;
+                snprintf(addr_str, sizeof(addr_str), "$%04X", check_addr);
+                match_item = cJSON_CreateString(addr_str);
+                if (match_item != NULL) {
+                    cJSON_AddItemToArray(matches_array, match_item);
+                    results_returned++;
+                }
+            }
+        }
+    }
+
+    /* Cleanup */
+    lib_free(pattern_buf);
+    lib_free(mask_buf);
+
+    /* Build final response */
+    cJSON_AddItemToObject(response, "matches", matches_array);
+    cJSON_AddNumberToObject(response, "total_matches", total_matches);
+    cJSON_AddBoolToObject(response, "truncated", results_returned < total_matches ? 1 : 0);
 
     return response;
 }

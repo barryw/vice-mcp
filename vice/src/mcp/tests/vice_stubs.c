@@ -93,11 +93,18 @@ const char *machine_get_name(void)
     return "TEST-MACHINE";
 }
 
+/* Memory search test support - forward declaration and storage */
+static void test_memory_init(void);
+static uint8_t test_memory_buffer[65536];
+static int test_memory_buffer_initialized = 0;
+
 /* Memory stubs */
 uint8_t mem_read(uint16_t addr)
 {
-    (void)addr;
-    return 0;
+    if (!test_memory_buffer_initialized) {
+        test_memory_init();
+    }
+    return test_memory_buffer[addr];
 }
 
 void mem_store(uint16_t addr, uint8_t value)
@@ -134,9 +141,11 @@ int mem_bank_from_name(const char *name)
 uint8_t mem_bank_peek(int bank, uint16_t addr, void *context)
 {
     (void)bank;
-    (void)addr;
     (void)context;
-    return 0xAA;  /* Return test pattern */
+    if (!test_memory_buffer_initialized) {
+        test_memory_init();
+    }
+    return test_memory_buffer[addr];
 }
 
 /* CPU register stubs */
@@ -608,4 +617,50 @@ char *util_join_paths(const char *path, ...)
     va_end(args);
 
     return result;
+}
+
+/* =============================================================================
+ * Memory search test support
+ *
+ * Provides a configurable memory buffer that mem_read() and mem_bank_peek()
+ * can use to simulate specific memory patterns for testing memory.search.
+ * The static variables are declared above near mem_read().
+ * ============================================================================= */
+
+/* Initialize test memory buffer with default pattern */
+static void test_memory_init(void)
+{
+    int i;
+    for (i = 0; i < 65536; i++) {
+        test_memory_buffer[i] = (uint8_t)(i & 0xFF);  /* Simple pattern */
+    }
+    test_memory_buffer_initialized = 1;
+}
+
+/* Write bytes to test memory at specified address - available to tests */
+void test_memory_set(uint16_t addr, const uint8_t *data, size_t len)
+{
+    size_t i;
+    if (!test_memory_buffer_initialized) {
+        test_memory_init();
+    }
+    for (i = 0; i < len && (addr + i) < 65536; i++) {
+        test_memory_buffer[addr + i] = data[i];
+    }
+}
+
+/* Write a single byte to test memory */
+void test_memory_set_byte(uint16_t addr, uint8_t value)
+{
+    if (!test_memory_buffer_initialized) {
+        test_memory_init();
+    }
+    test_memory_buffer[addr] = value;
+}
+
+/* Clear test memory to all zeros */
+void test_memory_clear(void)
+{
+    memset(test_memory_buffer, 0, sizeof(test_memory_buffer));
+    test_memory_buffer_initialized = 1;
 }

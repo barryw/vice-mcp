@@ -111,6 +111,7 @@ extern cJSON* mcp_tool_registers_set(cJSON *params);
 extern cJSON* mcp_tool_memory_read(cJSON *params);
 extern cJSON* mcp_tool_memory_write(cJSON *params);
 extern cJSON* mcp_tool_memory_banks(cJSON *params);
+extern cJSON* mcp_tool_memory_search(cJSON *params);
 
 /* Tool handlers - Phase 2.1: Checkpoints/Breakpoints */
 extern cJSON* mcp_tool_checkpoint_add(cJSON *params);
