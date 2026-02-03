@@ -2024,6 +2024,45 @@ TEST(snapshot_load_failure_returns_error)
     cJSON_Delete(response);
 }
 
+/* Test: Snapshot list returns array */
+TEST(snapshot_list_returns_array)
+{
+    cJSON *response;
+    cJSON *snapshots_item;
+
+    response = mcp_tool_snapshot_list(NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return snapshots array */
+    snapshots_item = cJSON_GetObjectItem(response, "snapshots");
+    ASSERT_NOT_NULL(snapshots_item);
+    ASSERT_TRUE(cJSON_IsArray(snapshots_item));
+
+    cJSON_Delete(response);
+}
+
+/* Test: Snapshot list returns directory path */
+TEST(snapshot_list_returns_directory)
+{
+    cJSON *response;
+    cJSON *dir_item;
+
+    response = mcp_tool_snapshot_list(NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should return snapshots_directory */
+    dir_item = cJSON_GetObjectItem(response, "snapshots_directory");
+    ASSERT_NOT_NULL(dir_item);
+    ASSERT_TRUE(cJSON_IsString(dir_item));
+    ASSERT_TRUE(strstr(dir_item->valuestring, "mcp_snapshots") != NULL);
+
+    cJSON_Delete(response);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -2145,6 +2184,8 @@ int main(void)
     RUN_TEST(snapshot_load_with_name_succeeds);
     RUN_TEST(snapshot_load_without_name_returns_error);
     RUN_TEST(snapshot_load_failure_returns_error);
+    RUN_TEST(snapshot_list_returns_array);
+    RUN_TEST(snapshot_list_returns_directory);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);
