@@ -1954,6 +1954,76 @@ TEST(snapshot_save_failure_returns_error)
     cJSON_Delete(response);
 }
 
+/* Test: Snapshot load with valid name succeeds */
+TEST(snapshot_load_with_name_succeeds)
+{
+    cJSON *response, *params;
+    cJSON *name_item;
+
+    test_snapshot_reset();
+    test_snapshot_set_load_result(0);  /* Success */
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "test_debug_state");
+
+    response = mcp_tool_snapshot_load(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return name */
+    name_item = cJSON_GetObjectItem(response, "name");
+    ASSERT_NOT_NULL(name_item);
+    ASSERT_STR_EQ(name_item->valuestring, "test_debug_state");
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: Snapshot load without name returns error */
+TEST(snapshot_load_without_name_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    test_snapshot_reset();
+
+    params = cJSON_CreateObject();
+
+    response = mcp_tool_snapshot_load(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* Invalid params */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: Snapshot load failure returns error */
+TEST(snapshot_load_failure_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    test_snapshot_reset();
+    test_snapshot_set_load_result(-1);  /* Simulate failure */
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "nonexistent");
+
+    response = mcp_tool_snapshot_load(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, -32004);  /* Snapshot failed */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -2072,6 +2142,9 @@ int main(void)
     RUN_TEST(snapshot_save_without_name_returns_error);
     RUN_TEST(snapshot_save_with_options_succeeds);
     RUN_TEST(snapshot_save_failure_returns_error);
+    RUN_TEST(snapshot_load_with_name_succeeds);
+    RUN_TEST(snapshot_load_without_name_returns_error);
+    RUN_TEST(snapshot_load_failure_returns_error);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);
