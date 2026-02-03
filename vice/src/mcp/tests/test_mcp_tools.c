@@ -1781,6 +1781,80 @@ TEST(keyboard_matrix_key_release)
     cJSON_Delete(response);
 }
 
+/* Test: keyboard_matrix default auto_run (should be true, execution_resumed in response) */
+TEST(keyboard_matrix_default_auto_run)
+{
+    cJSON *response, *params, *status_item, *execution_resumed_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "key", "P");
+
+    response = mcp_tools_dispatch("vice.keyboard.matrix", params);
+    ASSERT_NOT_NULL(response);
+
+    status_item = cJSON_GetObjectItem(response, "status");
+    ASSERT_NOT_NULL(status_item);
+    ASSERT_STR_EQ(status_item->valuestring, "ok");
+
+    /* execution_resumed should be true by default */
+    execution_resumed_item = cJSON_GetObjectItem(response, "execution_resumed");
+    ASSERT_NOT_NULL(execution_resumed_item);
+    ASSERT_TRUE(cJSON_IsTrue(execution_resumed_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: keyboard_matrix with auto_run=false */
+TEST(keyboard_matrix_auto_run_false)
+{
+    cJSON *response, *params, *status_item, *execution_resumed_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "key", "1");
+    cJSON_AddBoolToObject(params, "auto_run", 0);
+
+    response = mcp_tools_dispatch("vice.keyboard.matrix", params);
+    ASSERT_NOT_NULL(response);
+
+    status_item = cJSON_GetObjectItem(response, "status");
+    ASSERT_NOT_NULL(status_item);
+    ASSERT_STR_EQ(status_item->valuestring, "ok");
+
+    /* execution_resumed should be false when auto_run=false */
+    execution_resumed_item = cJSON_GetObjectItem(response, "execution_resumed");
+    ASSERT_NOT_NULL(execution_resumed_item);
+    ASSERT_TRUE(cJSON_IsFalse(execution_resumed_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: keyboard_matrix with explicit auto_run=true */
+TEST(keyboard_matrix_auto_run_true)
+{
+    cJSON *response, *params, *status_item, *execution_resumed_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "key", "E");
+    cJSON_AddBoolToObject(params, "auto_run", 1);
+
+    response = mcp_tools_dispatch("vice.keyboard.matrix", params);
+    ASSERT_NOT_NULL(response);
+
+    status_item = cJSON_GetObjectItem(response, "status");
+    ASSERT_NOT_NULL(status_item);
+    ASSERT_STR_EQ(status_item->valuestring, "ok");
+
+    /* execution_resumed should be true when auto_run=true */
+    execution_resumed_item = cJSON_GetObjectItem(response, "execution_resumed");
+    ASSERT_NOT_NULL(execution_resumed_item);
+    ASSERT_TRUE(cJSON_IsTrue(execution_resumed_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 /* Test: watch_add with symbol name */
 TEST(watch_add_with_symbol)
 {
@@ -1947,6 +2021,9 @@ int main(void)
     RUN_TEST(keyboard_matrix_hold_frames_invalid);
     RUN_TEST(keyboard_matrix_hold_ms_invalid);
     RUN_TEST(keyboard_matrix_key_release);
+    RUN_TEST(keyboard_matrix_default_auto_run);
+    RUN_TEST(keyboard_matrix_auto_run_false);
+    RUN_TEST(keyboard_matrix_auto_run_true);
     RUN_TEST(watch_add_with_symbol);
     RUN_TEST(disassemble_with_hex_address);
 
