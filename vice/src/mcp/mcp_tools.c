@@ -479,9 +479,21 @@ static const mcp_tool_t tool_registry[] = {
     { "vice.keyboard.matrix", "Direct keyboard matrix control (for games that scan keyboard directly)", mcp_tool_keyboard_matrix },
 
     /* Snapshot Management */
-    { "vice.snapshot.save", "Save emulator state to named snapshot with metadata", mcp_tool_snapshot_save },
-    { "vice.snapshot.load", "Load emulator state from named snapshot", mcp_tool_snapshot_load },
-    { "vice.snapshot.list", "List available snapshots with metadata", mcp_tool_snapshot_list },
+    { "vice.snapshot.save",
+      "Save complete emulator state to a named snapshot. "
+      "Use this to capture a debugging checkpoint that can be restored later with snapshot.load. "
+      "Snapshots are stored in ~/.config/vice/mcp_snapshots/ with JSON metadata.",
+      mcp_tool_snapshot_save },
+    { "vice.snapshot.load",
+      "Restore emulator state from a previously saved snapshot. "
+      "Use this to return to a known debugging checkpoint without re-running setup steps. "
+      "The emulator will be in the exact state it was when the snapshot was saved.",
+      mcp_tool_snapshot_load },
+    { "vice.snapshot.list",
+      "List all available snapshots with their metadata. "
+      "Returns snapshot names, descriptions, creation times, and machine types. "
+      "Use this to find the right snapshot to load for debugging.",
+      mcp_tool_snapshot_list },
 
     { NULL, NULL, NULL } /* Sentinel */
 };
@@ -1122,6 +1134,37 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "col", mcp_prop_number("Keyboard matrix column (0-7, alternative to key name)"));
             cJSON_AddItemToObject(props, "pressed", mcp_prop_boolean("Key pressed state (default: true)"));
             schema = mcp_schema_object(props, NULL);
+
+        /* Snapshot tools */
+        } else if (strcmp(name, "vice.snapshot.save") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "name", mcp_prop_string(
+                "Unique name for this snapshot (alphanumeric, underscore, hyphen only). "
+                "Choose descriptive names like 'before_crash' or 'level3_boss_fight'."));
+            cJSON_AddItemToObject(props, "description", mcp_prop_string(
+                "Human-readable description of what state this snapshot captures. "
+                "Be specific: 'Player at level 3, about to trigger sprite collision bug'."));
+            cJSON_AddItemToObject(props, "include_roms", mcp_prop_boolean(
+                "Include ROM images in snapshot (default: false). "
+                "Enable for full reproducibility, disable for smaller files."));
+            cJSON_AddItemToObject(props, "include_disks", mcp_prop_boolean(
+                "Include disk drive state in snapshot (default: false). "
+                "Enable if disk contents are relevant to the bug being debugged."));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("name"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.snapshot.load") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "name", mcp_prop_string(
+                "Name of the snapshot to load (as provided to snapshot.save). "
+                "Use snapshot.list to see available snapshots."));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("name"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.snapshot.list") == 0) {
+            schema = mcp_schema_empty();
 
         } else {
             /* Default: empty schema for unknown tools */
