@@ -66,6 +66,7 @@
 #include "util.h"
 #include <sys/stat.h>
 #include <time.h>
+#include <dirent.h>
 
 static log_t mcp_tools_log = LOG_DEFAULT;
 static int mcp_tools_initialized = 0;  /* Double-initialization guard */
@@ -5069,6 +5070,100 @@ cJSON* mcp_tool_snapshot_load(cJSON *params)
 
 cJSON* mcp_tool_snapshot_list(cJSON *params)
 {
+    cJSON *response, *snapshots_array, *snapshot_obj;
+    char *snapshots_dir;
+    DIR *dir;
+    struct dirent *entry;
+
     (void)params;
-    return mcp_error(MCP_ERROR_NOT_IMPLEMENTED, "snapshot.list not yet implemented");
+
+    log_message(mcp_tools_log, "Handling vice.snapshot.list");
+
+    /* Get snapshots directory */
+    snapshots_dir = mcp_get_snapshots_dir();
+    if (snapshots_dir == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR,
+            "Failed to access snapshots directory");
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        lib_free(snapshots_dir);
+        return NULL;
+    }
+
+    cJSON_AddStringToObject(response, "snapshots_directory", snapshots_dir);
+
+    snapshots_array = cJSON_AddArrayToObject(response, "snapshots");
+    if (snapshots_array == NULL) {
+        lib_free(snapshots_dir);
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to create snapshots array");
+    }
+
+    /* List .vsf files */
+    dir = opendir(snapshots_dir);
+    if (dir != NULL) {
+        while ((entry = readdir(dir)) != NULL) {
+            size_t name_len = strlen(entry->d_name);
+
+            /* Check for .vsf extension */
+            if (name_len > 4 && strcmp(entry->d_name + name_len - 4, ".vsf") == 0) {
+                char *vsf_path;
+                char *name;
+                cJSON *metadata;
+
+                /* Extract name (without .vsf) */
+                name = lib_strdup(entry->d_name);
+                if (name == NULL) continue;
+                name[name_len - 4] = '\0';
+
+                /* Build full path */
+                vsf_path = util_join_paths(snapshots_dir, entry->d_name, NULL);
+                if (vsf_path == NULL) {
+                    lib_free(name);
+                    continue;
+                }
+
+                /* Create snapshot entry */
+                snapshot_obj = cJSON_CreateObject();
+                if (snapshot_obj == NULL) {
+                    lib_free(vsf_path);
+                    lib_free(name);
+                    continue;
+                }
+
+                cJSON_AddStringToObject(snapshot_obj, "name", name);
+                cJSON_AddStringToObject(snapshot_obj, "path", vsf_path);
+
+                /* Add metadata if available */
+                metadata = mcp_read_snapshot_metadata(vsf_path);
+                if (metadata != NULL) {
+                    cJSON *desc = cJSON_GetObjectItem(metadata, "description");
+                    if (desc && cJSON_IsString(desc)) {
+                        cJSON_AddStringToObject(snapshot_obj, "description", desc->valuestring);
+                    }
+                    cJSON *created = cJSON_GetObjectItem(metadata, "created");
+                    if (created && cJSON_IsString(created)) {
+                        cJSON_AddStringToObject(snapshot_obj, "created", created->valuestring);
+                    }
+                    cJSON *machine = cJSON_GetObjectItem(metadata, "machine");
+                    if (machine && cJSON_IsString(machine)) {
+                        cJSON_AddStringToObject(snapshot_obj, "machine", machine->valuestring);
+                    }
+                    cJSON_Delete(metadata);
+                }
+
+                cJSON_AddItemToArray(snapshots_array, snapshot_obj);
+
+                lib_free(vsf_path);
+                lib_free(name);
+            }
+        }
+        closedir(dir);
+    }
+
+    lib_free(snapshots_dir);
+    return response;
 }
