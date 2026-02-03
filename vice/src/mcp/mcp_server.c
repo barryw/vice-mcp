@@ -51,12 +51,26 @@ static log_t mcp_log = LOG_DEFAULT;
 
 static int set_mcp_enabled(int val, void *param)
 {
+    (void)param;
+
+    int old_enabled = mcp_enabled;
     mcp_enabled = val ? 1 : 0;
 
-    if (mcp_enabled && !mcp_running) {
-        return mcp_server_start(mcp_host ? mcp_host : MCP_DEFAULT_HOST, mcp_port);
-    } else if (!mcp_enabled && mcp_running) {
-        mcp_server_stop();
+    /* Only start/stop if server is already initialized and running.
+     * During startup, the server will be started in mcp_server_init()
+     * if mcp_enabled is true.
+     * mcp_log being non-null indicates we've been through mcp_server_init()
+     */
+    if (old_enabled != mcp_enabled && mcp_log != LOG_DEFAULT) {
+        if (mcp_enabled && !mcp_running) {
+            int result = mcp_server_start(mcp_host ? mcp_host : MCP_DEFAULT_HOST, mcp_port);
+            if (result < 0) {
+                mcp_enabled = 0;  /* Reset on failure to maintain consistent state */
+                return result;
+            }
+        } else if (!mcp_enabled && mcp_running) {
+            mcp_server_stop();
+        }
     }
 
     return 0;
@@ -64,6 +78,8 @@ static int set_mcp_enabled(int val, void *param)
 
 static int set_mcp_port(int val, void *param)
 {
+    (void)param;
+
     if (val < 1024 || val > 65535) {
         return -1;
     }
@@ -81,6 +97,8 @@ static int set_mcp_port(int val, void *param)
 
 static int set_mcp_host(const char *val, void *param)
 {
+    (void)param;
+
     if (mcp_host) {
         lib_free(mcp_host);
     }
@@ -166,6 +184,14 @@ int mcp_server_init(void)
     }
 
     log_message(mcp_log, "MCP server initialized");
+
+    /* If server was enabled via config/cmdline, start it now */
+    if (mcp_enabled && !mcp_running) {
+        if (mcp_server_start(mcp_host ? mcp_host : MCP_DEFAULT_HOST, mcp_port) < 0) {
+            log_error(mcp_log, "Failed to start MCP server");
+            /* Non-fatal - server is initialized, just not started */
+        }
+    }
 
     return 0;
 }

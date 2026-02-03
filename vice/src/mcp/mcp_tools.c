@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "mcp_tools.h"
 #include "mcp_transport.h"
@@ -40,6 +41,26 @@
 #include "machine.h"
 #include "interrupt.h"
 #include "vsync.h"
+#include "monitor/mon_breakpoint.h"
+#include "monitor/mon_disassemble.h"
+#include "monitor/montypes.h"
+#include "monitor.h"  /* For monitor_startup_trap(), mon_load_symbols, etc */
+#include "attach.h"
+#include "imagecontents.h"
+#include "imagecontents/diskcontents.h"
+#include "imagecontents/diskcontents-block.h"
+#include "vdrive/vdrive.h"
+#include "charset.h"
+#include "lib.h"
+#include "screenshot.h"
+#include "machine-video.h"
+#include "videoarch.h"
+#include "autostart.h"
+#include "kbdbuf.h"
+#include "keyboard.h"
+#include "alarm.h"
+#include "joyport/joystick.h"
+#include "arch/shared/hotkeys/vhkkeysyms.h"
 
 static log_t mcp_tools_log = LOG_DEFAULT;
 static int mcp_tools_initialized = 0;  /* Double-initialization guard */
@@ -64,16 +85,235 @@ static cJSON* mcp_error(int code, const char *message)
     return response;
 }
 
+/* JSON Schema helper - creates empty object schema (for tools with no parameters)
+ * Returns JSON Schema object, or NULL on allocation failure.
+ */
+static cJSON* mcp_schema_empty(void)
+{
+    cJSON *schema = cJSON_CreateObject();
+    if (schema == NULL) {
+        return NULL;
+    }
+    cJSON_AddStringToObject(schema, "type", "object");
+    cJSON_AddFalseToObject(schema, "additionalProperties");
+    return schema;
+}
+
+/* JSON Schema helper - creates object schema with properties
+ * Returns JSON Schema object, or NULL on allocation failure.
+ * Caller must provide properties object (ownership transferred).
+ * required_array is optional (may be NULL).
+ */
+static cJSON* mcp_schema_object(cJSON *properties, cJSON *required_array)
+{
+    cJSON *schema = cJSON_CreateObject();
+    if (schema == NULL) {
+        if (properties) cJSON_Delete(properties);
+        if (required_array) cJSON_Delete(required_array);
+        return NULL;
+    }
+    cJSON_AddStringToObject(schema, "type", "object");
+    cJSON_AddItemToObject(schema, "properties", properties);
+    if (required_array != NULL) {
+        cJSON_AddItemToObject(schema, "required", required_array);
+    }
+    return schema;
+}
+
+/* JSON Schema property helper - number with description */
+static cJSON* mcp_prop_number(const char *desc)
+{
+    cJSON *prop = cJSON_CreateObject();
+    if (prop == NULL) return NULL;
+    cJSON_AddStringToObject(prop, "type", "number");
+    if (desc) cJSON_AddStringToObject(prop, "description", desc);
+    return prop;
+}
+
+/* JSON Schema property helper - string with description */
+static cJSON* mcp_prop_string(const char *desc)
+{
+    cJSON *prop = cJSON_CreateObject();
+    if (prop == NULL) return NULL;
+    cJSON_AddStringToObject(prop, "type", "string");
+    if (desc) cJSON_AddStringToObject(prop, "description", desc);
+    return prop;
+}
+
+/* JSON Schema property helper - boolean with description */
+static cJSON* mcp_prop_boolean(const char *desc)
+{
+    cJSON *prop = cJSON_CreateObject();
+    if (prop == NULL) return NULL;
+    cJSON_AddStringToObject(prop, "type", "boolean");
+    if (desc) cJSON_AddStringToObject(prop, "description", desc);
+    return prop;
+}
+
+/* JSON Schema property helper - array with description */
+static cJSON* mcp_prop_array(const char *item_type, const char *desc)
+{
+    cJSON *prop = cJSON_CreateObject();
+    cJSON *items;
+    if (prop == NULL) return NULL;
+    cJSON_AddStringToObject(prop, "type", "array");
+    if (desc) cJSON_AddStringToObject(prop, "description", desc);
+    if (item_type) {
+        items = cJSON_CreateObject();
+        if (items) {
+            cJSON_AddStringToObject(items, "type", item_type);
+            cJSON_AddItemToObject(prop, "items", items);
+        }
+    }
+    return prop;
+}
+
+/* -------------------------------------------------------------------------
+ * Symbol-aware address resolution helper
+ *
+ * Resolves an address from a cJSON value that can be:
+ *   - A number (direct address)
+ *   - A string starting with '$' (hex address, e.g., "$1000")
+ *   - A string (symbol name to look up)
+ *
+ * Returns the resolved address, or -1 if resolution fails.
+ * If error_msg is provided, it will be set to an error message on failure.
+ * ------------------------------------------------------------------------- */
+static int mcp_resolve_address(cJSON *value, const char **error_msg)
+{
+    static const char *err_null = "address value is null";
+    static const char *err_invalid = "address must be number or string";
+    static const char *err_symbol = "symbol not found";
+    static const char *err_hex = "invalid hex address";
+
+    if (value == NULL) {
+        if (error_msg) *error_msg = err_null;
+        return -1;
+    }
+
+    /* Direct number */
+    if (cJSON_IsNumber(value)) {
+        return value->valueint;
+    }
+
+    /* String - could be symbol name or hex address */
+    if (cJSON_IsString(value)) {
+        const char *str = value->valuestring;
+
+        /* Check for hex format: $xxxx or 0xXXXX */
+        if (str[0] == '$') {
+            unsigned int addr;
+            if (sscanf(str + 1, "%x", &addr) == 1) {
+                return (int)addr;
+            }
+            if (error_msg) *error_msg = err_hex;
+            return -1;
+        }
+        if (str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) {
+            unsigned int addr;
+            if (sscanf(str + 2, "%x", &addr) == 1) {
+                return (int)addr;
+            }
+            if (error_msg) *error_msg = err_hex;
+            return -1;
+        }
+
+        /* Try as symbol name */
+        int addr = mon_symbol_table_lookup_addr(e_comp_space, (char *)str);
+        if (addr >= 0) {
+            return addr;
+        }
+        if (error_msg) *error_msg = err_symbol;
+        return -1;
+    }
+
+    if (error_msg) *error_msg = err_invalid;
+    return -1;
+}
+
+/* Forward declarations for tools defined after registry */
+static cJSON* mcp_tool_tools_call(cJSON *params);
+static cJSON* mcp_tool_disassemble(cJSON *params);
+static cJSON* mcp_tool_symbols_load(cJSON *params);
+static cJSON* mcp_tool_symbols_lookup(cJSON *params);
+static cJSON* mcp_tool_watch_add(cJSON *params);
+static cJSON* mcp_tool_machine_reset(cJSON *params);
+static cJSON* mcp_tool_backtrace(cJSON *params);
+static cJSON* mcp_tool_keyboard_matrix(cJSON *params);
+static cJSON* mcp_tool_run_until(cJSON *params);
+
 /* Tool registry - const to prevent modification */
 static const mcp_tool_t tool_registry[] = {
+    /* MCP Base Protocol */
+    { "initialize", "Initialize MCP session", mcp_tool_initialize },
+    { "notifications/initialized", "Client initialized notification", mcp_tool_initialized_notification },
+
+    /* Meta */
+    { "tools/list", "List all available tools with schemas", mcp_tool_tools_list },
+    { "tools/call", "Call a tool by name", mcp_tool_tools_call },
+
+    /* Phase 1: Core tools */
     { "vice.ping", "Check if VICE is responding", mcp_tool_ping },
     { "vice.execution.run", "Resume execution", mcp_tool_execution_run },
     { "vice.execution.pause", "Pause execution", mcp_tool_execution_pause },
     { "vice.execution.step", "Step one or more instructions", mcp_tool_execution_step },
     { "vice.registers.get", "Get CPU registers", mcp_tool_registers_get },
     { "vice.registers.set", "Set CPU register value", mcp_tool_registers_set },
-    { "vice.memory.read", "Read memory range", mcp_tool_memory_read },
+    { "vice.memory.read", "Read memory range (with optional bank selection)", mcp_tool_memory_read },
     { "vice.memory.write", "Write to memory", mcp_tool_memory_write },
+    { "vice.memory.banks", "List available memory banks", mcp_tool_memory_banks },
+
+    /* Phase 2.1: Checkpoints/Breakpoints */
+    { "vice.checkpoint.add", "Add checkpoint/breakpoint", mcp_tool_checkpoint_add },
+    { "vice.checkpoint.delete", "Delete checkpoint", mcp_tool_checkpoint_delete },
+    { "vice.checkpoint.list", "List all checkpoints", mcp_tool_checkpoint_list },
+    { "vice.checkpoint.toggle", "Enable/disable checkpoint", mcp_tool_checkpoint_toggle },
+    { "vice.checkpoint.set_condition", "Set checkpoint condition", mcp_tool_checkpoint_set_condition },
+    { "vice.checkpoint.set_ignore_count", "Set checkpoint ignore count", mcp_tool_checkpoint_set_ignore_count },
+
+    /* Phase 2.2: Sprite Control (C64/C128/DTV only) */
+    { "vice.sprite.get", "Get sprite state", mcp_tool_sprite_get },
+    { "vice.sprite.set", "Set sprite properties", mcp_tool_sprite_set },
+
+    /* Phase 2.3: Chip State Access */
+    { "vice.vicii.get_state", "Get VIC-II internal state", mcp_tool_vicii_get_state },
+    { "vice.vicii.set_state", "Set VIC-II registers", mcp_tool_vicii_set_state },
+    { "vice.sid.get_state", "Get SID state (voices, filter)", mcp_tool_sid_get_state },
+    { "vice.sid.set_state", "Set SID registers", mcp_tool_sid_set_state },
+    { "vice.cia.get_state", "Get CIA state (timers, ports)", mcp_tool_cia_get_state },
+    { "vice.cia.set_state", "Set CIA registers", mcp_tool_cia_set_state },
+
+    /* Phase 2.4: Disk Management */
+    { "vice.disk.attach", "Attach disk image to drive", mcp_tool_disk_attach },
+    { "vice.disk.detach", "Detach disk image from drive", mcp_tool_disk_detach },
+    { "vice.disk.list", "List directory contents", mcp_tool_disk_list },
+    { "vice.disk.read_sector", "Read raw sector data", mcp_tool_disk_read_sector },
+
+    /* Autostart */
+    { "vice.autostart", "Autostart a PRG or disk image", mcp_tool_autostart },
+
+    /* Machine control */
+    { "vice.machine.reset", "Reset the machine (soft or hard reset)", mcp_tool_machine_reset },
+
+    /* Phase 2.5: Display Capture */
+    { "vice.display.screenshot", "Capture screenshot (to file or base64)", mcp_tool_display_screenshot },
+    { "vice.display.get_dimensions", "Get display dimensions", mcp_tool_display_get_dimensions },
+
+    /* Phase 3.1: Input Control */
+    { "vice.keyboard.type", "Type text (uppercase ASCII displays as uppercase on C64 by default)", mcp_tool_keyboard_type },
+    { "vice.keyboard.key_press", "Press a specific key", mcp_tool_keyboard_key_press },
+    { "vice.keyboard.key_release", "Release a specific key", mcp_tool_keyboard_key_release },
+    { "vice.joystick.set", "Set joystick state", mcp_tool_joystick_set },
+
+    /* Phase 4: Advanced Debugging */
+    { "vice.disassemble", "Disassemble memory to 6502 instructions", mcp_tool_disassemble },
+    { "vice.symbols.load", "Load symbol/label file (VICE, KickAssembler, simple formats)", mcp_tool_symbols_load },
+    { "vice.symbols.lookup", "Lookup symbol by name or address", mcp_tool_symbols_lookup },
+    { "vice.watch.add", "Add memory watchpoint (shorthand for checkpoint with store/load)", mcp_tool_watch_add },
+    { "vice.backtrace", "Show call stack (JSR return addresses)", mcp_tool_backtrace },
+    { "vice.run_until", "Run until address or for N cycles (with timeout)", mcp_tool_run_until },
+    { "vice.keyboard.matrix", "Direct keyboard matrix control (for games that scan keyboard directly)", mcp_tool_keyboard_matrix },
+
     { NULL, NULL, NULL } /* Sentinel */
 };
 
@@ -174,6 +414,9 @@ cJSON* mcp_tools_dispatch(const char *tool_name, cJSON *params)
 cJSON* mcp_tool_ping(cJSON *params)
 {
     cJSON *response;
+    const char *exec_state;
+
+    (void)params;
 
     log_message(mcp_tools_log, "Handling vice.ping");
 
@@ -186,40 +429,638 @@ cJSON* mcp_tool_ping(cJSON *params)
     cJSON_AddStringToObject(response, "version", VERSION);
     cJSON_AddStringToObject(response, "machine", machine_get_name());
 
+    /* Report execution state based on exit_mon flag
+     * exit_mon_no = 0: paused (in monitor)
+     * exit_mon_continue = 1: running
+     * Other values indicate transitions */
+    switch (exit_mon) {
+        case 0:  /* exit_mon_no */
+            exec_state = "paused";
+            break;
+        case 1:  /* exit_mon_continue */
+            exec_state = "running";
+            break;
+        default:
+            exec_state = "transitioning";
+            break;
+    }
+    cJSON_AddStringToObject(response, "execution", exec_state);
+
     return response;
 }
 
+/* =================================================================
+ * MCP Base Protocol Handlers
+ * ================================================================= */
+
+cJSON* mcp_tool_initialize(cJSON *params)
+{
+    cJSON *response, *capabilities, *server_info;
+    cJSON *protocol_version;
+    const char *version_str;
+
+    log_message(mcp_tools_log, "Initialize request received");
+
+    /* Get protocol version from params */
+    protocol_version = cJSON_GetObjectItem(params, "protocolVersion");
+    if (protocol_version != NULL && cJSON_IsString(protocol_version)) {
+        version_str = protocol_version->valuestring;
+        log_message(mcp_tools_log, "Client protocol version: %s", version_str);
+
+        /* Verify we support this version */
+        if (strcmp(version_str, "2025-11-25") != 0 &&
+            strcmp(version_str, "2025-06-18") != 0 &&
+            strcmp(version_str, "2024-11-05") != 0) {
+            log_warning(mcp_tools_log, "Unsupported protocol version: %s", version_str);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                           "Unsupported protocol version (supported: 2025-11-25, 2025-06-18, 2024-11-05)");
+        }
+    } else {
+        log_warning(mcp_tools_log, "No protocol version specified, assuming 2024-11-05");
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return NULL;
+    }
+
+    /* Protocol version we're using */
+    cJSON_AddStringToObject(response, "protocolVersion", "2025-11-25");
+
+    /* Server capabilities */
+    capabilities = cJSON_CreateObject();
+    if (capabilities == NULL) {
+        cJSON_Delete(response);
+        return NULL;
+    }
+
+    /* Add logging capability (like working servers) */
+    cJSON *logging_cap = cJSON_CreateObject();
+    if (logging_cap != NULL) {
+        cJSON_AddItemToObject(capabilities, "logging", logging_cap);
+    }
+
+    /* Add tools capability with listChanged */
+    cJSON *tools_cap = cJSON_CreateObject();
+    if (tools_cap != NULL) {
+        cJSON_AddBoolToObject(tools_cap, "listChanged", 1);  /* true */
+        cJSON_AddItemToObject(capabilities, "tools", tools_cap);
+    }
+
+    cJSON_AddItemToObject(response, "capabilities", capabilities);
+
+    /* Server info */
+    server_info = cJSON_CreateObject();
+    if (server_info != NULL) {
+        cJSON_AddStringToObject(server_info, "name", "VICE MCP");
+        cJSON_AddStringToObject(server_info, "version", VERSION);
+        cJSON_AddItemToObject(response, "serverInfo", server_info);
+    }
+
+    log_message(mcp_tools_log, "Initialize complete - protocol version 2025-11-25");
+
+    return response;
+}
+
+cJSON* mcp_tool_initialized_notification(cJSON *params)
+{
+    (void)params;  /* Unused */
+
+    log_message(mcp_tools_log, "Client initialized notification received");
+
+    /* Notifications don't get responses per JSON-RPC 2.0 spec */
+    /* Return NULL to signal no response body */
+    return NULL;
+}
+
+/* =================================================================
+ * Meta Tools
+ * ================================================================= */
+
+/* tools/call - MCP standard method to invoke a tool */
+static cJSON* mcp_tool_tools_call(cJSON *params)
+{
+    cJSON *name_item, *args_item;
+    const char *tool_name;
+    int i;
+    char *params_str, *args_str;
+    int args_created = 0;
+
+    log_message(mcp_tools_log, "Handling tools/call");
+
+    /* Debug: dump full params */
+    params_str = cJSON_PrintUnformatted(params);
+    if (params_str != NULL) {
+        log_message(mcp_tools_log, "tools/call params: %s", params_str);
+        free(params_str);
+    }
+
+    /* Extract tool name from params */
+    name_item = cJSON_GetObjectItem(params, "name");
+    if (name_item == NULL || !cJSON_IsString(name_item)) {
+        log_error(mcp_tools_log, "tools/call: missing or invalid 'name' parameter");
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing 'name' parameter");
+    }
+    tool_name = name_item->valuestring;
+
+    /* Extract arguments (optional) */
+    args_item = cJSON_GetObjectItem(params, "arguments");
+    if (args_item == NULL) {
+        log_message(mcp_tools_log, "tools/call: no 'arguments' found, creating empty object");
+        args_item = cJSON_CreateObject();  /* Empty args */
+        args_created = 1;
+    }
+
+    /* Debug: dump arguments being passed */
+    args_str = cJSON_PrintUnformatted(args_item);
+    if (args_str != NULL) {
+        log_message(mcp_tools_log, "tools/call: arguments = %s", args_str);
+        free(args_str);
+    }
+
+    log_message(mcp_tools_log, "tools/call: invoking tool '%s'", tool_name);
+
+    /* Find and invoke the tool */
+    for (i = 0; tool_registry[i].name != NULL; i++) {
+        if (strcmp(tool_registry[i].name, tool_name) == 0) {
+            cJSON *tool_result = tool_registry[i].handler(args_item);
+
+            /* Clean up args if we created it */
+            if (args_created) {
+                cJSON_Delete(args_item);
+                args_item = NULL;
+            }
+
+            /* Wrap result in MCP tools/call response format */
+            cJSON *response = cJSON_CreateObject();
+            if (response == NULL) {
+                if (tool_result != NULL) cJSON_Delete(tool_result);
+                return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+            }
+
+            /* Check if tool returned an error */
+            cJSON *code_item = cJSON_GetObjectItem(tool_result, "code");
+            if (code_item != NULL && cJSON_IsNumber(code_item)) {
+                /* Tool returned an error - pass it through */
+                cJSON_Delete(response);
+                return tool_result;
+            }
+
+            /* Wrap successful result in content array */
+            cJSON *content = cJSON_CreateArray();
+            if (content == NULL) {
+                cJSON_Delete(response);
+                if (tool_result != NULL) cJSON_Delete(tool_result);
+                return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+            }
+
+            cJSON *text_content = cJSON_CreateObject();
+            if (text_content == NULL) {
+                cJSON_Delete(content);
+                cJSON_Delete(response);
+                if (tool_result != NULL) cJSON_Delete(tool_result);
+                return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+            }
+
+            cJSON_AddStringToObject(text_content, "type", "text");
+
+            /* Convert tool result to JSON string for text content */
+            char *result_str = cJSON_PrintUnformatted(tool_result);
+            if (result_str == NULL) {
+                cJSON_Delete(text_content);
+                cJSON_Delete(content);
+                cJSON_Delete(response);
+                if (tool_result != NULL) cJSON_Delete(tool_result);
+                return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+            }
+            cJSON_AddStringToObject(text_content, "text", result_str);
+            free(result_str);
+
+            if (tool_result != NULL) cJSON_Delete(tool_result);
+
+            cJSON_AddItemToArray(content, text_content);
+            cJSON_AddItemToObject(response, "content", content);
+
+            return response;
+        }
+    }
+
+    /* Clean up args if we created it */
+    if (args_created) {
+        cJSON_Delete(args_item);
+    }
+
+    log_error(mcp_tools_log, "tools/call: tool not found: %s", tool_name);
+    return mcp_error(MCP_ERROR_METHOD_NOT_FOUND, "Tool not found");
+}
+
+/* This is the replacement for mcp_tool_tools_list - using proper JSON Schema */
+cJSON* mcp_tool_tools_list(cJSON *params)
+{
+    cJSON *response, *tools_array, *tool_obj, *schema, *props, *required;
+    int i;
+
+    (void)params;  /* Unused */
+
+    log_message(mcp_tools_log, "Handling tools/list");
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    tools_array = cJSON_CreateArray();
+    if (tools_array == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Build tool list with JSON Schema for each tool */
+    for (i = 0; tool_registry[i].name != NULL; i++) {
+        const char *name = tool_registry[i].name;
+        const char *desc = tool_registry[i].description;
+
+        tool_obj = cJSON_CreateObject();
+        if (tool_obj == NULL) {
+            cJSON_Delete(tools_array);
+            cJSON_Delete(response);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        cJSON_AddStringToObject(tool_obj, "name", name);
+        cJSON_AddStringToObject(tool_obj, "description", desc);
+
+        /* Build inputSchema for each tool */
+        schema = NULL;
+
+        if (strcmp(name, "initialize") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "protocolVersion", mcp_prop_string("Protocol version"));
+            cJSON_AddItemToObject(props, "capabilities", cJSON_CreateObject());
+            cJSON_AddItemToObject(props, "clientInfo", cJSON_CreateObject());
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "notifications/initialized") == 0 ||
+                   strcmp(name, "tools/list") == 0 ||
+                   strcmp(name, "vice.ping") == 0 ||
+                   strcmp(name, "vice.execution.run") == 0 ||
+                   strcmp(name, "vice.execution.pause") == 0 ||
+                   strcmp(name, "vice.checkpoint.list") == 0 ||
+                   strcmp(name, "vice.sprite.get") == 0 ||
+                   strcmp(name, "vice.vicii.get_state") == 0 ||
+                   strcmp(name, "vice.vicii.set_state") == 0 ||
+                   strcmp(name, "vice.sid.get_state") == 0 ||
+                   strcmp(name, "vice.sid.set_state") == 0 ||
+                   strcmp(name, "vice.cia.get_state") == 0 ||
+                   strcmp(name, "vice.cia.set_state") == 0 ||
+                   strcmp(name, "vice.display.get_dimensions") == 0) {
+            /* Tools with no parameters */
+            schema = mcp_schema_empty();
+
+        } else if (strcmp(name, "vice.checkpoint.set_condition") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "checkpoint_num", mcp_prop_number("Checkpoint number"));
+            cJSON_AddItemToObject(props, "condition", mcp_prop_string("Condition expression (e.g., 'A == $42')"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("checkpoint_num"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("condition"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.disk.attach") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "unit", mcp_prop_number("Drive unit (8-11)"));
+            cJSON_AddItemToObject(props, "path", mcp_prop_string("Path to disk image (.d64, .g64, etc)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("unit"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("path"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.disk.detach") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "unit", mcp_prop_number("Drive unit (8-11)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("unit"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.disk.list") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "unit", mcp_prop_number("Drive unit (8-11)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("unit"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.disk.read_sector") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "unit", mcp_prop_number("Drive unit (8-11)"));
+            cJSON_AddItemToObject(props, "track", mcp_prop_number("Track number (1-42 for D64)"));
+            cJSON_AddItemToObject(props, "sector", mcp_prop_number("Sector number (0-20 depending on track)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("unit"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("track"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("sector"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.autostart") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "path", mcp_prop_string("Path to PRG file or disk image (.d64, .g64, .prg)"));
+            cJSON_AddItemToObject(props, "program", mcp_prop_string("Program name to load from disk image (optional)"));
+            cJSON_AddItemToObject(props, "run", mcp_prop_boolean("Run after loading (default: true)"));
+            cJSON_AddItemToObject(props, "index", mcp_prop_number("Program index on disk, 0-based (default: 0)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("path"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.machine.reset") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "mode", mcp_prop_string("Reset mode: 'soft' (CPU reset, default) or 'hard' (power cycle)"));
+            cJSON_AddItemToObject(props, "run_after", mcp_prop_boolean("Resume execution after reset (default: true)"));
+            /* No required params - all optional */
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.display.screenshot") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "path", mcp_prop_string("File path to save screenshot (optional if return_base64=true)"));
+            cJSON_AddItemToObject(props, "format", mcp_prop_string("Image format: PNG or BMP (default: PNG)"));
+            cJSON_AddItemToObject(props, "return_base64", mcp_prop_boolean("Return screenshot as base64 data URI (default: false)"));
+            /* No required params since path is optional when return_base64 is true */
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.execution.step") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "count", mcp_prop_number("Number of instructions to step"));
+            cJSON_AddItemToObject(props, "stepOver", mcp_prop_boolean("Step over subroutines"));
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.registers.get") == 0) {
+            schema = mcp_schema_empty();
+
+        } else if (strcmp(name, "vice.registers.set") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "register", mcp_prop_string("Register name: PC|A|X|Y|SP|N|V|B|D|I|Z|C"));
+            cJSON_AddItemToObject(props, "value", mcp_prop_number("Register value"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("register"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("value"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.memory.read") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "address", mcp_prop_string("Address: number, hex string ($1000), or symbol name"));
+            cJSON_AddItemToObject(props, "size", mcp_prop_number("Bytes to read (1-65535)"));
+            cJSON_AddItemToObject(props, "bank", mcp_prop_string("Optional: Memory bank name (e.g., 'ram' to read RAM under ROM). Use vice.memory.banks to list available banks."));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("address"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("size"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.memory.banks") == 0) {
+            schema = mcp_schema_empty();
+
+        } else if (strcmp(name, "vice.memory.write") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "address", mcp_prop_string("Address: number, hex string ($1000), or symbol name"));
+            cJSON_AddItemToObject(props, "data", mcp_prop_array("number", "Bytes to write (0-255 each)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("address"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("data"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.checkpoint.add") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "start", mcp_prop_string("Start address: number, hex string ($1000), or symbol name"));
+            cJSON_AddItemToObject(props, "end", mcp_prop_string("End address: number, hex, or symbol (optional, default=start)"));
+            cJSON_AddItemToObject(props, "stop", mcp_prop_boolean("Stop execution when hit (default=true)"));
+            cJSON_AddItemToObject(props, "load", mcp_prop_boolean("Break on memory read (default=false)"));
+            cJSON_AddItemToObject(props, "store", mcp_prop_boolean("Break on memory write (default=false)"));
+            cJSON_AddItemToObject(props, "exec", mcp_prop_boolean("Break on execution (default=true)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("start"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.checkpoint.delete") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "checkpoint_num", mcp_prop_number("Checkpoint number to delete"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("checkpoint_num"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.checkpoint.toggle") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "checkpoint_num", mcp_prop_number("Checkpoint number"));
+            cJSON_AddItemToObject(props, "enabled", mcp_prop_boolean("Enable (true) or disable (false)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("checkpoint_num"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("enabled"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.checkpoint.set_ignore_count") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "checkpoint_num", mcp_prop_number("Checkpoint number"));
+            cJSON_AddItemToObject(props, "count", mcp_prop_number("Number of hits to ignore"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("checkpoint_num"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("count"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.sprite.set") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "sprite", mcp_prop_number("Sprite number 0-7"));
+            cJSON_AddItemToObject(props, "x", mcp_prop_number("X position 0-511"));
+            cJSON_AddItemToObject(props, "y", mcp_prop_number("Y position 0-255"));
+            cJSON_AddItemToObject(props, "enabled", mcp_prop_boolean("Enable sprite"));
+            cJSON_AddItemToObject(props, "multicolor", mcp_prop_boolean("Multicolor mode"));
+            cJSON_AddItemToObject(props, "expand_x", mcp_prop_boolean("Double width"));
+            cJSON_AddItemToObject(props, "expand_y", mcp_prop_boolean("Double height"));
+            cJSON_AddItemToObject(props, "priority_foreground", mcp_prop_boolean("Draw over background"));
+            cJSON_AddItemToObject(props, "color", mcp_prop_number("Sprite color 0-15"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("sprite"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.keyboard.type") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "text", mcp_prop_string("Text to type (converts to PETSCII). Use \\n for Return."));
+            cJSON_AddItemToObject(props, "petscii_upper", mcp_prop_boolean("Default true: uppercase ASCII displays as uppercase on C64. Set false for raw PETSCII (uppercase ASCII maps to graphics)"));
+            cJSON_AddItemToObject(props, "auto_run", mcp_prop_boolean("Default true: resume emulation after typing so KERNAL processes input. Set false to just queue without resuming."));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("text"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.keyboard.key_press") == 0 || strcmp(name, "vice.keyboard.key_release") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "key", mcp_prop_string("Key name or VHK code. Names: Return, Space, BackSpace, Delete, Escape, Tab, Up, Down, Left, Right, Home, End, F1-F8, or single char"));
+            cJSON_AddItemToObject(props, "modifiers", mcp_prop_array("string", "Optional modifiers: shift, control, ctrl, alt, meta, command, cmd"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("key"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.joystick.set") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "port", mcp_prop_number("Joystick port 1 or 2 (default=1)"));
+            cJSON_AddItemToObject(props, "direction", mcp_prop_string("Direction: up, down, left, right, center, or array for diagonals"));
+            cJSON_AddItemToObject(props, "fire", mcp_prop_boolean("Fire button state (default=false)"));
+            schema = mcp_schema_object(props, NULL);
+
+        /* Phase 4: Advanced Debugging schemas */
+        } else if (strcmp(name, "vice.disassemble") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "address", mcp_prop_string("Start address: number, hex string ($1000), or symbol name"));
+            cJSON_AddItemToObject(props, "count", mcp_prop_number("Number of instructions to disassemble (default: 10, max: 100)"));
+            cJSON_AddItemToObject(props, "show_symbols", mcp_prop_boolean("Show symbol names in output (default: true)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("address"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.symbols.load") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "path", mcp_prop_string("Path to symbol file (.sym, .lbl)"));
+            cJSON_AddItemToObject(props, "format", mcp_prop_string("Format: 'auto' (default), 'kickasm', 'vice', or 'simple'. Auto-detects KickAssembler (.label/.namespace) vs VICE (al C:xxxx) format"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("path"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.symbols.lookup") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "name", mcp_prop_string("Symbol name to look up (returns address)"));
+            cJSON_AddItemToObject(props, "address", mcp_prop_number("Address to look up (returns symbol name)"));
+            /* Neither required - one or the other */
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.watch.add") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "address", mcp_prop_string("Address: number, hex string ($1000), or symbol name"));
+            cJSON_AddItemToObject(props, "size", mcp_prop_number("Number of bytes to watch (default: 1)"));
+            cJSON_AddItemToObject(props, "type", mcp_prop_string("Watch type: 'read', 'write', or 'both' (default: 'write')"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("address"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.backtrace") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "depth", mcp_prop_number("Max stack frames to show (default: 16, max: 64)"));
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.run_until") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "address", mcp_prop_string("Target address: number, hex, or symbol (stops when PC reaches this)"));
+            cJSON_AddItemToObject(props, "cycles", mcp_prop_number("Max cycles to run (timeout, not yet implemented)"));
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.keyboard.matrix") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "key", mcp_prop_string("Key name: A-Z, 0-9, SPACE, RETURN, F1, F3, F5, F7, UP, DOWN, LEFT, RIGHT, STOP"));
+            cJSON_AddItemToObject(props, "row", mcp_prop_number("Keyboard matrix row (0-7, alternative to key name)"));
+            cJSON_AddItemToObject(props, "col", mcp_prop_number("Keyboard matrix column (0-7, alternative to key name)"));
+            cJSON_AddItemToObject(props, "pressed", mcp_prop_boolean("Key pressed state (default: true)"));
+            schema = mcp_schema_object(props, NULL);
+
+        } else {
+            /* Default: empty schema for unknown tools */
+            schema = mcp_schema_empty();
+        }
+
+        if (schema) {
+            cJSON_AddItemToObject(tool_obj, "inputSchema", schema);
+        }
+
+        cJSON_AddItemToArray(tools_array, tool_obj);
+    }
+
+    cJSON_AddItemToObject(response, "tools", tools_array);
+    cJSON_AddNumberToObject(response, "count", i);
+
+    return response;
+}
 cJSON* mcp_tool_execution_run(cJSON *params)
 {
+    cJSON *response;
+
+    (void)params;  /* Unused */
+
     log_message(mcp_tools_log, "Handling vice.execution.run");
 
-    /* TODO: Implement using VICE's interrupt system (IK_MONITOR) */
-    /* This requires integration with monitor/interrupt.h */
-    /* For now, return unimplemented error */
+    /* Signal monitor to exit and continue execution */
+    exit_mon = exit_mon_continue;
 
-    return mcp_error(MCP_ERROR_NOT_IMPLEMENTED, "Execution control not yet implemented - use VICE monitor");
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddStringToObject(response, "message", "Execution resumed");
+
+    return response;
 }
 
 cJSON* mcp_tool_execution_pause(cJSON *params)
 {
+    cJSON *response;
+
+    (void)params;  /* Unused */
+
     log_message(mcp_tools_log, "Handling vice.execution.pause");
 
-    /* TODO: Implement using VICE's interrupt system (IK_MONITOR) */
-    /* This requires integration with monitor/interrupt.h */
-    /* For now, return unimplemented error */
+    /* Trigger monitor entry via interrupt trap
+     * This will pause execution at the next safe point */
+    monitor_startup_trap();
 
-    return mcp_error(MCP_ERROR_NOT_IMPLEMENTED, "Execution control not yet implemented - use VICE monitor");
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddStringToObject(response, "message", "Pause requested (will stop at next safe point)");
+
+    return response;
 }
 
 cJSON* mcp_tool_execution_step(cJSON *params)
 {
+    cJSON *response;
+    cJSON *count_item, *step_over_item;
+    int count = 1;
+    bool step_over = false;
+
     log_message(mcp_tools_log, "Handling vice.execution.step");
 
-    /* TODO: Implement using VICE's step mechanism */
-    /* This requires integration with monitor code */
-    /* For now, return unimplemented error */
+    /* Parse optional count parameter */
+    if (params != NULL) {
+        count_item = cJSON_GetObjectItem(params, "count");
+        if (count_item != NULL && cJSON_IsNumber(count_item)) {
+            count = count_item->valueint;
+            if (count < 1) {
+                count = 1;
+            }
+        }
 
-    return mcp_error(MCP_ERROR_NOT_IMPLEMENTED, "Execution control not yet implemented - use VICE monitor");
+        step_over_item = cJSON_GetObjectItem(params, "stepOver");
+        if (step_over_item != NULL && cJSON_IsBool(step_over_item)) {
+            step_over = cJSON_IsTrue(step_over_item);
+        }
+    }
+
+    /* Use VICE's step functions:
+     * - mon_instructions_step: Step into subroutines
+     * - mon_instructions_next: Step over subroutines */
+    if (step_over) {
+        mon_instructions_next(count);
+    } else {
+        mon_instructions_step(count);
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "instructions", count);
+    cJSON_AddBoolToObject(response, "step_over", step_over);
+
+    return response;
 }
 
 cJSON* mcp_tool_registers_get(cJSON *params)
@@ -283,69 +1124,59 @@ cJSON* mcp_tool_registers_set(cJSON *params)
     register_name = register_item->valuestring;
     value = value_item->valueint;
 
-    /* Set register using VICE APIs */
+    /* Set register using VICE register access macros */
     if (strcmp(register_name, "PC") == 0) {
         if (value < 0 || value > 0xFFFF) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "PC value out of range (must be 0-65535)");
         }
-        maincpu_set_pc(value);
+        MOS6510_REGS_SET_PC(&maincpu_regs, (uint16_t)value);
     } else if (strcmp(register_name, "A") == 0) {
         if (value < 0 || value > 0xFF) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "A value out of range (must be 0-255)");
         }
-        maincpu_set_a(value);
+        MOS6510_REGS_SET_A(&maincpu_regs, (uint8_t)value);
     } else if (strcmp(register_name, "X") == 0) {
         if (value < 0 || value > 0xFF) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "X value out of range (must be 0-255)");
         }
-        maincpu_set_x(value);
+        MOS6510_REGS_SET_X(&maincpu_regs, (uint8_t)value);
     } else if (strcmp(register_name, "Y") == 0) {
         if (value < 0 || value > 0xFF) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "Y value out of range (must be 0-255)");
         }
-        maincpu_set_y(value);
+        MOS6510_REGS_SET_Y(&maincpu_regs, (uint8_t)value);
     } else if (strcmp(register_name, "SP") == 0) {
         if (value < 0 || value > 0xFF) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "SP value out of range (must be 0-255)");
         }
-        maincpu_set_sp(value);
-    } else if (strcmp(register_name, "N") == 0) {
-        if (value < 0 || value > 1) {
-            return mcp_error(MCP_ERROR_INVALID_PARAMS, "N flag value out of range (must be 0 or 1)");
-        }
-        maincpu_set_sign(value);
+        MOS6510_REGS_SET_SP(&maincpu_regs, (uint8_t)value);
     } else if (strcmp(register_name, "V") == 0) {
         if (value < 0 || value > 1) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "V flag value out of range (must be 0 or 1)");
         }
-        maincpu_set_overflow(value);
+        MOS6510_REGS_SET_OVERFLOW(&maincpu_regs, value);
     } else if (strcmp(register_name, "B") == 0) {
         if (value < 0 || value > 1) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "B flag value out of range (must be 0 or 1)");
         }
-        maincpu_set_break(value);
+        MOS6510_REGS_SET_BREAK(&maincpu_regs, value);
     } else if (strcmp(register_name, "D") == 0) {
         if (value < 0 || value > 1) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "D flag value out of range (must be 0 or 1)");
         }
-        maincpu_set_decimal(value);
+        MOS6510_REGS_SET_DECIMAL(&maincpu_regs, value);
     } else if (strcmp(register_name, "I") == 0) {
         if (value < 0 || value > 1) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "I flag value out of range (must be 0 or 1)");
         }
-        maincpu_set_interrupt(value);
-    } else if (strcmp(register_name, "Z") == 0) {
-        if (value < 0 || value > 1) {
-            return mcp_error(MCP_ERROR_INVALID_PARAMS, "Z flag value out of range (must be 0 or 1)");
-        }
-        maincpu_set_zero(value);
+        MOS6510_REGS_SET_INTERRUPT(&maincpu_regs, value);
     } else if (strcmp(register_name, "C") == 0) {
         if (value < 0 || value > 1) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "C flag value out of range (must be 0 or 1)");
         }
-        maincpu_set_carry(value);
+        MOS6510_REGS_SET_CARRY(&maincpu_regs, value);
     } else {
-        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Unknown register name (must be PC, A, X, Y, SP, N, V, B, D, I, Z, or C)");
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Unknown register name (must be PC, A, X, Y, SP, V, B, D, I, or C)");
     }
 
     /* Build success response */
@@ -369,16 +1200,24 @@ cJSON* mcp_tool_registers_set(cJSON *params)
  *
  * For example: reading 4 bytes from 0xFFFE will return bytes at addresses
  * 0xFFFE, 0xFFFF, 0x0000, 0x0001 (in that order).
+ *
+ * Optional "bank" parameter allows reading from specific memory banks
+ * (e.g., "ram" to read RAM under ROM, "io" to read I/O space).
+ * Use vice.memory.banks to list available bank names.
  */
 cJSON* mcp_tool_memory_read(cJSON *params)
 {
     cJSON *response, *data_array;
-    cJSON *addr_item, *size_item;
+    cJSON *addr_item, *size_item, *bank_item;
     uint16_t address;
-    unsigned int i; /* Changed from uint16_t to prevent infinite loop */
+    unsigned int i;
     int size;
+    int bank = -1;  /* -1 = use default CPU view */
     uint8_t value;
     char hex_str[3];
+    const char *bank_name = NULL;
+    const char *error_msg;
+    int resolved;
 
     log_message(mcp_tools_log, "Handling vice.memory.read");
 
@@ -389,18 +1228,39 @@ cJSON* mcp_tool_memory_read(cJSON *params)
 
     addr_item = cJSON_GetObjectItem(params, "address");
     size_item = cJSON_GetObjectItem(params, "size");
+    bank_item = cJSON_GetObjectItem(params, "bank");
 
-    if (!cJSON_IsNumber(addr_item) || !cJSON_IsNumber(size_item)) {
-        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Invalid parameter types");
+    /* Resolve address - can be number, hex string, or symbol */
+    if (addr_item == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "address required");
     }
-
-    /* Validate address range */
-    if (addr_item->valueint < 0 || addr_item->valueint > 0xFFFF) {
-        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Address out of range (must be 0-65535)");
+    resolved = mcp_resolve_address(addr_item, &error_msg);
+    if (resolved < 0) {
+        char err_buf[128];
+        snprintf(err_buf, sizeof(err_buf), "Cannot resolve address: %s", error_msg);
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
     }
+    address = (uint16_t)resolved;
 
-    address = (uint16_t)addr_item->valueint;
+    if (!cJSON_IsNumber(size_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "size required (number)");
+    }
     size = size_item->valueint;
+
+    /* Handle optional bank parameter */
+    if (bank_item != NULL) {
+        if (cJSON_IsString(bank_item)) {
+            bank_name = bank_item->valuestring;
+            bank = mem_bank_from_name(bank_name);
+            if (bank < 0) {
+                return mcp_error(MCP_ERROR_INVALID_PARAMS, "Unknown bank name (use vice.memory.banks to list available banks)");
+            }
+        } else if (cJSON_IsNumber(bank_item)) {
+            bank = bank_item->valueint;
+        } else {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "Bank must be a string name or number");
+        }
+    }
 
     /* Limit size to prevent infinite loop and excessive memory */
     if (size < 1 || size > 65535) {
@@ -415,6 +1275,12 @@ cJSON* mcp_tool_memory_read(cJSON *params)
 
     cJSON_AddNumberToObject(response, "address", address);
     cJSON_AddNumberToObject(response, "size", size);
+    if (bank >= 0) {
+        cJSON_AddNumberToObject(response, "bank", bank);
+        if (bank_name != NULL) {
+            cJSON_AddStringToObject(response, "bank_name", bank_name);
+        }
+    }
 
     data_array = cJSON_CreateArray();
     if (data_array == NULL) {
@@ -428,7 +1294,13 @@ cJSON* mcp_tool_memory_read(cJSON *params)
         uint16_t addr;
 
         addr = (uint16_t)(address + i);  /* Wrap at 64KB */
-        value = mem_read(addr);
+
+        /* Use bank-specific read if bank specified, otherwise use CPU view */
+        if (bank >= 0) {
+            value = mem_bank_peek(bank, addr, NULL);
+        } else {
+            value = mem_read(addr);
+        }
         snprintf(hex_str, sizeof(hex_str), "%02X", value);
 
         hex_item = cJSON_CreateString(hex_str);
@@ -461,6 +1333,8 @@ cJSON* mcp_tool_memory_write(cJSON *params)
     uint16_t address;
     int i, array_size;
     uint8_t byte_val;
+    const char *error_msg;
+    int resolved;
 
     log_message(mcp_tools_log, "Handling vice.memory.write");
 
@@ -472,20 +1346,22 @@ cJSON* mcp_tool_memory_write(cJSON *params)
     addr_item = cJSON_GetObjectItem(params, "address");
     data_item = cJSON_GetObjectItem(params, "data");
 
-    if (!cJSON_IsNumber(addr_item)) {
-        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid address parameter");
+    /* Resolve address - can be number, hex string, or symbol */
+    if (addr_item == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "address required");
     }
+    resolved = mcp_resolve_address(addr_item, &error_msg);
+    if (resolved < 0) {
+        char err_buf[128];
+        snprintf(err_buf, sizeof(err_buf), "Cannot resolve address: %s", error_msg);
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+    }
+    address = (uint16_t)resolved;
 
     if (!cJSON_IsArray(data_item)) {
         return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid data parameter (must be array)");
     }
 
-    /* Validate address range */
-    if (addr_item->valueint < 0 || addr_item->valueint > 0xFFFF) {
-        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Address out of range (must be 0-65535)");
-    }
-
-    address = (uint16_t)addr_item->valueint;
     array_size = cJSON_GetArraySize(data_item);
 
     if (array_size < 1 || array_size > 65535) {
@@ -522,8 +1398,3371 @@ cJSON* mcp_tool_memory_write(cJSON *params)
     return response;
 }
 
+/* List available memory banks (RAM, ROM, IO, etc.)
+ *
+ * Returns the list of memory banks available for the current machine.
+ * Bank names can be used with the 'bank' parameter of vice.memory.read
+ * to access specific memory areas (e.g., reading RAM under ROM).
+ */
+cJSON* mcp_tool_memory_banks(cJSON *params)
+{
+    cJSON *response, *banks_array;
+    const char **bank_names;
+    const int *bank_numbers;
+    int i;
+
+    (void)params;  /* Unused */
+
+    log_message(mcp_tools_log, "Handling vice.memory.banks");
+
+    /* Get bank list from VICE */
+    bank_names = mem_bank_list();
+    bank_numbers = mem_bank_list_nos();
+
+    if (bank_names == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Memory bank list not available");
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    banks_array = cJSON_CreateArray();
+    if (banks_array == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Add each bank to the array */
+    for (i = 0; bank_names[i] != NULL; i++) {
+        cJSON *bank_obj = cJSON_CreateObject();
+        if (bank_obj == NULL) {
+            cJSON_Delete(response);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        cJSON_AddStringToObject(bank_obj, "name", bank_names[i]);
+        if (bank_numbers != NULL) {
+            cJSON_AddNumberToObject(bank_obj, "number", bank_numbers[i]);
+        }
+        cJSON_AddItemToArray(banks_array, bank_obj);
+    }
+
+    cJSON_AddItemToObject(response, "banks", banks_array);
+    cJSON_AddStringToObject(response, "machine", machine_get_name());
+
+    return response;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Notification Helpers */
+
+/* ========================================================================= */
+/* Phase 2.1: Checkpoint/Breakpoint Tools                                   */
+/* ========================================================================= */
+
+cJSON* mcp_tool_checkpoint_add(cJSON *params)
+{
+    cJSON *response, *start_item, *end_item, *stop_item;
+    cJSON *load_item, *store_item, *exec_item;
+    MON_ADDR start_addr, end_addr;
+    MEMORY_OP op = 0;
+    bool stop = true;
+    int checkpoint_num;
+    const char *error_msg;
+    int resolved;
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.add");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Get start address (required) - can be number, hex string, or symbol */
+    start_item = cJSON_GetObjectItem(params, "start");
+    if (start_item == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "start address required");
+    }
+    resolved = mcp_resolve_address(start_item, &error_msg);
+    if (resolved < 0) {
+        char err_buf[128];
+        snprintf(err_buf, sizeof(err_buf), "Cannot resolve start address: %s", error_msg);
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+    }
+    start_addr = (MON_ADDR)resolved;
+
+    /* Get end address (optional, defaults to start) - can be number, hex string, or symbol */
+    end_item = cJSON_GetObjectItem(params, "end");
+    if (end_item != NULL) {
+        resolved = mcp_resolve_address(end_item, &error_msg);
+        if (resolved < 0) {
+            char err_buf[128];
+            snprintf(err_buf, sizeof(err_buf), "Cannot resolve end address: %s", error_msg);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+        }
+        end_addr = (MON_ADDR)resolved;
+    } else {
+        end_addr = start_addr;
+    }
+
+    /* Get stop flag (optional, defaults to true) */
+    stop_item = cJSON_GetObjectItem(params, "stop");
+    if (stop_item != NULL && cJSON_IsBool(stop_item)) {
+        stop = cJSON_IsTrue(stop_item);
+    }
+
+    /* Get operation type flags (optional, defaults to exec only) */
+    load_item = cJSON_GetObjectItem(params, "load");
+    store_item = cJSON_GetObjectItem(params, "store");
+    exec_item = cJSON_GetObjectItem(params, "exec");
+
+    if (load_item != NULL && cJSON_IsTrue(load_item)) {
+        op |= e_load;
+    }
+    if (store_item != NULL && cJSON_IsTrue(store_item)) {
+        op |= e_store;
+    }
+    if (exec_item != NULL && cJSON_IsTrue(exec_item)) {
+        op |= e_exec;
+    }
+
+    /* If no operation specified, default to exec (PC breakpoint) */
+    if (op == 0) {
+        op = e_exec;
+    }
+
+    /* Create checkpoint using VICE monitor API */
+    checkpoint_num = mon_breakpoint_add_checkpoint(start_addr, end_addr, stop, op, false, true);
+
+    if (checkpoint_num < 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to create checkpoint");
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "checkpoint_num", checkpoint_num);
+    /* Extract 16-bit address from MON_ADDR (high bits contain memory space) */
+    cJSON_AddNumberToObject(response, "start", addr_location(start_addr));
+    cJSON_AddNumberToObject(response, "end", addr_location(end_addr));
+    cJSON_AddBoolToObject(response, "stop", stop);
+    cJSON_AddBoolToObject(response, "load", (op & e_load) != 0);
+    cJSON_AddBoolToObject(response, "store", (op & e_store) != 0);
+    cJSON_AddBoolToObject(response, "exec", (op & e_exec) != 0);
+
+    return response;
+}
+
+cJSON* mcp_tool_checkpoint_delete(cJSON *params)
+{
+    cJSON *response, *num_item;
+    int checkpoint_num;
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.delete");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    num_item = cJSON_GetObjectItem(params, "checkpoint_num");
+    if (!cJSON_IsNumber(num_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "checkpoint_num required");
+    }
+
+    checkpoint_num = num_item->valueint;
+
+    /* Verify checkpoint exists */
+    if (mon_breakpoint_find_checkpoint(checkpoint_num) == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Checkpoint not found");
+    }
+
+    /* Delete it */
+    mon_breakpoint_delete_checkpoint(checkpoint_num);
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "checkpoint_num", checkpoint_num);
+
+    return response;
+}
+
+cJSON* mcp_tool_checkpoint_list(cJSON *params)
+{
+    cJSON *response, *checkpoints_array;
+    mon_checkpoint_t **checkpoint_list;
+    unsigned int count, i;
+
+    (void)params;  /* Unused */
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.list");
+
+    /* Get checkpoint list from VICE */
+    checkpoint_list = mon_breakpoint_checkpoint_list_get(&count);
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    checkpoints_array = cJSON_CreateArray();
+    if (checkpoints_array == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Add each checkpoint to array */
+    for (i = 0; i < count; i++) {
+        mon_checkpoint_t *cp = checkpoint_list[i];
+        cJSON *cp_obj = cJSON_CreateObject();
+        char *start_symbol, *end_symbol;
+        uint16_t start_loc, end_loc;
+
+        if (cp_obj == NULL) {
+            cJSON_Delete(checkpoints_array);
+            cJSON_Delete(response);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        /* Extract 16-bit address from MON_ADDR (high bits contain memory space) */
+        start_loc = addr_location(cp->start_addr);
+        end_loc = addr_location(cp->end_addr);
+
+        cJSON_AddNumberToObject(cp_obj, "checkpoint_num", cp->checknum);
+        cJSON_AddNumberToObject(cp_obj, "start", start_loc);
+        cJSON_AddNumberToObject(cp_obj, "end", end_loc);
+
+        /* Add symbol names if available */
+        start_symbol = mon_symbol_table_lookup_name(e_comp_space, start_loc);
+        if (start_symbol != NULL) {
+            cJSON_AddStringToObject(cp_obj, "start_symbol", start_symbol);
+        }
+        end_symbol = mon_symbol_table_lookup_name(e_comp_space, end_loc);
+        if (end_symbol != NULL && end_loc != start_loc) {
+            cJSON_AddStringToObject(cp_obj, "end_symbol", end_symbol);
+        }
+
+        cJSON_AddNumberToObject(cp_obj, "hit_count", cp->hit_count);
+        cJSON_AddNumberToObject(cp_obj, "ignore_count", cp->ignore_count);
+        cJSON_AddBoolToObject(cp_obj, "stop", cp->stop);
+        cJSON_AddBoolToObject(cp_obj, "enabled", cp->enabled);
+        cJSON_AddBoolToObject(cp_obj, "check_load", cp->check_load);
+        cJSON_AddBoolToObject(cp_obj, "check_store", cp->check_store);
+        cJSON_AddBoolToObject(cp_obj, "check_exec", cp->check_exec);
+        cJSON_AddBoolToObject(cp_obj, "temporary", cp->temporary);
+
+        if (cp->condition != NULL) {
+            cJSON_AddStringToObject(cp_obj, "condition", "<expression>");  /* TODO: serialize condition */
+        }
+
+        cJSON_AddItemToArray(checkpoints_array, cp_obj);
+    }
+
+    cJSON_AddItemToObject(response, "checkpoints", checkpoints_array);
+    cJSON_AddNumberToObject(response, "count", count);
+
+    return response;
+}
+
+cJSON* mcp_tool_checkpoint_toggle(cJSON *params)
+{
+    cJSON *response, *num_item, *enabled_item;
+    int checkpoint_num;
+    bool enabled;
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.toggle");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    num_item = cJSON_GetObjectItem(params, "checkpoint_num");
+    if (!cJSON_IsNumber(num_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "checkpoint_num required");
+    }
+
+    enabled_item = cJSON_GetObjectItem(params, "enabled");
+    if (!cJSON_IsBool(enabled_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "enabled (bool) required");
+    }
+
+    checkpoint_num = num_item->valueint;
+    enabled = cJSON_IsTrue(enabled_item);
+
+    /* Verify checkpoint exists */
+    if (mon_breakpoint_find_checkpoint(checkpoint_num) == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Checkpoint not found");
+    }
+
+    /* Toggle it (op=1 for enable, op=2 for disable) */
+    mon_breakpoint_switch_checkpoint(enabled ? 1 : 2, checkpoint_num);
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "checkpoint_num", checkpoint_num);
+    cJSON_AddBoolToObject(response, "enabled", enabled);
+
+    return response;
+}
+
+/* Simple condition parser for basic register/memory comparisons
+ *
+ * Supported conditions:
+ *   A == $xx     - Accumulator equals hex value
+ *   A == 42      - Accumulator equals decimal value
+ *   X == $xx     - X register equals value
+ *   Y == $xx     - Y register equals value
+ *   PC == $xxxx  - Program counter equals value
+ *   SP == $xx    - Stack pointer equals value
+ *
+ * Note: Full condition parsing (with memory access, arithmetic, etc.)
+ * would require integrating with VICE's monitor expression parser.
+ * This simple parser covers the most common debugging use cases.
+ */
+static cond_node_t* parse_simple_condition(const char *condition_str)
+{
+    cond_node_t *node = NULL;
+    char reg_name[8];
+    MON_REG reg_num = 0;
+    unsigned int value;
+    const char *p = condition_str;
+
+    /* Skip leading whitespace */
+    while (*p == ' ' || *p == '\t') p++;
+
+    /* Parse register name */
+    if (strncasecmp(p, "A", 1) == 0 && !isalnum((unsigned char)p[1])) {
+        strcpy(reg_name, "A");
+        reg_num = e_A;
+        p += 1;
+    } else if (strncasecmp(p, "X", 1) == 0 && !isalnum((unsigned char)p[1])) {
+        strcpy(reg_name, "X");
+        reg_num = e_X;
+        p += 1;
+    } else if (strncasecmp(p, "Y", 1) == 0 && !isalnum((unsigned char)p[1])) {
+        strcpy(reg_name, "Y");
+        reg_num = e_Y;
+        p += 1;
+    } else if (strncasecmp(p, "PC", 2) == 0 && !isalnum((unsigned char)p[2])) {
+        strcpy(reg_name, "PC");
+        reg_num = e_PC;
+        p += 2;
+    } else if (strncasecmp(p, "SP", 2) == 0 && !isalnum((unsigned char)p[2])) {
+        strcpy(reg_name, "SP");
+        reg_num = e_SP;
+        p += 2;
+    } else {
+        log_error(mcp_tools_log, "Unknown register in condition: %s", condition_str);
+        return NULL;
+    }
+
+    /* Skip whitespace */
+    while (*p == ' ' || *p == '\t') p++;
+
+    /* Parse operator (must be == or =) */
+    if (*p == '=' && *(p+1) == '=') {
+        p += 2;
+    } else if (*p == '=') {
+        p += 1;
+    } else {
+        log_error(mcp_tools_log, "Expected '==' or '=' in condition: %s", condition_str);
+        return NULL;
+    }
+
+    /* Skip whitespace */
+    while (*p == ' ' || *p == '\t') p++;
+
+    /* Parse value (hex with $ prefix or decimal) */
+    if (*p == '$') {
+        p++;
+        if (sscanf(p, "%x", &value) != 1) {
+            log_error(mcp_tools_log, "Invalid hex value in condition: %s", condition_str);
+            return NULL;
+        }
+    } else if (*p == '0' && (*(p+1) == 'x' || *(p+1) == 'X')) {
+        p += 2;
+        if (sscanf(p, "%x", &value) != 1) {
+            log_error(mcp_tools_log, "Invalid hex value in condition: %s", condition_str);
+            return NULL;
+        }
+    } else if (isdigit((unsigned char)*p)) {
+        if (sscanf(p, "%u", &value) != 1) {
+            log_error(mcp_tools_log, "Invalid decimal value in condition: %s", condition_str);
+            return NULL;
+        }
+    } else {
+        log_error(mcp_tools_log, "Expected numeric value in condition: %s", condition_str);
+        return NULL;
+    }
+
+    /* Build condition node tree: REG == VALUE */
+    /* This creates: (register) == (constant) */
+    node = new_cond;
+    if (node == NULL) {
+        return NULL;
+    }
+    memset(node, 0, sizeof(cond_node_t));
+
+    node->operation = e_EQU;  /* Equals comparison */
+    node->is_parenthized = false;
+
+    /* Left child: register reference */
+    node->child1 = new_cond;
+    if (node->child1 == NULL) {
+        lib_free(node);
+        return NULL;
+    }
+    memset(node->child1, 0, sizeof(cond_node_t));
+    node->child1->is_reg = true;
+    node->child1->reg_num = reg_num;
+    node->child1->banknum = -1;
+    node->child1->child1 = NULL;
+    node->child1->child2 = NULL;
+
+    /* Right child: constant value */
+    node->child2 = new_cond;
+    if (node->child2 == NULL) {
+        lib_free(node->child1);
+        lib_free(node);
+        return NULL;
+    }
+    memset(node->child2, 0, sizeof(cond_node_t));
+    node->child2->is_reg = false;
+    node->child2->value = (int)value;
+    node->child2->banknum = -1;
+    node->child2->child1 = NULL;
+    node->child2->child2 = NULL;
+
+    log_message(mcp_tools_log, "Parsed condition: %s == %u", reg_name, value);
+
+    return node;
+}
+
+cJSON* mcp_tool_checkpoint_set_condition(cJSON *params)
+{
+    cJSON *response, *num_item, *condition_item;
+    int checkpoint_num;
+    const char *condition_str;
+    cond_node_t *cond_node;
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.set_condition");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    num_item = cJSON_GetObjectItem(params, "checkpoint_num");
+    if (!cJSON_IsNumber(num_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "checkpoint_num required");
+    }
+
+    condition_item = cJSON_GetObjectItem(params, "condition");
+    if (!cJSON_IsString(condition_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "condition (string) required");
+    }
+
+    checkpoint_num = num_item->valueint;
+    condition_str = condition_item->valuestring;
+
+    /* Verify checkpoint exists */
+    if (mon_breakpoint_find_checkpoint(checkpoint_num) == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Checkpoint not found");
+    }
+
+    /* Parse condition string */
+    cond_node = parse_simple_condition(condition_str);
+    if (cond_node == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid condition. Supported: 'A == $xx', 'X == $xx', 'Y == $xx', 'PC == $xxxx', 'SP == $xx' (hex with $, 0x, or decimal)");
+    }
+
+    /* Set the condition on the checkpoint */
+    mon_breakpoint_set_checkpoint_condition(checkpoint_num, cond_node);
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "checkpoint_num", checkpoint_num);
+    cJSON_AddStringToObject(response, "condition", condition_str);
+
+    return response;
+}
+
+cJSON* mcp_tool_checkpoint_set_ignore_count(cJSON *params)
+{
+    cJSON *response, *num_item, *count_item;
+    int checkpoint_num, ignore_count;
+    char *params_str;
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.set_ignore_count");
+
+    if (params == NULL) {
+        log_error(mcp_tools_log, "checkpoint_set_ignore_count: params is NULL");
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Debug: dump params JSON */
+    params_str = cJSON_PrintUnformatted(params);
+    if (params_str != NULL) {
+        log_message(mcp_tools_log, "checkpoint_set_ignore_count params: %s", params_str);
+        free(params_str);
+    }
+
+    num_item = cJSON_GetObjectItem(params, "checkpoint_num");
+    if (!cJSON_IsNumber(num_item)) {
+        log_error(mcp_tools_log, "checkpoint_set_ignore_count: checkpoint_num not found or not a number");
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "checkpoint_num required");
+    }
+
+    count_item = cJSON_GetObjectItem(params, "count");
+    if (!cJSON_IsNumber(count_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "count (number) required");
+    }
+
+    checkpoint_num = num_item->valueint;
+    ignore_count = count_item->valueint;
+
+    if (ignore_count < 0) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "count must be >= 0");
+    }
+
+    /* Verify checkpoint exists */
+    if (mon_breakpoint_find_checkpoint(checkpoint_num) == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Checkpoint not found");
+    }
+
+    /* Set ignore count */
+    mon_breakpoint_set_ignore_count(checkpoint_num, ignore_count);
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "checkpoint_num", checkpoint_num);
+    cJSON_AddNumberToObject(response, "ignore_count", ignore_count);
+
+    return response;
+}
+
+/* ========================================================================= */
+/* Phase 2.2: Sprite Control Tools (C64/C128/DTV only)                      */
+/* ========================================================================= */
+
+/* VIC-II sprite register addresses */
+#define VICII_BASE 0xD000
+#define VICII_SPRITE_ENABLE 0xD015
+#define VICII_SPRITE_X_MSB 0xD010
+#define VICII_SPRITE_MULTICOLOR 0xD01C
+#define VICII_SPRITE_EXPAND_Y 0xD017
+#define VICII_SPRITE_EXPAND_X 0xD01D
+#define VICII_SPRITE_PRIORITY 0xD01B
+#define VICII_SPRITE_COLOR_BASE 0xD027
+
+cJSON* mcp_tool_sprite_get(cJSON *params)
+{
+    cJSON *response, *sprite_obj, *sprite_item;
+    int sprite_num = -1;  /* -1 = all sprites */
+    int i, start, end;
+
+    log_message(mcp_tools_log, "Handling vice.sprite.get");
+
+    /* Check if specific sprite requested */
+    if (params != NULL) {
+        sprite_item = cJSON_GetObjectItem(params, "sprite");
+        if (sprite_item != NULL && cJSON_IsNumber(sprite_item)) {
+            sprite_num = sprite_item->valueint;
+            if (sprite_num < 0 || sprite_num > 7) {
+                return mcp_error(MCP_ERROR_INVALID_PARAMS, "sprite must be 0-7");
+            }
+        }
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Determine sprite range */
+    if (sprite_num >= 0) {
+        start = sprite_num;
+        end = sprite_num;
+    } else {
+        start = 0;
+        end = 7;
+    }
+
+    /* Read sprite data for requested sprite(s) */
+    for (i = start; i <= end; i++) {
+        uint16_t x, y;
+        uint8_t enable_reg, x_msb_reg, multicolor_reg, expand_x_reg, expand_y_reg;
+        uint8_t priority_reg, color;
+        char sprite_key[16];
+
+        /* Read VIC-II registers */
+        x = mem_read(VICII_BASE + (i * 2));  /* $D000, $D002, $D004, ... */
+        y = mem_read(VICII_BASE + (i * 2) + 1);  /* $D001, $D003, $D005, ... */
+        enable_reg = mem_read(VICII_SPRITE_ENABLE);
+        x_msb_reg = mem_read(VICII_SPRITE_X_MSB);
+        multicolor_reg = mem_read(VICII_SPRITE_MULTICOLOR);
+        expand_x_reg = mem_read(VICII_SPRITE_EXPAND_X);
+        expand_y_reg = mem_read(VICII_SPRITE_EXPAND_Y);
+        priority_reg = mem_read(VICII_SPRITE_PRIORITY);
+        color = mem_read(VICII_SPRITE_COLOR_BASE + i);  /* $D027-$D02E */
+
+        /* Build sprite object */
+        sprite_obj = cJSON_CreateObject();
+        if (sprite_obj == NULL) {
+            cJSON_Delete(response);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        /* Calculate full X coordinate (9 bits) */
+        if (x_msb_reg & (1 << i)) {
+            x |= 0x100;
+        }
+
+        cJSON_AddNumberToObject(sprite_obj, "sprite", i);
+        cJSON_AddNumberToObject(sprite_obj, "x", x);
+        cJSON_AddNumberToObject(sprite_obj, "y", y);
+        cJSON_AddBoolToObject(sprite_obj, "enabled", (enable_reg & (1 << i)) != 0);
+        cJSON_AddBoolToObject(sprite_obj, "multicolor", (multicolor_reg & (1 << i)) != 0);
+        cJSON_AddBoolToObject(sprite_obj, "expand_x", (expand_x_reg & (1 << i)) != 0);
+        cJSON_AddBoolToObject(sprite_obj, "expand_y", (expand_y_reg & (1 << i)) != 0);
+        cJSON_AddBoolToObject(sprite_obj, "priority_foreground", (priority_reg & (1 << i)) == 0);
+        cJSON_AddNumberToObject(sprite_obj, "color", color);
+
+        /* Add to response (use array if all sprites, object if single sprite) */
+        if (sprite_num >= 0) {
+            /* Single sprite - add directly to response */
+            cJSON_AddItemToObject(response, "sprite_data", sprite_obj);
+        } else {
+            /* Multiple sprites - add to array */
+            sprintf(sprite_key, "sprite_%d", i);
+            cJSON_AddItemToObject(response, sprite_key, sprite_obj);
+        }
+    }
+
+    return response;
+}
+
+cJSON* mcp_tool_sprite_set(cJSON *params)
+{
+    cJSON *response, *sprite_item, *x_item, *y_item;
+    cJSON *enabled_item, *multicolor_item, *expand_x_item, *expand_y_item;
+    cJSON *priority_item, *color_item;
+    int sprite_num;
+    uint8_t enable_reg, x_msb_reg, multicolor_reg, expand_x_reg, expand_y_reg;
+    uint8_t priority_reg;
+
+    log_message(mcp_tools_log, "Handling vice.sprite.set");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Get sprite number (required) */
+    sprite_item = cJSON_GetObjectItem(params, "sprite");
+    if (!cJSON_IsNumber(sprite_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "sprite (0-7) required");
+    }
+    sprite_num = sprite_item->valueint;
+    if (sprite_num < 0 || sprite_num > 7) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "sprite must be 0-7");
+    }
+
+    /* Read current register values (for partial updates) */
+    enable_reg = mem_read(VICII_SPRITE_ENABLE);
+    x_msb_reg = mem_read(VICII_SPRITE_X_MSB);
+    multicolor_reg = mem_read(VICII_SPRITE_MULTICOLOR);
+    expand_x_reg = mem_read(VICII_SPRITE_EXPAND_X);
+    expand_y_reg = mem_read(VICII_SPRITE_EXPAND_Y);
+    priority_reg = mem_read(VICII_SPRITE_PRIORITY);
+
+    /* Update X position if specified */
+    x_item = cJSON_GetObjectItem(params, "x");
+    if (x_item != NULL && cJSON_IsNumber(x_item)) {
+        int x = x_item->valueint;
+        if (x < 0 || x > 511) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "x must be 0-511");
+        }
+        mem_store(VICII_BASE + (sprite_num * 2), x & 0xFF);
+        if (x >= 256) {
+            x_msb_reg |= (1 << sprite_num);
+        } else {
+            x_msb_reg &= ~(1 << sprite_num);
+        }
+        mem_store(VICII_SPRITE_X_MSB, x_msb_reg);
+    }
+
+    /* Update Y position if specified */
+    y_item = cJSON_GetObjectItem(params, "y");
+    if (y_item != NULL && cJSON_IsNumber(y_item)) {
+        int y = y_item->valueint;
+        if (y < 0 || y > 255) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "y must be 0-255");
+        }
+        mem_store(VICII_BASE + (sprite_num * 2) + 1, y);
+    }
+
+    /* Update enabled flag if specified */
+    enabled_item = cJSON_GetObjectItem(params, "enabled");
+    if (enabled_item != NULL && cJSON_IsBool(enabled_item)) {
+        if (cJSON_IsTrue(enabled_item)) {
+            enable_reg |= (1 << sprite_num);
+        } else {
+            enable_reg &= ~(1 << sprite_num);
+        }
+        mem_store(VICII_SPRITE_ENABLE, enable_reg);
+    }
+
+    /* Update multicolor flag if specified */
+    multicolor_item = cJSON_GetObjectItem(params, "multicolor");
+    if (multicolor_item != NULL && cJSON_IsBool(multicolor_item)) {
+        if (cJSON_IsTrue(multicolor_item)) {
+            multicolor_reg |= (1 << sprite_num);
+        } else {
+            multicolor_reg &= ~(1 << sprite_num);
+        }
+        mem_store(VICII_SPRITE_MULTICOLOR, multicolor_reg);
+    }
+
+    /* Update expand_x flag if specified */
+    expand_x_item = cJSON_GetObjectItem(params, "expand_x");
+    if (expand_x_item != NULL && cJSON_IsBool(expand_x_item)) {
+        if (cJSON_IsTrue(expand_x_item)) {
+            expand_x_reg |= (1 << sprite_num);
+        } else {
+            expand_x_reg &= ~(1 << sprite_num);
+        }
+        mem_store(VICII_SPRITE_EXPAND_X, expand_x_reg);
+    }
+
+    /* Update expand_y flag if specified */
+    expand_y_item = cJSON_GetObjectItem(params, "expand_y");
+    if (expand_y_item != NULL && cJSON_IsBool(expand_y_item)) {
+        if (cJSON_IsTrue(expand_y_item)) {
+            expand_y_reg |= (1 << sprite_num);
+        } else {
+            expand_y_reg &= ~(1 << sprite_num);
+        }
+        mem_store(VICII_SPRITE_EXPAND_Y, expand_y_reg);
+    }
+
+    /* Update priority if specified */
+    priority_item = cJSON_GetObjectItem(params, "priority_foreground");
+    if (priority_item != NULL && cJSON_IsBool(priority_item)) {
+        if (cJSON_IsTrue(priority_item)) {
+            priority_reg &= ~(1 << sprite_num);  /* 0 = foreground */
+        } else {
+            priority_reg |= (1 << sprite_num);   /* 1 = background */
+        }
+        mem_store(VICII_SPRITE_PRIORITY, priority_reg);
+    }
+
+    /* Update color if specified */
+    color_item = cJSON_GetObjectItem(params, "color");
+    if (color_item != NULL && cJSON_IsNumber(color_item)) {
+        int color = color_item->valueint;
+        if (color < 0 || color > 15) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "color must be 0-15");
+        }
+        mem_store(VICII_SPRITE_COLOR_BASE + sprite_num, color);
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "sprite", sprite_num);
+
+    return response;
+}
+
+/* ========================================================================= */
+/* Phase 2.3: Chip State Access                                             */
+/* ========================================================================= */
+
+#define SID_BASE 0xD400
+#define CIA1_BASE 0xDC00
+#define CIA2_BASE 0xDD00
+
+cJSON* mcp_tool_vicii_get_state(cJSON *params)
+{
+    cJSON *response, *registers_obj;
+    int i;
+    uint8_t d011, d012;
+
+    (void)params;  /* Unused */
+
+    log_message(mcp_tools_log, "Handling vice.vicii.get_state");
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Read key VIC-II registers */
+    d011 = mem_read(VICII_BASE + 0x11);  /* Control register 1 */
+    d012 = mem_read(VICII_BASE + 0x12);  /* Raster line */
+
+    /* Add computed/useful state */
+    cJSON_AddNumberToObject(response, "raster_line", d012 | ((d011 & 0x80) << 1));  /* 9-bit raster */
+    cJSON_AddNumberToObject(response, "video_mode", ((d011 & 0x60) | (mem_read(VICII_BASE + 0x16) & 0x10)) >> 4);
+    cJSON_AddBoolToObject(response, "screen_enabled", (d011 & 0x10) != 0);
+    cJSON_AddBoolToObject(response, "25_rows", (d011 & 0x08) != 0);
+    cJSON_AddNumberToObject(response, "y_scroll", d011 & 0x07);
+    cJSON_AddNumberToObject(response, "x_scroll", mem_read(VICII_BASE + 0x16) & 0x07);
+
+    /* Border colors */
+    cJSON_AddNumberToObject(response, "border_color", mem_read(VICII_BASE + 0x20));
+    cJSON_AddNumberToObject(response, "background_color_0", mem_read(VICII_BASE + 0x21));
+    cJSON_AddNumberToObject(response, "background_color_1", mem_read(VICII_BASE + 0x22));
+    cJSON_AddNumberToObject(response, "background_color_2", mem_read(VICII_BASE + 0x23));
+    cJSON_AddNumberToObject(response, "background_color_3", mem_read(VICII_BASE + 0x24));
+
+    /* Sprite collisions */
+    cJSON_AddNumberToObject(response, "sprite_sprite_collision", mem_read(VICII_BASE + 0x1E));
+    cJSON_AddNumberToObject(response, "sprite_background_collision", mem_read(VICII_BASE + 0x1F));
+
+    /* IRQ status */
+    cJSON_AddNumberToObject(response, "irq_status", mem_read(VICII_BASE + 0x19));
+    cJSON_AddNumberToObject(response, "irq_enabled", mem_read(VICII_BASE + 0x1A));
+
+    /* Memory pointers */
+    cJSON_AddNumberToObject(response, "memory_pointers", mem_read(VICII_BASE + 0x18));
+
+    /* Add all registers as array for completeness */
+    registers_obj = cJSON_CreateArray();
+    if (registers_obj == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    for (i = 0; i < 0x2F; i++) {
+        cJSON_AddItemToArray(registers_obj, cJSON_CreateNumber(mem_read(VICII_BASE + i)));
+    }
+
+    cJSON_AddItemToObject(response, "registers", registers_obj);
+
+    return response;
+}
+
+cJSON* mcp_tool_sid_get_state(cJSON *params)
+{
+    cJSON *response, *voices_array, *voice_obj;
+    int v;
+
+    (void)params;  /* Unused */
+
+    log_message(mcp_tools_log, "Handling vice.sid.get_state");
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    voices_array = cJSON_CreateArray();
+    if (voices_array == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Read all 3 voices */
+    for (v = 0; v < 3; v++) {
+        uint16_t freq, pulse_width;
+        uint8_t control, attack_decay, sustain_release;
+        int base = SID_BASE + (v * 7);
+
+        freq = mem_read(base + 0) | (mem_read(base + 1) << 8);
+        pulse_width = mem_read(base + 2) | (mem_read(base + 3) << 8);
+        control = mem_read(base + 4);
+        attack_decay = mem_read(base + 5);
+        sustain_release = mem_read(base + 6);
+
+        voice_obj = cJSON_CreateObject();
+        if (voice_obj == NULL) {
+            cJSON_Delete(voices_array);
+            cJSON_Delete(response);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        cJSON_AddNumberToObject(voice_obj, "voice", v + 1);
+        cJSON_AddNumberToObject(voice_obj, "frequency", freq);
+        cJSON_AddNumberToObject(voice_obj, "pulse_width", pulse_width & 0xFFF);
+        cJSON_AddBoolToObject(voice_obj, "noise", (control & 0x80) != 0);
+        cJSON_AddBoolToObject(voice_obj, "pulse", (control & 0x40) != 0);
+        cJSON_AddBoolToObject(voice_obj, "sawtooth", (control & 0x20) != 0);
+        cJSON_AddBoolToObject(voice_obj, "triangle", (control & 0x10) != 0);
+        cJSON_AddBoolToObject(voice_obj, "test", (control & 0x08) != 0);
+        cJSON_AddBoolToObject(voice_obj, "ring_mod", (control & 0x04) != 0);
+        cJSON_AddBoolToObject(voice_obj, "sync", (control & 0x02) != 0);
+        cJSON_AddBoolToObject(voice_obj, "gate", (control & 0x01) != 0);
+        cJSON_AddNumberToObject(voice_obj, "attack", (attack_decay >> 4) & 0x0F);
+        cJSON_AddNumberToObject(voice_obj, "decay", attack_decay & 0x0F);
+        cJSON_AddNumberToObject(voice_obj, "sustain", (sustain_release >> 4) & 0x0F);
+        cJSON_AddNumberToObject(voice_obj, "release", sustain_release & 0x0F);
+
+        cJSON_AddItemToArray(voices_array, voice_obj);
+    }
+
+    cJSON_AddItemToObject(response, "voices", voices_array);
+
+    /* Filter and volume */
+    cJSON_AddNumberToObject(response, "filter_cutoff_low", mem_read(SID_BASE + 0x15));
+    cJSON_AddNumberToObject(response, "filter_cutoff_high", mem_read(SID_BASE + 0x16));
+    cJSON_AddNumberToObject(response, "filter_resonance", (mem_read(SID_BASE + 0x17) >> 4) & 0x0F);
+    cJSON_AddBoolToObject(response, "filter_voice3", (mem_read(SID_BASE + 0x17) & 0x04) != 0);
+    cJSON_AddBoolToObject(response, "filter_voice2", (mem_read(SID_BASE + 0x17) & 0x02) != 0);
+    cJSON_AddBoolToObject(response, "filter_voice1", (mem_read(SID_BASE + 0x17) & 0x01) != 0);
+    cJSON_AddBoolToObject(response, "filter_ext", (mem_read(SID_BASE + 0x18) & 0x08) != 0);
+    cJSON_AddBoolToObject(response, "voice3_off", (mem_read(SID_BASE + 0x18) & 0x80) != 0);
+    cJSON_AddBoolToObject(response, "highpass", (mem_read(SID_BASE + 0x18) & 0x40) != 0);
+    cJSON_AddBoolToObject(response, "bandpass", (mem_read(SID_BASE + 0x18) & 0x20) != 0);
+    cJSON_AddBoolToObject(response, "lowpass", (mem_read(SID_BASE + 0x18) & 0x10) != 0);
+    cJSON_AddNumberToObject(response, "volume", mem_read(SID_BASE + 0x18) & 0x0F);
+
+    return response;
+}
+
+cJSON* mcp_tool_cia_get_state(cJSON *params)
+{
+    cJSON *response, *cia1_obj, *cia2_obj, *cia_item;
+    int cia;
+
+    cia_item = cJSON_GetObjectItem(params, "cia");
+    if (cia_item != NULL && cJSON_IsNumber(cia_item)) {
+        cia = cia_item->valueint;
+        if (cia != 1 && cia != 2) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "cia must be 1 or 2");
+        }
+    } else {
+        cia = 0;  /* Both */
+    }
+
+    log_message(mcp_tools_log, "Handling vice.cia.get_state (CIA %d)", cia);
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Helper function to build CIA state */
+    #define BUILD_CIA_STATE(obj, base) do { \
+        uint16_t timer_a, timer_b; \
+        obj = cJSON_CreateObject(); \
+        if (obj == NULL) { \
+            cJSON_Delete(response); \
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory"); \
+        } \
+        cJSON_AddNumberToObject(obj, "port_a", mem_read(base + 0)); \
+        cJSON_AddNumberToObject(obj, "port_b", mem_read(base + 1)); \
+        cJSON_AddNumberToObject(obj, "ddr_a", mem_read(base + 2)); \
+        cJSON_AddNumberToObject(obj, "ddr_b", mem_read(base + 3)); \
+        timer_a = mem_read(base + 4) | (mem_read(base + 5) << 8); \
+        timer_b = mem_read(base + 6) | (mem_read(base + 7) << 8); \
+        cJSON_AddNumberToObject(obj, "timer_a", timer_a); \
+        cJSON_AddNumberToObject(obj, "timer_b", timer_b); \
+        cJSON_AddNumberToObject(obj, "tod_10ths", mem_read(base + 8)); \
+        cJSON_AddNumberToObject(obj, "tod_seconds", mem_read(base + 9)); \
+        cJSON_AddNumberToObject(obj, "tod_minutes", mem_read(base + 10)); \
+        cJSON_AddNumberToObject(obj, "tod_hours", mem_read(base + 11)); \
+        cJSON_AddNumberToObject(obj, "serial_data", mem_read(base + 12)); \
+        cJSON_AddNumberToObject(obj, "interrupt_control", mem_read(base + 13)); \
+        cJSON_AddNumberToObject(obj, "control_a", mem_read(base + 14)); \
+        cJSON_AddNumberToObject(obj, "control_b", mem_read(base + 15)); \
+    } while (0)
+
+    if (cia == 0 || cia == 1) {
+        BUILD_CIA_STATE(cia1_obj, CIA1_BASE);
+        cJSON_AddItemToObject(response, "cia1", cia1_obj);
+    }
+
+    if (cia == 0 || cia == 2) {
+        BUILD_CIA_STATE(cia2_obj, CIA2_BASE);
+        cJSON_AddItemToObject(response, "cia2", cia2_obj);
+    }
+
+    #undef BUILD_CIA_STATE
+
+    return response;
+}
+
+cJSON* mcp_tool_vicii_set_state(cJSON *params)
+{
+    cJSON *response, *item, *registers_array;
+    int updates = 0;
+
+    log_message(mcp_tools_log, "Setting VIC-II state");
+
+    /* All parameters optional - set only what's provided */
+
+    /* Generic register array - allows setting any VIC-II register by offset */
+    registers_array = cJSON_GetObjectItem(params, "registers");
+    if (registers_array != NULL && cJSON_IsArray(registers_array)) {
+        int i, array_size = cJSON_GetArraySize(registers_array);
+        for (i = 0; i < array_size; i++) {
+            cJSON *reg_obj = cJSON_GetArrayItem(registers_array, i);
+            if (reg_obj != NULL && cJSON_IsObject(reg_obj)) {
+                cJSON *offset_item = cJSON_GetObjectItem(reg_obj, "offset");
+                cJSON *value_item = cJSON_GetObjectItem(reg_obj, "value");
+                if (offset_item != NULL && value_item != NULL &&
+                    cJSON_IsNumber(offset_item) && cJSON_IsNumber(value_item)) {
+                    int offset = offset_item->valueint;
+                    if (offset >= 0 && offset <= 0x2F) {  /* VIC-II has 48 registers */
+                        mem_store(VICII_BASE + offset, value_item->valueint & 0xFF);
+                        updates++;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Convenient named parameters for common operations */
+
+    /* Border color ($D020) */
+    if ((item = cJSON_GetObjectItem(params, "border_color")) != NULL && cJSON_IsNumber(item)) {
+        mem_store(VICII_BASE + 0x20, item->valueint & 0x0F);
+        updates++;
+    }
+
+    /* Background color ($D021) */
+    if ((item = cJSON_GetObjectItem(params, "background_color")) != NULL && cJSON_IsNumber(item)) {
+        mem_store(VICII_BASE + 0x21, item->valueint & 0x0F);
+        updates++;
+    }
+
+    /* Additional background colors ($D022-$D023) */
+    if ((item = cJSON_GetObjectItem(params, "background_color_1")) != NULL && cJSON_IsNumber(item)) {
+        mem_store(VICII_BASE + 0x22, item->valueint & 0x0F);
+        updates++;
+    }
+    if ((item = cJSON_GetObjectItem(params, "background_color_2")) != NULL && cJSON_IsNumber(item)) {
+        mem_store(VICII_BASE + 0x23, item->valueint & 0x0F);
+        updates++;
+    }
+    if ((item = cJSON_GetObjectItem(params, "background_color_3")) != NULL && cJSON_IsNumber(item)) {
+        mem_store(VICII_BASE + 0x24, item->valueint & 0x0F);
+        updates++;
+    }
+
+    /* Control register 1 ($D011) - video mode, screen enable, raster MSB */
+    if ((item = cJSON_GetObjectItem(params, "control_1")) != NULL && cJSON_IsNumber(item)) {
+        mem_store(VICII_BASE + 0x11, item->valueint & 0xFF);
+        updates++;
+    }
+
+    /* Control register 2 ($D016) - multicolor, screen width */
+    if ((item = cJSON_GetObjectItem(params, "control_2")) != NULL && cJSON_IsNumber(item)) {
+        mem_store(VICII_BASE + 0x16, item->valueint & 0xFF);
+        updates++;
+    }
+
+    /* Memory pointers ($D018) */
+    if ((item = cJSON_GetObjectItem(params, "memory_pointers")) != NULL && cJSON_IsNumber(item)) {
+        mem_store(VICII_BASE + 0x18, item->valueint & 0xFF);
+        updates++;
+    }
+
+    /* IRQ raster line (low 8 bits in $D012, bit 8 in $D011) */
+    if ((item = cJSON_GetObjectItem(params, "irq_raster_line")) != NULL && cJSON_IsNumber(item)) {
+        int line = item->valueint & 0x1FF;
+        mem_store(VICII_BASE + 0x12, line & 0xFF);
+        uint8_t d011 = mem_read(VICII_BASE + 0x11);
+        if (line & 0x100) {
+            d011 |= 0x80;
+        } else {
+            d011 &= ~0x80;
+        }
+        mem_store(VICII_BASE + 0x11, d011);
+        updates++;
+    }
+
+    /* Interrupt enable ($D01A) */
+    if ((item = cJSON_GetObjectItem(params, "interrupt_enable")) != NULL && cJSON_IsNumber(item)) {
+        mem_store(VICII_BASE + 0x1A, item->valueint & 0x0F);
+        updates++;
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "registers_updated", updates);
+
+    return response;
+}
+
+cJSON* mcp_tool_sid_set_state(cJSON *params)
+{
+    cJSON *response, *voice_item, *item, *registers_array;
+    int updates = 0;
+    int v;
+
+    log_message(mcp_tools_log, "Setting SID state");
+
+    /* Generic register array - allows setting any SID register by offset */
+    registers_array = cJSON_GetObjectItem(params, "registers");
+    if (registers_array != NULL && cJSON_IsArray(registers_array)) {
+        int i, array_size = cJSON_GetArraySize(registers_array);
+        for (i = 0; i < array_size; i++) {
+            cJSON *reg_obj = cJSON_GetArrayItem(registers_array, i);
+            if (reg_obj != NULL && cJSON_IsObject(reg_obj)) {
+                cJSON *offset_item = cJSON_GetObjectItem(reg_obj, "offset");
+                cJSON *value_item = cJSON_GetObjectItem(reg_obj, "value");
+                if (offset_item != NULL && value_item != NULL &&
+                    cJSON_IsNumber(offset_item) && cJSON_IsNumber(value_item)) {
+                    int offset = offset_item->valueint;
+                    if (offset >= 0 && offset <= 0x1C) {  /* SID has 29 registers */
+                        mem_store(SID_BASE + offset, value_item->valueint & 0xFF);
+                        updates++;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Convenient named parameters for voice control */
+
+    /* Voice parameters (voices 0-2) */
+    for (v = 0; v < 3; v++) {
+        char voice_key[10];
+        sprintf(voice_key, "voice%d", v);
+
+        voice_item = cJSON_GetObjectItem(params, voice_key);
+        if (voice_item != NULL && cJSON_IsObject(voice_item)) {
+            int base = SID_BASE + (v * 7);
+
+            /* Frequency (16-bit) */
+            if ((item = cJSON_GetObjectItem(voice_item, "frequency")) != NULL && cJSON_IsNumber(item)) {
+                uint16_t freq = item->valueint & 0xFFFF;
+                mem_store(base + 0, freq & 0xFF);
+                mem_store(base + 1, (freq >> 8) & 0xFF);
+                updates++;
+            }
+
+            /* Pulse width (12-bit) */
+            if ((item = cJSON_GetObjectItem(voice_item, "pulse_width")) != NULL && cJSON_IsNumber(item)) {
+                uint16_t pw = item->valueint & 0x0FFF;
+                mem_store(base + 2, pw & 0xFF);
+                mem_store(base + 3, (pw >> 8) & 0x0F);
+                updates++;
+            }
+
+            /* Control register */
+            if ((item = cJSON_GetObjectItem(voice_item, "control")) != NULL && cJSON_IsNumber(item)) {
+                mem_store(base + 4, item->valueint & 0xFF);
+                updates++;
+            }
+
+            /* Attack/Decay */
+            if ((item = cJSON_GetObjectItem(voice_item, "attack_decay")) != NULL && cJSON_IsNumber(item)) {
+                mem_store(base + 5, item->valueint & 0xFF);
+                updates++;
+            }
+
+            /* Sustain/Release */
+            if ((item = cJSON_GetObjectItem(voice_item, "sustain_release")) != NULL && cJSON_IsNumber(item)) {
+                mem_store(base + 6, item->valueint & 0xFF);
+                updates++;
+            }
+        }
+    }
+
+    /* Filter cutoff (11-bit) */
+    if ((item = cJSON_GetObjectItem(params, "filter_cutoff")) != NULL && cJSON_IsNumber(item)) {
+        uint16_t cutoff = item->valueint & 0x07FF;
+        mem_store(SID_BASE + 0x15, cutoff & 0x07);  /* Low 3 bits */
+        mem_store(SID_BASE + 0x16, (cutoff >> 3) & 0xFF);  /* High 8 bits */
+        updates++;
+    }
+
+    /* Filter resonance and routing ($D017) */
+    if ((item = cJSON_GetObjectItem(params, "filter_resonance")) != NULL && cJSON_IsNumber(item)) {
+        mem_store(SID_BASE + 0x17, item->valueint & 0xFF);
+        updates++;
+    }
+
+    /* Filter mode and volume ($D018) */
+    if ((item = cJSON_GetObjectItem(params, "filter_mode_volume")) != NULL && cJSON_IsNumber(item)) {
+        mem_store(SID_BASE + 0x18, item->valueint & 0xFF);
+        updates++;
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "registers_updated", updates);
+
+    return response;
+}
+
+cJSON* mcp_tool_cia_set_state(cJSON *params)
+{
+    cJSON *response, *cia1_item, *cia2_item, *item, *registers_array;
+    int updates = 0;
+
+    log_message(mcp_tools_log, "Setting CIA state");
+
+    /* Generic register arrays for CIA1 and CIA2 */
+    registers_array = cJSON_GetObjectItem(params, "cia1_registers");
+    if (registers_array != NULL && cJSON_IsArray(registers_array)) {
+        int i, array_size = cJSON_GetArraySize(registers_array);
+        for (i = 0; i < array_size; i++) {
+            cJSON *reg_obj = cJSON_GetArrayItem(registers_array, i);
+            if (reg_obj != NULL && cJSON_IsObject(reg_obj)) {
+                cJSON *offset_item = cJSON_GetObjectItem(reg_obj, "offset");
+                cJSON *value_item = cJSON_GetObjectItem(reg_obj, "value");
+                if (offset_item != NULL && value_item != NULL &&
+                    cJSON_IsNumber(offset_item) && cJSON_IsNumber(value_item)) {
+                    int offset = offset_item->valueint;
+                    if (offset >= 0 && offset <= 0x0F) {  /* CIA has 16 registers */
+                        mem_store(CIA1_BASE + offset, value_item->valueint & 0xFF);
+                        updates++;
+                    }
+                }
+            }
+        }
+    }
+
+    registers_array = cJSON_GetObjectItem(params, "cia2_registers");
+    if (registers_array != NULL && cJSON_IsArray(registers_array)) {
+        int i, array_size = cJSON_GetArraySize(registers_array);
+        for (i = 0; i < array_size; i++) {
+            cJSON *reg_obj = cJSON_GetArrayItem(registers_array, i);
+            if (reg_obj != NULL && cJSON_IsObject(reg_obj)) {
+                cJSON *offset_item = cJSON_GetObjectItem(reg_obj, "offset");
+                cJSON *value_item = cJSON_GetObjectItem(reg_obj, "value");
+                if (offset_item != NULL && value_item != NULL &&
+                    cJSON_IsNumber(offset_item) && cJSON_IsNumber(value_item)) {
+                    int offset = offset_item->valueint;
+                    if (offset >= 0 && offset <= 0x0F) {  /* CIA has 16 registers */
+                        mem_store(CIA2_BASE + offset, value_item->valueint & 0xFF);
+                        updates++;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Convenient named parameters for common CIA operations */
+
+    /* Helper macro to set CIA registers */
+    #define SET_CIA_REGS(obj, base) do { \
+        if ((item = cJSON_GetObjectItem(obj, "port_a")) != NULL && cJSON_IsNumber(item)) { \
+            mem_store(base + 0, item->valueint & 0xFF); \
+            updates++; \
+        } \
+        if ((item = cJSON_GetObjectItem(obj, "port_b")) != NULL && cJSON_IsNumber(item)) { \
+            mem_store(base + 1, item->valueint & 0xFF); \
+            updates++; \
+        } \
+        if ((item = cJSON_GetObjectItem(obj, "ddr_a")) != NULL && cJSON_IsNumber(item)) { \
+            mem_store(base + 2, item->valueint & 0xFF); \
+            updates++; \
+        } \
+        if ((item = cJSON_GetObjectItem(obj, "ddr_b")) != NULL && cJSON_IsNumber(item)) { \
+            mem_store(base + 3, item->valueint & 0xFF); \
+            updates++; \
+        } \
+        if ((item = cJSON_GetObjectItem(obj, "timer_a_low")) != NULL && cJSON_IsNumber(item)) { \
+            mem_store(base + 4, item->valueint & 0xFF); \
+            updates++; \
+        } \
+        if ((item = cJSON_GetObjectItem(obj, "timer_a_high")) != NULL && cJSON_IsNumber(item)) { \
+            mem_store(base + 5, item->valueint & 0xFF); \
+            updates++; \
+        } \
+        if ((item = cJSON_GetObjectItem(obj, "timer_b_low")) != NULL && cJSON_IsNumber(item)) { \
+            mem_store(base + 6, item->valueint & 0xFF); \
+            updates++; \
+        } \
+        if ((item = cJSON_GetObjectItem(obj, "timer_b_high")) != NULL && cJSON_IsNumber(item)) { \
+            mem_store(base + 7, item->valueint & 0xFF); \
+            updates++; \
+        } \
+        if ((item = cJSON_GetObjectItem(obj, "interrupt_control")) != NULL && cJSON_IsNumber(item)) { \
+            mem_store(base + 13, item->valueint & 0xFF); \
+            updates++; \
+        } \
+        if ((item = cJSON_GetObjectItem(obj, "control_a")) != NULL && cJSON_IsNumber(item)) { \
+            mem_store(base + 14, item->valueint & 0xFF); \
+            updates++; \
+        } \
+        if ((item = cJSON_GetObjectItem(obj, "control_b")) != NULL && cJSON_IsNumber(item)) { \
+            mem_store(base + 15, item->valueint & 0xFF); \
+            updates++; \
+        } \
+    } while (0)
+
+    /* CIA1 registers */
+    cia1_item = cJSON_GetObjectItem(params, "cia1");
+    if (cia1_item != NULL && cJSON_IsObject(cia1_item)) {
+        SET_CIA_REGS(cia1_item, CIA1_BASE);
+    }
+
+    /* CIA2 registers */
+    cia2_item = cJSON_GetObjectItem(params, "cia2");
+    if (cia2_item != NULL && cJSON_IsObject(cia2_item)) {
+        SET_CIA_REGS(cia2_item, CIA2_BASE);
+    }
+
+    #undef SET_CIA_REGS
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "registers_updated", updates);
+
+    return response;
+}
+
+/* ========================================================================= */
+/* Phase 2.4: Disk Management Tools                                         */
+/* ========================================================================= */
+
+cJSON* mcp_tool_disk_attach(cJSON *params)
+{
+    cJSON *response, *unit_item, *drive_item, *path_item;
+    unsigned int unit, drive;
+    const char *path;
+    int result;
+
+    /* Parse unit parameter (required, 8-11) */
+    unit_item = cJSON_GetObjectItem(params, "unit");
+    if (unit_item == NULL || !cJSON_IsNumber(unit_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid 'unit' parameter (8-11)");
+    }
+    unit = (unsigned int)unit_item->valueint;
+    if (unit < 8 || unit > 11) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "unit must be 8-11");
+    }
+
+    /* Parse drive parameter (optional, 0-1, default=0) */
+    drive_item = cJSON_GetObjectItem(params, "drive");
+    if (drive_item != NULL && cJSON_IsNumber(drive_item)) {
+        drive = (unsigned int)drive_item->valueint;
+        if (drive > 1) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "drive must be 0 or 1");
+        }
+    } else {
+        drive = 0;
+    }
+
+    /* Parse path parameter (required) */
+    path_item = cJSON_GetObjectItem(params, "path");
+    if (path_item == NULL || !cJSON_IsString(path_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid 'path' parameter");
+    }
+    path = path_item->valuestring;
+    if (path == NULL || path[0] == '\0') {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "path cannot be empty");
+    }
+
+    log_message(mcp_tools_log, "Attaching disk: unit=%u, drive=%u, path=%s", unit, drive, path);
+
+    /* Attach the disk image */
+    result = file_system_attach_disk(unit, drive, path);
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    if (result == 0) {
+        cJSON_AddStringToObject(response, "status", "ok");
+        cJSON_AddNumberToObject(response, "unit", unit);
+        cJSON_AddNumberToObject(response, "drive", drive);
+        cJSON_AddStringToObject(response, "path", path);
+    } else {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to attach disk image");
+    }
+
+    return response;
+}
+
+cJSON* mcp_tool_disk_detach(cJSON *params)
+{
+    cJSON *response, *unit_item, *drive_item;
+    unsigned int unit, drive;
+
+    /* Parse unit parameter (required, 8-11) */
+    unit_item = cJSON_GetObjectItem(params, "unit");
+    if (unit_item == NULL || !cJSON_IsNumber(unit_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid 'unit' parameter (8-11)");
+    }
+    unit = (unsigned int)unit_item->valueint;
+    if (unit < 8 || unit > 11) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "unit must be 8-11");
+    }
+
+    /* Parse drive parameter (optional, 0-1, default=0) */
+    drive_item = cJSON_GetObjectItem(params, "drive");
+    if (drive_item != NULL && cJSON_IsNumber(drive_item)) {
+        drive = (unsigned int)drive_item->valueint;
+        if (drive > 1) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "drive must be 0 or 1");
+        }
+    } else {
+        drive = 0;
+    }
+
+    log_message(mcp_tools_log, "Detaching disk: unit=%u, drive=%u", unit, drive);
+
+    /* Detach the disk */
+    file_system_detach_disk(unit, drive);
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "unit", unit);
+    cJSON_AddNumberToObject(response, "drive", drive);
+
+    return response;
+}
+
+cJSON* mcp_tool_disk_list(cJSON *params)
+{
+    cJSON *response, *files_array, *file_obj, *unit_item;
+    unsigned int unit;
+    image_contents_t *contents;
+    image_contents_file_list_t *file;
+    char *name_utf8, *type_utf8;
+    int file_count;
+
+    /* Parse unit parameter (required, 8-11) */
+    unit_item = cJSON_GetObjectItem(params, "unit");
+    if (unit_item == NULL || !cJSON_IsNumber(unit_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid 'unit' parameter (8-11)");
+    }
+    unit = (unsigned int)unit_item->valueint;
+    if (unit < 8 || unit > 11) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "unit must be 8-11");
+    }
+
+    log_message(mcp_tools_log, "Listing directory for unit %u", unit);
+
+    /* Get vdrive for this unit */
+    vdrive_t *vdrive = file_system_get_vdrive(unit);
+    if (vdrive == NULL || vdrive->image == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "No disk attached to unit");
+    }
+
+    /* Read directory contents from attached disk */
+    contents = diskcontents_block_read(vdrive, 0);
+    if (contents == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Cannot read directory");
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        image_contents_destroy(contents);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Add disk name and ID */
+    name_utf8 = image_contents_to_string(contents, IMAGE_CONTENTS_STRING_UTF8);
+    if (name_utf8 != NULL) {
+        cJSON_AddStringToObject(response, "disk_name", name_utf8);
+        lib_free(name_utf8);
+    }
+    cJSON_AddNumberToObject(response, "blocks_free", contents->blocks_free);
+
+    /* Build files array */
+    files_array = cJSON_CreateArray();
+    if (files_array == NULL) {
+        cJSON_Delete(response);
+        image_contents_destroy(contents);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    file_count = 0;
+    for (file = contents->file_list; file != NULL; file = file->next) {
+        file_obj = cJSON_CreateObject();
+        if (file_obj == NULL) {
+            cJSON_Delete(files_array);
+            cJSON_Delete(response);
+            image_contents_destroy(contents);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        /* Convert PETSCII to UTF-8 */
+        name_utf8 = image_contents_filename_to_string(file, IMAGE_CONTENTS_STRING_UTF8);
+        type_utf8 = image_contents_filetype_to_string(file, IMAGE_CONTENTS_STRING_UTF8);
+
+        if (name_utf8 != NULL) {
+            cJSON_AddStringToObject(file_obj, "name", name_utf8);
+            lib_free(name_utf8);
+        }
+        if (type_utf8 != NULL) {
+            cJSON_AddStringToObject(file_obj, "type", type_utf8);
+            lib_free(type_utf8);
+        }
+        cJSON_AddNumberToObject(file_obj, "blocks", file->size);
+
+        cJSON_AddItemToArray(files_array, file_obj);
+        file_count++;
+    }
+
+    cJSON_AddItemToObject(response, "files", files_array);
+    cJSON_AddNumberToObject(response, "file_count", file_count);
+
+    image_contents_destroy(contents);
+    return response;
+}
+
+cJSON* mcp_tool_disk_read_sector(cJSON *params)
+{
+    cJSON *response, *unit_item, *track_item, *sector_item;
+    unsigned int unit, track, sector;
+    vdrive_t *vdrive;
+    uint8_t sector_buf[256];
+    char hex_buf[768];  /* 256 bytes * 3 chars (XX ) = 768 */
+    char *p;
+    int result, i;
+
+    /* Parse unit parameter (required, 8-11) */
+    unit_item = cJSON_GetObjectItem(params, "unit");
+    if (unit_item == NULL || !cJSON_IsNumber(unit_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid 'unit' parameter (8-11)");
+    }
+    unit = (unsigned int)unit_item->valueint;
+    if (unit < 8 || unit > 11) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "unit must be 8-11");
+    }
+
+    /* Parse track parameter (required, 1-42 for most formats) */
+    track_item = cJSON_GetObjectItem(params, "track");
+    if (track_item == NULL || !cJSON_IsNumber(track_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid 'track' parameter");
+    }
+    track = (unsigned int)track_item->valueint;
+    if (track < 1 || track > 255) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "track must be 1-255");
+    }
+
+    /* Parse sector parameter (required, 0-20 for most tracks) */
+    sector_item = cJSON_GetObjectItem(params, "sector");
+    if (sector_item == NULL || !cJSON_IsNumber(sector_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid 'sector' parameter");
+    }
+    sector = (unsigned int)sector_item->valueint;
+    if (sector > 255) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "sector must be 0-255");
+    }
+
+    log_message(mcp_tools_log, "Reading sector: unit=%u, track=%u, sector=%u", unit, track, sector);
+
+    /* Get vdrive for this unit */
+    vdrive = file_system_get_vdrive(unit);
+    if (vdrive == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "No disk attached to unit");
+    }
+
+    /* Read the sector */
+    result = vdrive_read_sector(vdrive, sector_buf, track, sector);
+    if (result != 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to read sector (invalid track/sector?)");
+    }
+
+    /* Convert sector data to hex string */
+    p = hex_buf;
+    for (i = 0; i < 256; i++) {
+        sprintf(p, "%02X ", sector_buf[i]);
+        p += 3;
+    }
+    *(p - 1) = '\0';  /* Remove trailing space */
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddNumberToObject(response, "unit", unit);
+    cJSON_AddNumberToObject(response, "track", track);
+    cJSON_AddNumberToObject(response, "sector", sector);
+    cJSON_AddStringToObject(response, "data", hex_buf);
+
+    return response;
+}
+
+/* ========================================================================= */
+/* Autostart Tools                                                           */
+/* ========================================================================= */
+
+/* Autostart a PRG file or disk image
+ *
+ * Parameters:
+ *   path (required): Path to PRG file or disk image (.d64, .g64, etc.)
+ *   program (optional): Program name to load from disk (if path is disk image)
+ *   run (optional): Whether to run after loading (default: true)
+ *   index (optional): Program index on disk (0-based, default: 0)
+ *
+ * The function auto-detects file type and uses the appropriate method:
+ *   - .prg files: Direct inject into memory
+ *   - .d64/.g64/etc: Attach and load from disk
+ */
+cJSON* mcp_tool_autostart(cJSON *params)
+{
+    cJSON *response, *path_item, *program_item, *run_item, *index_item;
+    const char *path = NULL;
+    const char *program = NULL;
+    int run = 1;  /* Default: run after loading */
+    unsigned int program_index = 0;
+    int result;
+
+    log_message(mcp_tools_log, "Handling vice.autostart");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Get required path parameter */
+    path_item = cJSON_GetObjectItem(params, "path");
+    if (path_item == NULL || !cJSON_IsString(path_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid 'path' parameter");
+    }
+    path = path_item->valuestring;
+    if (path == NULL || path[0] == '\0') {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Path cannot be empty");
+    }
+
+    /* Get optional program name (for disk images) */
+    program_item = cJSON_GetObjectItem(params, "program");
+    if (program_item != NULL && cJSON_IsString(program_item)) {
+        program = program_item->valuestring;
+    }
+
+    /* Get optional run flag */
+    run_item = cJSON_GetObjectItem(params, "run");
+    if (run_item != NULL && cJSON_IsBool(run_item)) {
+        run = cJSON_IsTrue(run_item) ? 1 : 0;
+    }
+
+    /* Get optional program index */
+    index_item = cJSON_GetObjectItem(params, "index");
+    if (index_item != NULL && cJSON_IsNumber(index_item)) {
+        program_index = (unsigned int)index_item->valueint;
+    }
+
+    log_message(mcp_tools_log, "Autostart: path=%s, program=%s, run=%d, index=%u",
+                path, program ? program : "(default)", run, program_index);
+
+    /* Use VICE's autostart_autodetect which handles all file types */
+    result = autostart_autodetect(path, program, program_index, run ? AUTOSTART_MODE_RUN : AUTOSTART_MODE_LOAD);
+
+    if (result != 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Autostart failed - check file path and format");
+    }
+
+    /* Build success response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddStringToObject(response, "path", path);
+    if (program != NULL) {
+        cJSON_AddStringToObject(response, "program", program);
+    }
+    cJSON_AddBoolToObject(response, "run", run);
+    cJSON_AddNumberToObject(response, "index", program_index);
+    cJSON_AddStringToObject(response, "message", "Autostart initiated - program will load and run");
+
+    return response;
+}
+
+/* ========================================================================= */
+/* Machine Control Tools                                                     */
+/* ========================================================================= */
+
+/* Reset the machine (soft or hard reset)
+ *
+ * Parameters:
+ *   mode (optional): "soft" (default) or "hard"
+ *     - soft: CPU reset only (like pressing reset button)
+ *     - hard: Full power cycle (resets all chips and memory)
+ */
+static cJSON* mcp_tool_machine_reset(cJSON *params)
+{
+    cJSON *response, *mode_item, *run_after_item;
+    const char *mode = "soft";
+    unsigned int reset_mode = MACHINE_RESET_MODE_RESET_CPU;
+    int run_after = 1;  /* Default: resume execution after reset */
+
+    log_message(mcp_tools_log, "Handling vice.machine.reset");
+
+    /* Get optional parameters */
+    if (params != NULL) {
+        mode_item = cJSON_GetObjectItem(params, "mode");
+        if (mode_item != NULL && cJSON_IsString(mode_item)) {
+            mode = mode_item->valuestring;
+            if (strcmp(mode, "hard") == 0 || strcmp(mode, "power") == 0) {
+                reset_mode = MACHINE_RESET_MODE_POWER_CYCLE;
+            } else if (strcmp(mode, "soft") != 0 && strcmp(mode, "cpu") != 0) {
+                return mcp_error(MCP_ERROR_INVALID_PARAMS, "Invalid mode - use 'soft' or 'hard'");
+            }
+        }
+
+        run_after_item = cJSON_GetObjectItem(params, "run_after");
+        if (run_after_item != NULL && cJSON_IsBool(run_after_item)) {
+            run_after = cJSON_IsTrue(run_after_item);
+        }
+    }
+
+    log_message(mcp_tools_log, "Resetting machine: mode=%s (%s), run_after=%d", mode,
+                reset_mode == MACHINE_RESET_MODE_POWER_CYCLE ? "power cycle" : "CPU reset", run_after);
+
+    /* Trigger the reset - this schedules reset for next CPU cycle */
+    machine_trigger_reset(reset_mode);
+
+    /* Resume execution so the reset actually happens and machine boots
+     * Without this, the reset is scheduled but execution stays paused */
+    if (run_after) {
+        exit_mon = exit_mon_continue;
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddStringToObject(response, "mode", reset_mode == MACHINE_RESET_MODE_POWER_CYCLE ? "hard" : "soft");
+    cJSON_AddBoolToObject(response, "run_after", run_after);
+    cJSON_AddStringToObject(response, "message", reset_mode == MACHINE_RESET_MODE_POWER_CYCLE ?
+                            "Machine power cycled" : "Machine reset (CPU)");
+
+    return response;
+}
+
+/* ========================================================================= */
+/* Phase 2.5: Display Capture Tools                                         */
+/* ========================================================================= */
+
+/* Base64 encoding table */
+static const char base64_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/* Encode binary data to base64 - caller must free returned string */
+static char* base64_encode(const uint8_t *data, size_t input_length, size_t *output_length)
+{
+    size_t i, j;
+    size_t out_len = 4 * ((input_length + 2) / 3);
+    char *encoded = malloc(out_len + 1);
+
+    if (encoded == NULL) {
+        return NULL;
+    }
+
+    for (i = 0, j = 0; i < input_length;) {
+        uint32_t octet_a = i < input_length ? data[i++] : 0;
+        uint32_t octet_b = i < input_length ? data[i++] : 0;
+        uint32_t octet_c = i < input_length ? data[i++] : 0;
+        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
+
+        encoded[j++] = base64_chars[(triple >> 18) & 0x3F];
+        encoded[j++] = base64_chars[(triple >> 12) & 0x3F];
+        encoded[j++] = base64_chars[(triple >> 6) & 0x3F];
+        encoded[j++] = base64_chars[triple & 0x3F];
+    }
+
+    /* Add padding */
+    size_t mod = input_length % 3;
+    if (mod == 1) {
+        encoded[out_len - 1] = '=';
+        encoded[out_len - 2] = '=';
+    } else if (mod == 2) {
+        encoded[out_len - 1] = '=';
+    }
+
+    encoded[out_len] = '\0';
+    if (output_length) {
+        *output_length = out_len;
+    }
+
+    return encoded;
+}
+
+cJSON* mcp_tool_display_screenshot(cJSON *params)
+{
+    cJSON *response, *format_item, *path_item, *base64_item;
+    const char *format, *path = NULL;
+    struct video_canvas_s *canvas;
+    int result;
+    int return_base64 = 0;
+    char temp_path[256];
+    int use_temp_file = 0;
+
+    /* Parse return_base64 parameter (optional, default=false) */
+    base64_item = cJSON_GetObjectItem(params, "return_base64");
+    if (base64_item != NULL && cJSON_IsBool(base64_item)) {
+        return_base64 = cJSON_IsTrue(base64_item);
+    }
+
+    /* Parse format parameter (optional, default="PNG") */
+    format_item = cJSON_GetObjectItem(params, "format");
+    if (format_item != NULL && cJSON_IsString(format_item)) {
+        format = format_item->valuestring;
+        /* Validate format */
+        if (strcmp(format, "PNG") != 0 && strcmp(format, "BMP") != 0 &&
+            strcmp(format, "png") != 0 && strcmp(format, "bmp") != 0) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "format must be PNG or BMP");
+        }
+        /* Normalize to uppercase */
+        if (strcmp(format, "png") == 0) {
+            format = "PNG";
+        } else if (strcmp(format, "bmp") == 0) {
+            format = "BMP";
+        }
+    } else {
+#ifdef HAVE_PNG
+        format = "PNG";
+#else
+        format = "BMP";
+#endif
+    }
+
+    /* Parse path parameter (optional if return_base64 is true) */
+    path_item = cJSON_GetObjectItem(params, "path");
+    if (path_item != NULL && cJSON_IsString(path_item)) {
+        path = path_item->valuestring;
+        if (path != NULL && path[0] == '\0') {
+            path = NULL;  /* Treat empty string as not provided */
+        }
+    }
+
+    /* If return_base64 and no path, use temp file */
+    if (return_base64 && path == NULL) {
+        snprintf(temp_path, sizeof(temp_path), "/tmp/vice_mcp_screenshot_%d.%s",
+                 (int)getpid(), strcmp(format, "PNG") == 0 ? "png" : "bmp");
+        path = temp_path;
+        use_temp_file = 1;
+    } else if (path == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "path required (or set return_base64=true)");
+    }
+
+    log_message(mcp_tools_log, "Taking screenshot: format=%s, path=%s, base64=%d",
+                format, path, return_base64);
+
+    /* Get primary video canvas */
+    canvas = machine_video_canvas_get(0);
+    if (canvas == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Cannot get video canvas");
+    }
+
+    /* Save screenshot */
+    result = screenshot_save(format, path, canvas);
+    if (result != 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to save screenshot");
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        if (use_temp_file) {
+            remove(path);
+        }
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddStringToObject(response, "format", format);
+
+    if (!use_temp_file) {
+        cJSON_AddStringToObject(response, "path", path);
+    }
+
+    /* Read file and encode as base64 if requested */
+    if (return_base64) {
+        FILE *f = fopen(path, "rb");
+        if (f != NULL) {
+            fseek(f, 0, SEEK_END);
+            long file_size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+
+            if (file_size > 0 && file_size < 50 * 1024 * 1024) {  /* Max 50MB */
+                uint8_t *file_data = malloc(file_size);
+                if (file_data != NULL) {
+                    size_t bytes_read = fread(file_data, 1, file_size, f);
+                    if (bytes_read == (size_t)file_size) {
+                        size_t b64_len;
+                        char *b64_data = base64_encode(file_data, file_size, &b64_len);
+                        if (b64_data != NULL) {
+                            /* Add data URI prefix for easy use in HTML/web contexts */
+                            char *mime_type = strcmp(format, "PNG") == 0 ? "image/png" : "image/bmp";
+                            char *data_uri = malloc(strlen("data:") + strlen(mime_type) +
+                                                    strlen(";base64,") + b64_len + 1);
+                            if (data_uri != NULL) {
+                                sprintf(data_uri, "data:%s;base64,%s", mime_type, b64_data);
+                                cJSON_AddStringToObject(response, "data_uri", data_uri);
+                                free(data_uri);
+                            }
+                            cJSON_AddStringToObject(response, "base64", b64_data);
+                            cJSON_AddNumberToObject(response, "size", file_size);
+                            free(b64_data);
+                        }
+                    }
+                    free(file_data);
+                }
+            }
+            fclose(f);
+        }
+
+        /* Clean up temp file */
+        if (use_temp_file) {
+            remove(path);
+        }
+    }
+
+    return response;
+}
+
+cJSON* mcp_tool_display_get_dimensions(cJSON *params)
+{
+    cJSON *response;
+    struct video_canvas_s *canvas;
+    unsigned int width, height;
+
+    (void)params;  /* Unused */
+
+    log_message(mcp_tools_log, "Getting display dimensions");
+
+    /* Get primary video canvas */
+    canvas = machine_video_canvas_get(0);
+    if (canvas == NULL || canvas->draw_buffer == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Cannot get video canvas");
+    }
+
+    /* Get canvas dimensions from draw buffer */
+    width = canvas->draw_buffer->canvas_physical_width;
+    height = canvas->draw_buffer->canvas_physical_height;
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddNumberToObject(response, "width", width);
+    cJSON_AddNumberToObject(response, "height", height);
+    cJSON_AddNumberToObject(response, "visible_width", canvas->draw_buffer->visible_width);
+    cJSON_AddNumberToObject(response, "visible_height", canvas->draw_buffer->visible_height);
+
+    return response;
+}
+
+/* =============================================================================
+ * Phase 3.1: Input Control
+ * =============================================================================
+ */
+
+cJSON* mcp_tool_keyboard_type(cJSON *params)
+{
+    cJSON *response;
+    cJSON *text_item, *petscii_upper_item, *auto_run_item;
+    const char *text;
+    char *converted_text = NULL;
+    int result;
+    int petscii_upper = 1;  /* Default: convert for uppercase PETSCII mode */
+    int auto_run = 1;       /* Default: resume execution after typing */
+
+    log_message(mcp_tools_log, "Keyboard type request");
+
+    /* Get required text parameter */
+    text_item = cJSON_GetObjectItem(params, "text");
+    if (text_item == NULL || !cJSON_IsString(text_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid 'text' parameter");
+    }
+
+    text = text_item->valuestring;
+    if (text == NULL || text[0] == '\0') {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Text parameter cannot be empty");
+    }
+
+    /* Check optional petscii_upper parameter (default true)
+     * When true (default): Convert uppercase ASCII to unshifted PETSCII (0x41-0x5A)
+     *   so they display as uppercase A-Z in the C64's default uppercase mode.
+     *   This is the intuitive behavior: "LOAD" displays as "LOAD".
+     * When false: Use raw PETSCII conversion where uppercase ASCII maps to
+     *   shifted PETSCII (0xC1-0xDA) which displays as graphics in uppercase mode.
+     */
+    petscii_upper_item = cJSON_GetObjectItem(params, "petscii_upper");
+    if (petscii_upper_item != NULL) {
+        if (cJSON_IsBool(petscii_upper_item)) {
+            petscii_upper = cJSON_IsTrue(petscii_upper_item);
+        } else if (cJSON_IsNumber(petscii_upper_item)) {
+            petscii_upper = (petscii_upper_item->valueint != 0);
+        }
+    }
+
+    /* Check optional auto_run parameter (default true)
+     * When true (default): Resume emulation after typing so KERNAL can process input
+     * When false: Just queue characters without resuming (for debugging)
+     */
+    auto_run_item = cJSON_GetObjectItem(params, "auto_run");
+    if (auto_run_item != NULL) {
+        if (cJSON_IsBool(auto_run_item)) {
+            auto_run = cJSON_IsTrue(auto_run_item);
+        } else if (cJSON_IsNumber(auto_run_item)) {
+            auto_run = (auto_run_item->valueint != 0);
+        }
+    }
+
+    log_message(mcp_tools_log, "Typing text: %s (petscii_upper=%d, auto_run=%d)", text, petscii_upper, auto_run);
+
+    /* If petscii_upper is enabled, convert uppercase ASCII to lowercase
+     * so that VICE's PETSCII conversion produces unshifted codes (0x41-0x5A)
+     * which display as uppercase in the C64's default character set mode */
+    if (petscii_upper) {
+        size_t len = strlen(text);
+        size_t i;
+        converted_text = lib_malloc(len + 1);
+        if (converted_text == NULL) {
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        for (i = 0; i < len; i++) {
+            char c = text[i];
+            /* Convert uppercase ASCII to lowercase for correct PETSCII display */
+            if (c >= 'A' && c <= 'Z') {
+                converted_text[i] = c + ('a' - 'A');  /* Convert to lowercase */
+            } else {
+                converted_text[i] = c;
+            }
+        }
+        converted_text[len] = '\0';
+        text = converted_text;
+    }
+
+    /* Feed text to keyboard buffer
+     * Note: kbdbuf_feed_string returns 0 on success, -1 on failure
+     * (queue full or keyboard buffer disabled) */
+    result = kbdbuf_feed_string(text);
+
+    if (converted_text != NULL) {
+        lib_free(converted_text);
+    }
+
+    if (result < 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to queue keyboard input (buffer full or disabled)");
+    }
+
+    /* Resume execution so KERNAL can process the keyboard input
+     * Without this, characters sit in the buffer but are never consumed */
+    if (auto_run) {
+        exit_mon = exit_mon_continue;
+        log_message(mcp_tools_log, "Resuming execution for keyboard input processing");
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "characters_queued", (int)strlen(text_item->valuestring));
+    cJSON_AddBoolToObject(response, "execution_resumed", auto_run);
+
+    return response;
+}
+
+cJSON* mcp_tool_keyboard_key_press(cJSON *params)
+{
+    cJSON *response;
+    cJSON *key_item, *mod_item;
+    signed long key_code = 0;
+    int modifiers = 0;
+    const char *key_name;
+
+    log_message(mcp_tools_log, "Keyboard key press request");
+
+    /* Get required key parameter */
+    key_item = cJSON_GetObjectItem(params, "key");
+    if (key_item == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing 'key' parameter");
+    }
+
+    /* Key can be either a string name or numeric code */
+    if (cJSON_IsString(key_item)) {
+        key_name = key_item->valuestring;
+
+        /* Map common key names to VHK codes */
+        if (strcmp(key_name, "Return") == 0 || strcmp(key_name, "Enter") == 0) {
+            key_code = VHK_KEY_Return;
+        } else if (strcmp(key_name, "Space") == 0) {
+            key_code = ' ';
+        } else if (strcmp(key_name, "BackSpace") == 0) {
+            key_code = VHK_KEY_BackSpace;
+        } else if (strcmp(key_name, "Delete") == 0) {
+            key_code = VHK_KEY_Delete;
+        } else if (strcmp(key_name, "Escape") == 0) {
+            key_code = VHK_KEY_Escape;
+        } else if (strcmp(key_name, "Tab") == 0) {
+            key_code = VHK_KEY_Tab;
+        } else if (strcmp(key_name, "Up") == 0) {
+            key_code = VHK_KEY_Up;
+        } else if (strcmp(key_name, "Down") == 0) {
+            key_code = VHK_KEY_Down;
+        } else if (strcmp(key_name, "Left") == 0) {
+            key_code = VHK_KEY_Left;
+        } else if (strcmp(key_name, "Right") == 0) {
+            key_code = VHK_KEY_Right;
+        } else if (strcmp(key_name, "Home") == 0) {
+            key_code = VHK_KEY_Home;
+        } else if (strcmp(key_name, "End") == 0) {
+            key_code = VHK_KEY_End;
+        } else if (strcmp(key_name, "F1") == 0) {
+            key_code = VHK_KEY_F1;
+        } else if (strcmp(key_name, "F2") == 0) {
+            key_code = VHK_KEY_F2;
+        } else if (strcmp(key_name, "F3") == 0) {
+            key_code = VHK_KEY_F3;
+        } else if (strcmp(key_name, "F4") == 0) {
+            key_code = VHK_KEY_F4;
+        } else if (strcmp(key_name, "F5") == 0) {
+            key_code = VHK_KEY_F5;
+        } else if (strcmp(key_name, "F6") == 0) {
+            key_code = VHK_KEY_F6;
+        } else if (strcmp(key_name, "F7") == 0) {
+            key_code = VHK_KEY_F7;
+        } else if (strcmp(key_name, "F8") == 0) {
+            key_code = VHK_KEY_F8;
+        } else if (strlen(key_name) == 1) {
+            /* Single character - use ASCII value */
+            key_code = (signed long)key_name[0];
+        } else {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "Unknown key name");
+        }
+    } else if (cJSON_IsNumber(key_item)) {
+        key_code = (signed long)key_item->valueint;
+    } else {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "'key' must be string or number");
+    }
+
+    /* Get optional modifiers */
+    mod_item = cJSON_GetObjectItem(params, "modifiers");
+    if (mod_item != NULL && cJSON_IsArray(mod_item)) {
+        int i;
+        for (i = 0; i < cJSON_GetArraySize(mod_item); i++) {
+            cJSON *mod = cJSON_GetArrayItem(mod_item, i);
+            if (cJSON_IsString(mod)) {
+                const char *mod_name = mod->valuestring;
+                if (strcmp(mod_name, "shift") == 0) {
+                    modifiers |= VHK_MOD_SHIFT;
+                } else if (strcmp(mod_name, "control") == 0 || strcmp(mod_name, "ctrl") == 0) {
+                    modifiers |= VHK_MOD_CONTROL;
+                } else if (strcmp(mod_name, "alt") == 0) {
+                    modifiers |= VHK_MOD_ALT;
+                } else if (strcmp(mod_name, "meta") == 0) {
+                    modifiers |= VHK_MOD_META;
+                } else if (strcmp(mod_name, "command") == 0 || strcmp(mod_name, "cmd") == 0) {
+                    modifiers |= VHK_MOD_COMMAND;
+                }
+            }
+        }
+    }
+
+    log_message(mcp_tools_log, "Pressing key: code=%ld, modifiers=0x%04x", key_code, (unsigned int)modifiers);
+
+    /* Press the key */
+    keyboard_key_pressed(key_code, modifiers);
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "key_code", key_code);
+    cJSON_AddNumberToObject(response, "modifiers", modifiers);
+
+    return response;
+}
+
+cJSON* mcp_tool_keyboard_key_release(cJSON *params)
+{
+    cJSON *response;
+    cJSON *key_item, *mod_item;
+    signed long key_code = 0;
+    int modifiers = 0;
+    const char *key_name;
+
+    log_message(mcp_tools_log, "Keyboard key release request");
+
+    /* Get required key parameter */
+    key_item = cJSON_GetObjectItem(params, "key");
+    if (key_item == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing 'key' parameter");
+    }
+
+    /* Key can be either a string name or numeric code */
+    if (cJSON_IsString(key_item)) {
+        key_name = key_item->valuestring;
+
+        /* Map common key names to VHK codes (same as key_press) */
+        if (strcmp(key_name, "Return") == 0 || strcmp(key_name, "Enter") == 0) {
+            key_code = VHK_KEY_Return;
+        } else if (strcmp(key_name, "Space") == 0) {
+            key_code = ' ';
+        } else if (strcmp(key_name, "BackSpace") == 0) {
+            key_code = VHK_KEY_BackSpace;
+        } else if (strcmp(key_name, "Delete") == 0) {
+            key_code = VHK_KEY_Delete;
+        } else if (strcmp(key_name, "Escape") == 0) {
+            key_code = VHK_KEY_Escape;
+        } else if (strcmp(key_name, "Tab") == 0) {
+            key_code = VHK_KEY_Tab;
+        } else if (strcmp(key_name, "Up") == 0) {
+            key_code = VHK_KEY_Up;
+        } else if (strcmp(key_name, "Down") == 0) {
+            key_code = VHK_KEY_Down;
+        } else if (strcmp(key_name, "Left") == 0) {
+            key_code = VHK_KEY_Left;
+        } else if (strcmp(key_name, "Right") == 0) {
+            key_code = VHK_KEY_Right;
+        } else if (strcmp(key_name, "Home") == 0) {
+            key_code = VHK_KEY_Home;
+        } else if (strcmp(key_name, "End") == 0) {
+            key_code = VHK_KEY_End;
+        } else if (strcmp(key_name, "F1") == 0) {
+            key_code = VHK_KEY_F1;
+        } else if (strcmp(key_name, "F2") == 0) {
+            key_code = VHK_KEY_F2;
+        } else if (strcmp(key_name, "F3") == 0) {
+            key_code = VHK_KEY_F3;
+        } else if (strcmp(key_name, "F4") == 0) {
+            key_code = VHK_KEY_F4;
+        } else if (strcmp(key_name, "F5") == 0) {
+            key_code = VHK_KEY_F5;
+        } else if (strcmp(key_name, "F6") == 0) {
+            key_code = VHK_KEY_F6;
+        } else if (strcmp(key_name, "F7") == 0) {
+            key_code = VHK_KEY_F7;
+        } else if (strcmp(key_name, "F8") == 0) {
+            key_code = VHK_KEY_F8;
+        } else if (strlen(key_name) == 1) {
+            /* Single character - use ASCII value */
+            key_code = (signed long)key_name[0];
+        } else {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "Unknown key name");
+        }
+    } else if (cJSON_IsNumber(key_item)) {
+        key_code = (signed long)key_item->valueint;
+    } else {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "'key' must be string or number");
+    }
+
+    /* Get optional modifiers */
+    mod_item = cJSON_GetObjectItem(params, "modifiers");
+    if (mod_item != NULL && cJSON_IsArray(mod_item)) {
+        int i;
+        for (i = 0; i < cJSON_GetArraySize(mod_item); i++) {
+            cJSON *mod = cJSON_GetArrayItem(mod_item, i);
+            if (cJSON_IsString(mod)) {
+                const char *mod_name = mod->valuestring;
+                if (strcmp(mod_name, "shift") == 0) {
+                    modifiers |= VHK_MOD_SHIFT;
+                } else if (strcmp(mod_name, "control") == 0 || strcmp(mod_name, "ctrl") == 0) {
+                    modifiers |= VHK_MOD_CONTROL;
+                } else if (strcmp(mod_name, "alt") == 0) {
+                    modifiers |= VHK_MOD_ALT;
+                } else if (strcmp(mod_name, "meta") == 0) {
+                    modifiers |= VHK_MOD_META;
+                } else if (strcmp(mod_name, "command") == 0 || strcmp(mod_name, "cmd") == 0) {
+                    modifiers |= VHK_MOD_COMMAND;
+                }
+            }
+        }
+    }
+
+    log_message(mcp_tools_log, "Releasing key: code=%ld, modifiers=0x%04x", key_code, (unsigned int)modifiers);
+
+    /* Release the key */
+    keyboard_key_released(key_code, modifiers);
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "key_code", key_code);
+    cJSON_AddNumberToObject(response, "modifiers", modifiers);
+
+    return response;
+}
+
+cJSON* mcp_tool_joystick_set(cJSON *params)
+{
+    cJSON *response;
+    cJSON *port_item, *dir_item, *fire_item;
+    unsigned int port = 1;  /* Default to port 1 */
+    uint16_t value = 0;
+
+    log_message(mcp_tools_log, "Joystick set request");
+
+    /* Get optional port parameter (1 or 2) */
+    port_item = cJSON_GetObjectItem(params, "port");
+    if (port_item != NULL && cJSON_IsNumber(port_item)) {
+        port = (unsigned int)port_item->valueint;
+        if (port < 1 || port > 2) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "Port must be 1 or 2");
+        }
+    }
+
+    /* Get optional direction parameter (string or array) */
+    dir_item = cJSON_GetObjectItem(params, "direction");
+    if (dir_item != NULL) {
+        if (cJSON_IsString(dir_item)) {
+            const char *dir = dir_item->valuestring;
+            if (strcmp(dir, "up") == 0) {
+                value |= JOYSTICK_DIRECTION_UP;
+            } else if (strcmp(dir, "down") == 0) {
+                value |= JOYSTICK_DIRECTION_DOWN;
+            } else if (strcmp(dir, "left") == 0) {
+                value |= JOYSTICK_DIRECTION_LEFT;
+            } else if (strcmp(dir, "right") == 0) {
+                value |= JOYSTICK_DIRECTION_RIGHT;
+            } else if (strcmp(dir, "none") != 0 && strcmp(dir, "center") != 0) {
+                return mcp_error(MCP_ERROR_INVALID_PARAMS, "Invalid direction");
+            }
+        } else if (cJSON_IsArray(dir_item)) {
+            int i;
+            for (i = 0; i < cJSON_GetArraySize(dir_item); i++) {
+                cJSON *d = cJSON_GetArrayItem(dir_item, i);
+                if (cJSON_IsString(d)) {
+                    const char *dir = d->valuestring;
+                    if (strcmp(dir, "up") == 0) {
+                        value |= JOYSTICK_DIRECTION_UP;
+                    } else if (strcmp(dir, "down") == 0) {
+                        value |= JOYSTICK_DIRECTION_DOWN;
+                    } else if (strcmp(dir, "left") == 0) {
+                        value |= JOYSTICK_DIRECTION_LEFT;
+                    } else if (strcmp(dir, "right") == 0) {
+                        value |= JOYSTICK_DIRECTION_RIGHT;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Get optional fire button parameter */
+    fire_item = cJSON_GetObjectItem(params, "fire");
+    if (fire_item != NULL && cJSON_IsBool(fire_item)) {
+        if (cJSON_IsTrue(fire_item)) {
+            value |= 16;  /* Fire button bit */
+        }
+    }
+
+    log_message(mcp_tools_log, "Setting joystick port %u to value 0x%04x", port, value);
+
+    /* Set joystick state */
+    joystick_set_value_absolute(port, value);
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "port", port);
+    cJSON_AddNumberToObject(response, "value", value);
+
+    return response;
+}
+
+/* =============================================================================
+ * Phase 4: Advanced Debugging
+ * =============================================================================
+ */
+
+/* Disassemble memory to 6502 instructions
+ * Accepts address as number, hex string ("$1000"), or symbol name ("FindBestMove")
+ * Shows symbol names in output where available */
+static cJSON* mcp_tool_disassemble(cJSON *params)
+{
+    cJSON *response, *lines_array, *addr_item, *count_item, *symbols_item;
+    uint16_t address;
+    int count = 10;  /* Default to 10 instructions */
+    int show_symbols = 1;  /* Default: show symbol names in output */
+    int i;
+    char line_buf[256];
+    const char *error_msg;
+
+    log_message(mcp_tools_log, "Handling vice.disassemble");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Get address (required) - can be number, hex string, or symbol name */
+    addr_item = cJSON_GetObjectItem(params, "address");
+    if (addr_item == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "address required");
+    }
+    int resolved = mcp_resolve_address(addr_item, &error_msg);
+    if (resolved < 0) {
+        char err_buf[128];
+        snprintf(err_buf, sizeof(err_buf), "Cannot resolve address: %s", error_msg);
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+    }
+    address = (uint16_t)resolved;
+
+    /* Get count (optional, default 10) */
+    count_item = cJSON_GetObjectItem(params, "count");
+    if (count_item != NULL && cJSON_IsNumber(count_item)) {
+        count = count_item->valueint;
+        if (count < 1) count = 1;
+        if (count > 100) count = 100;  /* Limit to 100 lines */
+    }
+
+    /* Get show_symbols option (optional, default true) */
+    symbols_item = cJSON_GetObjectItem(params, "show_symbols");
+    if (symbols_item != NULL && cJSON_IsBool(symbols_item)) {
+        show_symbols = cJSON_IsTrue(symbols_item);
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    lines_array = cJSON_CreateArray();
+    if (lines_array == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Disassemble each instruction */
+    for (i = 0; i < count && address < 0xFFFF; i++) {
+        const char *disasm;
+        unsigned int opc_size = 0;
+        cJSON *line_obj;
+        uint8_t opc, p1, p2, p3;
+        char *addr_symbol = NULL;
+        char *target_symbol = NULL;
+        uint16_t target_addr = 0;
+        int has_target = 0;
+
+        /* Check if this address has a symbol */
+        if (show_symbols) {
+            addr_symbol = mon_symbol_table_lookup_name(e_comp_space, address);
+        }
+
+        /* Read opcode and potential operand bytes from memory */
+        opc = mon_get_mem_val(e_comp_space, address);
+        p1 = mon_get_mem_val(e_comp_space, (uint16_t)(address + 1));
+        p2 = mon_get_mem_val(e_comp_space, (uint16_t)(address + 2));
+        p3 = mon_get_mem_val(e_comp_space, (uint16_t)(address + 3));
+
+        /* Use VICE's disassembler - e_comp_space is main CPU memory
+         * Args: memspace, addr, opcode, operand1, operand2, operand3, hex_mode, opc_size_ptr */
+        disasm = mon_disassemble_to_string_ex(e_comp_space, address, opc, p1, p2, p3, 1, &opc_size);
+
+        if (disasm == NULL) {
+            break;
+        }
+
+        /* Check for JSR/JMP target symbols (opcodes: JSR=$20, JMP=$4C, JMP indirect=$6C) */
+        if (show_symbols && (opc == 0x20 || opc == 0x4C)) {
+            /* Absolute addressing - target is p1 (low) + p2 (high) */
+            target_addr = (uint16_t)(p1 | (p2 << 8));
+            target_symbol = mon_symbol_table_lookup_name(e_comp_space, target_addr);
+            has_target = 1;
+        }
+
+        line_obj = cJSON_CreateObject();
+        if (line_obj == NULL) {
+            break;
+        }
+
+        cJSON_AddNumberToObject(line_obj, "address", address);
+
+        /* Format output with symbols */
+        if (addr_symbol != NULL) {
+            if (has_target && target_symbol != NULL) {
+                /* Both address and target have symbols */
+                snprintf(line_buf, sizeof(line_buf), "$%04X <%s>: %s  ; -> %s",
+                         address, addr_symbol, disasm, target_symbol);
+            } else {
+                snprintf(line_buf, sizeof(line_buf), "$%04X <%s>: %s", address, addr_symbol, disasm);
+            }
+            cJSON_AddStringToObject(line_obj, "symbol", addr_symbol);
+        } else {
+            if (has_target && target_symbol != NULL) {
+                snprintf(line_buf, sizeof(line_buf), "$%04X: %s  ; -> %s", address, disasm, target_symbol);
+            } else {
+                snprintf(line_buf, sizeof(line_buf), "$%04X: %s", address, disasm);
+            }
+        }
+
+        cJSON_AddStringToObject(line_obj, "text", line_buf);
+        cJSON_AddStringToObject(line_obj, "instruction", disasm);
+        cJSON_AddNumberToObject(line_obj, "size", opc_size);
+
+        if (has_target) {
+            cJSON_AddNumberToObject(line_obj, "target", target_addr);
+            if (target_symbol != NULL) {
+                cJSON_AddStringToObject(line_obj, "target_symbol", target_symbol);
+            }
+        }
+
+        cJSON_AddItemToArray(lines_array, line_obj);
+
+        /* Move to next instruction */
+        if (opc_size == 0) {
+            opc_size = 1;  /* Safety: avoid infinite loop */
+        }
+        address += opc_size;
+    }
+
+    cJSON_AddItemToObject(response, "lines", lines_array);
+    cJSON_AddNumberToObject(response, "count", cJSON_GetArraySize(lines_array));
+
+    return response;
+}
+
+/* Load symbol/label file
+ * Supports multiple formats:
+ * - VICE format: "al C:xxxx .label_name"
+ * - Simple format: "label_name = $xxxx" or "label_name = xxxx"
+ * - KickAssembler format: ".label NAME=$xxxx" with ".namespace name { }" blocks
+ */
+static cJSON* mcp_tool_symbols_load(cJSON *params)
+{
+    cJSON *response, *path_item, *format_item;
+    const char *path;
+    const char *format = NULL;
+    FILE *fp;
+    char line[512];
+    int count = 0;
+    char namespace_stack[8][64];  /* Support up to 8 nested namespaces */
+    int namespace_depth = 0;
+    int label_brace_depth = 0;  /* Track { } blocks after labels (not namespaces) */
+
+    log_message(mcp_tools_log, "Handling vice.symbols.load");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    path_item = cJSON_GetObjectItem(params, "path");
+    if (!cJSON_IsString(path_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "path required");
+    }
+    path = path_item->valuestring;
+
+    /* Optional format hint: "vice", "kickasm", or "auto" (default) */
+    format_item = cJSON_GetObjectItem(params, "format");
+    if (format_item != NULL && cJSON_IsString(format_item)) {
+        format = format_item->valuestring;
+    }
+
+    fp = fopen(path, "r");
+    if (fp == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Cannot open symbol file");
+    }
+
+    /* Auto-detect format if not specified */
+    if (format == NULL || strcmp(format, "auto") == 0) {
+        /* Peek at first non-empty line to detect format */
+        while (fgets(line, sizeof(line), fp) != NULL) {
+            char *p = line;
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == '\0' || *p == '\n' || *p == ';' || *p == '#' || strncmp(p, "//", 2) == 0) continue;
+
+            /* Check for KickAssembler markers */
+            if (strncmp(p, ".label ", 7) == 0 || strncmp(p, ".namespace ", 11) == 0 ||
+                strncmp(p, ".const ", 7) == 0 || strncmp(p, ".var ", 5) == 0) {
+                format = "kickasm";
+            } else if (strncmp(p, "al ", 3) == 0) {
+                format = "vice";
+            } else {
+                format = "simple";
+            }
+            break;
+        }
+        rewind(fp);
+        if (format == NULL) format = "simple";
+    }
+
+    log_message(mcp_tools_log, "Symbol file format: %s", format);
+
+    /* Parse symbol file line by line */
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        char label[128];
+        char full_label[256];
+        unsigned int addr;
+        char *p;
+
+        /* Skip empty lines and comments */
+        p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '\n' || *p == ';' || *p == '#') continue;
+        if (strncmp(p, "//", 2) == 0) continue;  /* KickAssembler comments */
+
+        /* KickAssembler format parsing */
+        if (strcmp(format, "kickasm") == 0) {
+            /* Handle namespace opening: ".namespace name {" */
+            if (strncmp(p, ".namespace ", 11) == 0) {
+                char ns_name[64];
+                if (sscanf(p + 11, "%63[^{ \t\n]", ns_name) == 1) {
+                    if (namespace_depth < 8) {
+                        strncpy(namespace_stack[namespace_depth], ns_name, 63);
+                        namespace_stack[namespace_depth][63] = '\0';
+                        namespace_depth++;
+                        log_message(mcp_tools_log, "Entered namespace: %s (depth=%d)", ns_name, namespace_depth);
+                    }
+                }
+                continue;
+            }
+
+            /* Handle closing brace - could be from namespace or label block */
+            if (*p == '}') {
+                if (label_brace_depth > 0) {
+                    label_brace_depth--;  /* Label block closed, not namespace */
+                } else if (namespace_depth > 0) {
+                    namespace_depth--;
+                    log_message(mcp_tools_log, "Exited namespace (depth=%d)", namespace_depth);
+                }
+                continue;
+            }
+
+            /* Handle .label NAME=$ADDR or .label NAME=$ADDR { */
+            if (strncmp(p, ".label ", 7) == 0) {
+                char *eq = strchr(p + 7, '=');
+                if (eq != NULL) {
+                    /* Extract label name (everything between .label and =) */
+                    int name_len = (int)(eq - (p + 7));
+                    if (name_len > 0 && name_len < 127) {
+                        strncpy(label, p + 7, name_len);
+                        label[name_len] = '\0';
+                        /* Trim trailing whitespace from label */
+                        while (name_len > 0 && (label[name_len-1] == ' ' || label[name_len-1] == '\t')) {
+                            label[--name_len] = '\0';
+                        }
+
+                        /* Parse address after = (skip $ if present) */
+                        char *addr_start = eq + 1;
+                        while (*addr_start == ' ' || *addr_start == '\t') addr_start++;
+                        if (*addr_start == '$') addr_start++;
+
+                        if (sscanf(addr_start, "%x", &addr) == 1) {
+                            /* Build full label with namespace prefix */
+                            full_label[0] = '\0';
+                            for (int i = 0; i < namespace_depth; i++) {
+                                if (strlen(full_label) + strlen(namespace_stack[i]) + 2 < sizeof(full_label)) {
+                                    strcat(full_label, namespace_stack[i]);
+                                    strcat(full_label, ".");
+                                }
+                            }
+                            if (strlen(full_label) + strlen(label) < sizeof(full_label)) {
+                                strcat(full_label, label);
+                            }
+
+                            MON_ADDR mon_addr = new_addr(e_comp_space, (uint16_t)addr);
+                            /* Must strdup - mon_add_name_to_symbol_table stores pointer */
+                            mon_add_name_to_symbol_table(mon_addr, lib_strdup(full_label));
+                            count++;
+
+                            /* Check if this label opens a block (has { at end of line) */
+                            if (strchr(addr_start, '{') != NULL) {
+                                label_brace_depth++;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            /* Handle .const NAME=$ADDR (treat same as .label) */
+            if (strncmp(p, ".const ", 7) == 0) {
+                char *eq = strchr(p + 7, '=');
+                if (eq != NULL) {
+                    int name_len = (int)(eq - (p + 7));
+                    if (name_len > 0 && name_len < 127) {
+                        strncpy(label, p + 7, name_len);
+                        label[name_len] = '\0';
+                        while (name_len > 0 && (label[name_len-1] == ' ' || label[name_len-1] == '\t')) {
+                            label[--name_len] = '\0';
+                        }
+
+                        char *addr_start = eq + 1;
+                        while (*addr_start == ' ' || *addr_start == '\t') addr_start++;
+                        if (*addr_start == '$') addr_start++;
+
+                        if (sscanf(addr_start, "%x", &addr) == 1) {
+                            full_label[0] = '\0';
+                            for (int i = 0; i < namespace_depth; i++) {
+                                if (strlen(full_label) + strlen(namespace_stack[i]) + 2 < sizeof(full_label)) {
+                                    strcat(full_label, namespace_stack[i]);
+                                    strcat(full_label, ".");
+                                }
+                            }
+                            if (strlen(full_label) + strlen(label) < sizeof(full_label)) {
+                                strcat(full_label, label);
+                            }
+
+                            MON_ADDR mon_addr = new_addr(e_comp_space, (uint16_t)addr);
+                            /* Must strdup - mon_add_name_to_symbol_table stores pointer */
+                            mon_add_name_to_symbol_table(mon_addr, lib_strdup(full_label));
+                            count++;
+
+                            /* Check if this const opens a block (has { at end of line) */
+                            if (strchr(addr_start, '{') != NULL) {
+                                label_brace_depth++;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            continue;  /* Skip unrecognized KickAssembler directives */
+        }
+
+        /* VICE format: "al C:xxxx .label_name" */
+        if (strcmp(format, "vice") == 0 || strcmp(format, "simple") == 0) {
+            if (strncmp(p, "al ", 3) == 0) {
+                if (sscanf(p, "al C:%x .%127s", &addr, label) == 2 ||
+                    sscanf(p, "al %*c:%x .%127s", &addr, label) == 2) {
+                    MON_ADDR mon_addr = new_addr(e_comp_space, (uint16_t)addr);
+                    /* Must strdup - mon_add_name_to_symbol_table stores pointer */
+                    mon_add_name_to_symbol_table(mon_addr, lib_strdup(label));
+                    count++;
+                    continue;
+                }
+            }
+        }
+
+        /* Simple format: "label = $xxxx" or "label = xxxx" */
+        if (strcmp(format, "simple") == 0 || strcmp(format, "vice") == 0) {
+            if (sscanf(p, "%127s = $%x", label, &addr) == 2 ||
+                sscanf(p, "%127s = %x", label, &addr) == 2) {
+                MON_ADDR mon_addr = new_addr(e_comp_space, (uint16_t)addr);
+                /* Must strdup - mon_add_name_to_symbol_table stores pointer */
+                mon_add_name_to_symbol_table(mon_addr, lib_strdup(label));
+                count++;
+            }
+        }
+    }
+
+    fclose(fp);
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddStringToObject(response, "path", path);
+    cJSON_AddStringToObject(response, "format_detected", format);
+    cJSON_AddNumberToObject(response, "symbols_loaded", count);
+
+    return response;
+}
+
+/* Lookup symbol by name or address */
+static cJSON* mcp_tool_symbols_lookup(cJSON *params)
+{
+    cJSON *response, *name_item, *addr_item;
+
+    log_message(mcp_tools_log, "Handling vice.symbols.lookup");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Lookup by name */
+    name_item = cJSON_GetObjectItem(params, "name");
+    if (name_item != NULL && cJSON_IsString(name_item)) {
+        int addr = mon_symbol_table_lookup_addr(e_comp_space, (char *)name_item->valuestring);
+        if (addr >= 0) {
+            cJSON_AddStringToObject(response, "status", "ok");
+            cJSON_AddStringToObject(response, "name", name_item->valuestring);
+            cJSON_AddNumberToObject(response, "address", addr);
+            return response;
+        } else {
+            cJSON_Delete(response);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "Symbol not found");
+        }
+    }
+
+    /* Lookup by address */
+    addr_item = cJSON_GetObjectItem(params, "address");
+    if (addr_item != NULL && cJSON_IsNumber(addr_item)) {
+        char *name = mon_symbol_table_lookup_name(e_comp_space, (uint16_t)addr_item->valueint);
+        if (name != NULL) {
+            cJSON_AddStringToObject(response, "status", "ok");
+            cJSON_AddNumberToObject(response, "address", addr_item->valueint);
+            cJSON_AddStringToObject(response, "name", name);
+            return response;
+        } else {
+            cJSON_Delete(response);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "No symbol at address");
+        }
+    }
+
+    cJSON_Delete(response);
+    return mcp_error(MCP_ERROR_INVALID_PARAMS, "Either 'name' or 'address' required");
+}
+
+/* Add memory watchpoint (convenience wrapper for checkpoint with store/load) */
+static cJSON* mcp_tool_watch_add(cJSON *params)
+{
+    cJSON *response, *addr_item, *type_item, *size_item;
+    uint16_t address, end_address;
+    int size = 1;
+    MEMORY_OP op = 0;
+    const char *watch_type = "write";
+    int checkpoint_num;
+    const char *error_msg;
+    int resolved;
+
+    log_message(mcp_tools_log, "Handling vice.watch.add");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Get address (required) - can be number, hex string, or symbol */
+    addr_item = cJSON_GetObjectItem(params, "address");
+    if (addr_item == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "address required");
+    }
+    resolved = mcp_resolve_address(addr_item, &error_msg);
+    if (resolved < 0) {
+        char err_buf[128];
+        snprintf(err_buf, sizeof(err_buf), "Cannot resolve address: %s", error_msg);
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+    }
+    address = (uint16_t)resolved;
+
+    /* Get size (optional, default 1) */
+    size_item = cJSON_GetObjectItem(params, "size");
+    if (size_item != NULL && cJSON_IsNumber(size_item)) {
+        size = size_item->valueint;
+        if (size < 1) size = 1;
+    }
+    end_address = address + size - 1;
+
+    /* Get type (optional: "read", "write", or "both", default "write") */
+    type_item = cJSON_GetObjectItem(params, "type");
+    if (type_item != NULL && cJSON_IsString(type_item)) {
+        watch_type = type_item->valuestring;
+    }
+
+    if (strcmp(watch_type, "read") == 0) {
+        op = e_load;
+    } else if (strcmp(watch_type, "write") == 0) {
+        op = e_store;
+    } else if (strcmp(watch_type, "both") == 0) {
+        op = e_load | e_store;
+    } else {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "type must be 'read', 'write', or 'both'");
+    }
+
+    /* Create checkpoint with the appropriate operation type */
+    checkpoint_num = mon_breakpoint_add_checkpoint(
+        (MON_ADDR)address,
+        (MON_ADDR)end_address,
+        true,   /* stop */
+        op,
+        false,  /* is_temp */
+        true    /* do_print */
+    );
+
+    if (checkpoint_num < 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to create watchpoint");
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "checkpoint_num", checkpoint_num);
+    cJSON_AddNumberToObject(response, "address", address);
+    cJSON_AddNumberToObject(response, "size", size);
+    cJSON_AddStringToObject(response, "type", watch_type);
+
+    return response;
+}
+
+/* =========================================================================
+ * Phase 5: Enhanced Debugging Tools
+ * ========================================================================= */
+
+/* Show call stack (JSR return addresses on 6502 stack)
+ * The 6502 stack is at $0100-$01FF, growing downward.
+ * JSR pushes the return address minus 1 (high byte first, then low byte).
+ * This scans the stack for likely return addresses. */
+static cJSON* mcp_tool_backtrace(cJSON *params)
+{
+    cJSON *response, *frames_array, *depth_item;
+    int sp, max_depth;
+    int frame_count = 0;
+    uint8_t lo, hi;
+    uint16_t ret_addr;
+    char *symbol;
+
+    (void)params;
+
+    log_message(mcp_tools_log, "Handling vice.backtrace");
+
+    max_depth = 16;  /* Default max frames */
+    if (params != NULL) {
+        depth_item = cJSON_GetObjectItem(params, "depth");
+        if (depth_item != NULL && cJSON_IsNumber(depth_item)) {
+            max_depth = depth_item->valueint;
+            if (max_depth < 1) max_depth = 1;
+            if (max_depth > 64) max_depth = 64;
+        }
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    frames_array = cJSON_CreateArray();
+    if (frames_array == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Get current stack pointer */
+    sp = maincpu_get_sp();
+
+    /* Scan stack for return addresses
+     * Stack grows downward, so we scan from SP+1 upward to $FF
+     * Return addresses are stored as (addr-1), low byte first (pushed high, then low by JSR) */
+    for (int i = sp + 1; i < 0xFF && frame_count < max_depth; i += 2) {
+        cJSON *frame_obj;
+
+        /* Return addresses on stack are low-byte first when reading */
+        lo = mem_bank_peek(0, (uint16_t)(0x100 + i), NULL);
+        hi = mem_bank_peek(0, (uint16_t)(0x100 + i + 1), NULL);
+
+        /* JSR stores addr-1, so add 1 to get actual return address */
+        ret_addr = (uint16_t)((hi << 8) | lo) + 1;
+
+        /* Basic heuristic: skip if address looks invalid (in zero page or stack area) */
+        if (ret_addr < 0x0200 || ret_addr > 0xFFFC) {
+            continue;
+        }
+
+        frame_obj = cJSON_CreateObject();
+        if (frame_obj == NULL) {
+            break;
+        }
+
+        cJSON_AddNumberToObject(frame_obj, "return_address", ret_addr);
+        cJSON_AddNumberToObject(frame_obj, "stack_offset", 0x100 + i);
+
+        /* Look up symbol at return address */
+        symbol = mon_symbol_table_lookup_name(e_comp_space, ret_addr);
+        if (symbol != NULL) {
+            cJSON_AddStringToObject(frame_obj, "symbol", symbol);
+        }
+
+        /* Also check the JSR target (3 bytes before return address) */
+        if (ret_addr >= 3) {
+            uint8_t jsr_opcode = mem_bank_peek(0, (uint16_t)(ret_addr - 3), NULL);
+            if (jsr_opcode == 0x20) {  /* JSR opcode */
+                uint16_t jsr_target = mem_bank_peek(0, (uint16_t)(ret_addr - 2), NULL) |
+                                     (mem_bank_peek(0, (uint16_t)(ret_addr - 1), NULL) << 8);
+                cJSON_AddNumberToObject(frame_obj, "called_from", ret_addr - 3);
+                cJSON_AddNumberToObject(frame_obj, "called_target", jsr_target);
+                symbol = mon_symbol_table_lookup_name(e_comp_space, jsr_target);
+                if (symbol != NULL) {
+                    cJSON_AddStringToObject(frame_obj, "called_symbol", symbol);
+                }
+            }
+        }
+
+        cJSON_AddItemToArray(frames_array, frame_obj);
+        frame_count++;
+    }
+
+    cJSON_AddNumberToObject(response, "sp", sp);
+    cJSON_AddItemToObject(response, "frames", frames_array);
+    cJSON_AddNumberToObject(response, "frame_count", frame_count);
+
+    return response;
+}
+
+/* Run until an address is reached or a cycle limit is exceeded
+ * This helps with step-over getting stuck in busy-wait loops */
+static cJSON* mcp_tool_run_until(cJSON *params)
+{
+    cJSON *response, *addr_item, *cycles_item;
+    int resolved;
+    const char *error_msg;
+    uint16_t target_addr = 0;
+    int cycle_limit = 0;
+    int has_addr = 0;
+
+    log_message(mcp_tools_log, "Handling vice.run_until");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Get optional target address */
+    addr_item = cJSON_GetObjectItem(params, "address");
+    if (addr_item != NULL) {
+        resolved = mcp_resolve_address(addr_item, &error_msg);
+        if (resolved < 0) {
+            char err_buf[128];
+            snprintf(err_buf, sizeof(err_buf), "Cannot resolve address: %s", error_msg);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+        }
+        target_addr = (uint16_t)resolved;
+        has_addr = 1;
+    }
+
+    /* Get optional cycle limit */
+    cycles_item = cJSON_GetObjectItem(params, "cycles");
+    if (cycles_item != NULL && cJSON_IsNumber(cycles_item)) {
+        cycle_limit = cycles_item->valueint;
+        if (cycle_limit < 0) cycle_limit = 0;
+        if (cycle_limit > 10000000) cycle_limit = 10000000;  /* Max ~10M cycles */
+    }
+
+    if (!has_addr && cycle_limit == 0) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Either 'address' or 'cycles' required");
+    }
+
+    /* If we have an address target, set a temporary breakpoint */
+    if (has_addr) {
+        /* Create temporary breakpoint that will be auto-deleted when hit */
+        int bp_num = mon_breakpoint_add_checkpoint(
+            (MON_ADDR)target_addr,
+            (MON_ADDR)target_addr,
+            true,   /* stop */
+            e_exec, /* exec breakpoint */
+            true,   /* is_temp - auto-delete when hit */
+            false   /* do_print */
+        );
+
+        if (bp_num < 0) {
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to create temporary breakpoint");
+        }
+    }
+
+    /* TODO: Implement cycle-limited execution
+     * For now, we just set up the breakpoint and resume.
+     * A proper implementation would need to hook into VICE's cycle counter. */
+
+    /* Resume execution */
+    exit_mon = exit_mon_continue;
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    if (has_addr) {
+        cJSON_AddNumberToObject(response, "target_address", target_addr);
+        char *symbol = mon_symbol_table_lookup_name(e_comp_space, target_addr);
+        if (symbol != NULL) {
+            cJSON_AddStringToObject(response, "target_symbol", symbol);
+        }
+    }
+    if (cycle_limit > 0) {
+        cJSON_AddNumberToObject(response, "cycle_limit", cycle_limit);
+        cJSON_AddStringToObject(response, "note", "Cycle limit not yet implemented - using breakpoint only");
+    }
+    cJSON_AddStringToObject(response, "message", "Execution resumed, will stop at target or breakpoint");
+
+    return response;
+}
+
+/* Direct keyboard matrix control for games that scan the keyboard directly
+ * Instead of going through KERNAL's keyboard buffer, this sets the CIA
+ * keyboard matrix state directly.
+ *
+ * The C64 keyboard matrix:
+ * - CIA1 port A ($DC00) selects rows (active low)
+ * - CIA1 port B ($DC01) reads columns (active low)
+ * - See C64 keyboard matrix diagram for key positions
+ */
+
+/* Structure to track pending key releases */
+#define MAX_PENDING_KEY_RELEASES 16
+typedef struct {
+    int row;
+    int col;
+    int active;
+} pending_key_release_t;
+
+static pending_key_release_t pending_key_releases[MAX_PENDING_KEY_RELEASES];
+static alarm_t *keyboard_matrix_alarm = NULL;
+static int keyboard_matrix_alarm_initialized = 0;
+
+/* Alarm callback to release keys */
+static void keyboard_matrix_alarm_callback(CLOCK offset, void *data)
+{
+    int i;
+    (void)offset;
+    (void)data;
+
+    /* Release all pending keys */
+    for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
+        if (pending_key_releases[i].active) {
+            keyboard_set_keyarr(pending_key_releases[i].row,
+                               pending_key_releases[i].col, 0);
+            pending_key_releases[i].active = 0;
+            log_message(mcp_tools_log, "Key released: row=%d, col=%d",
+                       pending_key_releases[i].row, pending_key_releases[i].col);
+        }
+    }
+}
+
+/* Initialize the keyboard matrix alarm (lazy init) */
+static void keyboard_matrix_init_alarm(void)
+{
+    if (!keyboard_matrix_alarm_initialized && maincpu_alarm_context != NULL) {
+        keyboard_matrix_alarm = alarm_new(maincpu_alarm_context,
+                                          "MCP-KeyboardMatrix",
+                                          keyboard_matrix_alarm_callback,
+                                          NULL);
+        memset(pending_key_releases, 0, sizeof(pending_key_releases));
+        keyboard_matrix_alarm_initialized = 1;
+        log_message(mcp_tools_log, "Keyboard matrix alarm initialized");
+    }
+}
+
+/* Add a pending key release */
+static int add_pending_key_release(int row, int col)
+{
+    int i;
+    for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
+        if (!pending_key_releases[i].active) {
+            pending_key_releases[i].row = row;
+            pending_key_releases[i].col = col;
+            pending_key_releases[i].active = 1;
+            return 0;
+        }
+    }
+    return -1;  /* No free slots */
+}
+
+static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
+{
+    cJSON *response, *row_item, *col_item, *pressed_item, *key_item;
+    cJSON *hold_frames_item, *hold_ms_item, *auto_run_item;
+    int row, col;
+    int pressed = 1;  /* Default: press the key */
+    int hold_frames = 0;
+    int hold_ms = 0;
+    int auto_run = 1;  /* Default: resume execution after setting key */
+    CLOCK hold_cycles = 0;
+
+    log_message(mcp_tools_log, "Handling vice.keyboard.matrix");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Option 1: Direct row/col specification */
+    row_item = cJSON_GetObjectItem(params, "row");
+    col_item = cJSON_GetObjectItem(params, "col");
+
+    /* Option 2: Named key (common keys mapped to row/col) */
+    key_item = cJSON_GetObjectItem(params, "key");
+
+    /* Get pressed state (optional, default true) */
+    pressed_item = cJSON_GetObjectItem(params, "pressed");
+    if (pressed_item != NULL && cJSON_IsBool(pressed_item)) {
+        pressed = cJSON_IsTrue(pressed_item);
+    }
+
+    if (key_item != NULL && cJSON_IsString(key_item)) {
+        const char *key = key_item->valuestring;
+
+        /* Map common key names to matrix positions
+         * C64 keyboard matrix (row, col):
+         * See https://sta.c64.org/cbm64kbdlay.html */
+        if (strcmp(key, "SPACE") == 0)       { row = 7; col = 4; }
+        else if (strcmp(key, "RETURN") == 0) { row = 0; col = 1; }
+        else if (strcmp(key, "STOP") == 0)   { row = 7; col = 7; }
+        else if (strcmp(key, "F1") == 0)     { row = 0; col = 4; }
+        else if (strcmp(key, "F3") == 0)     { row = 0; col = 5; }
+        else if (strcmp(key, "F5") == 0)     { row = 0; col = 6; }
+        else if (strcmp(key, "F7") == 0)     { row = 0; col = 3; }
+        else if (strcmp(key, "UP") == 0)     { row = 0; col = 7; }  /* Shifted CRSR DOWN */
+        else if (strcmp(key, "DOWN") == 0)   { row = 0; col = 7; }
+        else if (strcmp(key, "LEFT") == 0)   { row = 0; col = 2; }  /* Shifted CRSR RIGHT */
+        else if (strcmp(key, "RIGHT") == 0)  { row = 0; col = 2; }
+        /* Letters (unshifted) */
+        else if (strlen(key) == 1 && key[0] >= 'A' && key[0] <= 'Z') {
+            /* Simple mapping for letters - this is approximate */
+            static const int letter_map[26][2] = {
+                {1,2}, /* A */ {3,4}, /* B */ {2,4}, /* C */ {2,2}, /* D */
+                {1,6}, /* E */ {2,5}, /* F */ {3,2}, /* G */ {3,5}, /* H */
+                {4,1}, /* I */ {4,2}, /* J */ {4,5}, /* K */ {5,2}, /* L */
+                {4,4}, /* M */ {4,7}, /* N */ {4,6}, /* O */ {5,1}, /* P */
+                {7,6}, /* Q */ {2,1}, /* R */ {1,5}, /* S */ {2,6}, /* T */
+                {3,6}, /* U */ {3,7}, /* V */ {1,1}, /* W */ {2,7}, /* X */
+                {3,1}, /* Y */ {1,4}, /* Z */
+            };
+            int idx = key[0] - 'A';
+            row = letter_map[idx][0];
+            col = letter_map[idx][1];
+        }
+        /* Numbers */
+        else if (strlen(key) == 1 && key[0] >= '0' && key[0] <= '9') {
+            static const int num_map[10][2] = {
+                {4,3}, /* 0 */ {7,0}, /* 1 */ {7,3}, /* 2 */ {1,0}, /* 3 */
+                {1,3}, /* 4 */ {2,0}, /* 5 */ {2,3}, /* 6 */ {3,0}, /* 7 */
+                {3,3}, /* 8 */ {4,0}, /* 9 */
+            };
+            int idx = key[0] - '0';
+            row = num_map[idx][0];
+            col = num_map[idx][1];
+        }
+        else {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "Unknown key name");
+        }
+    }
+    else if (cJSON_IsNumber(row_item) && cJSON_IsNumber(col_item)) {
+        row = row_item->valueint;
+        col = col_item->valueint;
+
+        if (row < 0 || row > 7 || col < 0 || col > 7) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "Row and col must be 0-7");
+        }
+    }
+    else {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Either 'key' name or 'row'/'col' required");
+    }
+
+    /* Get hold duration parameters */
+    hold_frames_item = cJSON_GetObjectItem(params, "hold_frames");
+    hold_ms_item = cJSON_GetObjectItem(params, "hold_ms");
+
+    if (hold_frames_item != NULL && cJSON_IsNumber(hold_frames_item)) {
+        hold_frames = hold_frames_item->valueint;
+        if (hold_frames < 0 || hold_frames > 300) {  /* Max 5 seconds at 60Hz */
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "hold_frames must be 0-300");
+        }
+        /* Convert frames to cycles: ~19656 cycles per frame (PAL) */
+        /* Using ~20000 as approximate for both PAL/NTSC */
+        hold_cycles = (CLOCK)hold_frames * 20000;
+    }
+
+    if (hold_ms_item != NULL && cJSON_IsNumber(hold_ms_item)) {
+        hold_ms = hold_ms_item->valueint;
+        if (hold_ms < 0 || hold_ms > 5000) {  /* Max 5 seconds */
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "hold_ms must be 0-5000");
+        }
+        /* Convert ms to cycles: ~985 cycles per ms (PAL) / ~1023 (NTSC) */
+        /* Using ~1000 as approximate */
+        hold_cycles = (CLOCK)hold_ms * 1000;
+    }
+
+    /* Get auto_run parameter (default true) - resume execution so game can scan keyboard */
+    auto_run_item = cJSON_GetObjectItem(params, "auto_run");
+    if (auto_run_item != NULL && cJSON_IsBool(auto_run_item)) {
+        auto_run = cJSON_IsTrue(auto_run_item);
+    }
+
+    /* Initialize alarm system if needed */
+    keyboard_matrix_init_alarm();
+
+    /* Set or release the key in VICE's keyboard matrix */
+    if (pressed) {
+        keyboard_set_keyarr(row, col, 1);
+        log_message(mcp_tools_log, "Key pressed: row=%d, col=%d", row, col);
+
+        /* If hold duration specified, schedule release */
+        if (hold_cycles > 0 && keyboard_matrix_alarm != NULL) {
+            if (add_pending_key_release(row, col) == 0) {
+                alarm_set(keyboard_matrix_alarm, maincpu_clk + hold_cycles);
+                log_message(mcp_tools_log, "Scheduled key release in %lu cycles", (unsigned long)hold_cycles);
+            } else {
+                log_warning(mcp_tools_log, "Too many pending key releases, releasing immediately");
+                keyboard_set_keyarr(row, col, 0);
+            }
+        }
+    } else {
+        keyboard_set_keyarr(row, col, 0);
+        log_message(mcp_tools_log, "Key released: row=%d, col=%d", row, col);
+    }
+
+    /* Resume execution so game can scan the keyboard matrix.
+     * Without this, the key is set but the game never runs to detect it.
+     * This is critical for games that directly scan CIA registers ($DC00/$DC01)
+     * rather than using KERNAL keyboard routines. */
+    if (auto_run) {
+        exit_mon = exit_mon_continue;
+        log_message(mcp_tools_log, "Resuming execution for keyboard matrix processing");
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "row", row);
+    cJSON_AddNumberToObject(response, "col", col);
+    cJSON_AddBoolToObject(response, "pressed", pressed);
+    if (hold_frames > 0) {
+        cJSON_AddNumberToObject(response, "hold_frames", hold_frames);
+    }
+    if (hold_ms > 0) {
+        cJSON_AddNumberToObject(response, "hold_ms", hold_ms);
+    }
+    cJSON_AddBoolToObject(response, "execution_resumed", auto_run);
+
+    return response;
+}
 
 void mcp_notify_breakpoint(uint16_t pc, uint32_t bp_id)
 {

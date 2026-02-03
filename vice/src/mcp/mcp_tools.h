@@ -60,6 +60,13 @@ extern void mcp_tools_shutdown(void);
 /* Tool dispatch */
 extern cJSON* mcp_tools_dispatch(const char *tool_name, cJSON *params);
 
+/* Tool handlers - MCP Base Protocol */
+extern cJSON* mcp_tool_initialize(cJSON *params);
+extern cJSON* mcp_tool_initialized_notification(cJSON *params);
+
+/* Tool handlers - Meta */
+extern cJSON* mcp_tool_tools_list(cJSON *params);
+
 /* Tool handlers - Phase 1: Core tools
  *
  * THREAD SAFETY WARNING:
@@ -77,6 +84,46 @@ extern cJSON* mcp_tool_registers_get(cJSON *params);
 extern cJSON* mcp_tool_registers_set(cJSON *params);
 extern cJSON* mcp_tool_memory_read(cJSON *params);
 extern cJSON* mcp_tool_memory_write(cJSON *params);
+extern cJSON* mcp_tool_memory_banks(cJSON *params);
+
+/* Tool handlers - Phase 2.1: Checkpoints/Breakpoints */
+extern cJSON* mcp_tool_checkpoint_add(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_delete(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_list(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_toggle(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_set_condition(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_set_ignore_count(cJSON *params);
+
+/* Tool handlers - Phase 2.2: Sprites */
+extern cJSON* mcp_tool_sprite_get(cJSON *params);
+extern cJSON* mcp_tool_sprite_set(cJSON *params);
+
+/* Tool handlers - Phase 2.3: Chip State */
+extern cJSON* mcp_tool_vicii_get_state(cJSON *params);
+extern cJSON* mcp_tool_vicii_set_state(cJSON *params);
+extern cJSON* mcp_tool_sid_get_state(cJSON *params);
+extern cJSON* mcp_tool_sid_set_state(cJSON *params);
+extern cJSON* mcp_tool_cia_get_state(cJSON *params);
+extern cJSON* mcp_tool_cia_set_state(cJSON *params);
+
+/* Tool handlers - Phase 2.4: Disk Management */
+extern cJSON* mcp_tool_disk_attach(cJSON *params);
+extern cJSON* mcp_tool_disk_detach(cJSON *params);
+extern cJSON* mcp_tool_disk_list(cJSON *params);
+extern cJSON* mcp_tool_disk_read_sector(cJSON *params);
+
+/* Tool handlers - Autostart */
+extern cJSON* mcp_tool_autostart(cJSON *params);
+
+/* Tool handlers - Phase 2.5: Display Capture */
+extern cJSON* mcp_tool_display_screenshot(cJSON *params);
+extern cJSON* mcp_tool_display_get_dimensions(cJSON *params);
+
+/* Tool handlers - Phase 3.1: Input Control */
+extern cJSON* mcp_tool_keyboard_type(cJSON *params);
+extern cJSON* mcp_tool_keyboard_key_press(cJSON *params);
+extern cJSON* mcp_tool_keyboard_key_release(cJSON *params);
+extern cJSON* mcp_tool_joystick_set(cJSON *params);
 
 /* Notification helpers */
 extern void mcp_notify_breakpoint(uint16_t pc, uint32_t bp_id);
