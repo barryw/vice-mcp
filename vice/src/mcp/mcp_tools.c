@@ -61,6 +61,11 @@
 #include "alarm.h"
 #include "joyport/joystick.h"
 #include "arch/shared/hotkeys/vhkkeysyms.h"
+#include "archdep_user_config_path.h"
+#include "archdep_mkdir.h"
+#include "util.h"
+#include <sys/stat.h>
+#include <time.h>
 
 static log_t mcp_tools_log = LOG_DEFAULT;
 static int mcp_tools_initialized = 0;  /* Double-initialization guard */
@@ -231,6 +236,104 @@ static int mcp_resolve_address(cJSON *value, const char **error_msg)
     return -1;
 }
 
+/* -------------------------------------------------------------------------
+ * Snapshot directory management
+ *
+ * Creates and returns the path to the MCP snapshots directory.
+ * Path: ~/.config/vice/mcp_snapshots/
+ * Returns NULL on failure. Caller must free result.
+ * ------------------------------------------------------------------------- */
+static char* mcp_get_snapshots_dir(void)
+{
+    const char *config_path;
+    char *snapshots_dir;
+
+    config_path = archdep_user_config_path();
+    if (config_path == NULL) {
+        return NULL;
+    }
+
+    snapshots_dir = util_join_paths(config_path, "mcp_snapshots", NULL);
+    if (snapshots_dir == NULL) {
+        return NULL;
+    }
+
+    /* Create directory if it doesn't exist */
+    archdep_mkdir(snapshots_dir, 0755);
+
+    return snapshots_dir;
+}
+
+/* Write JSON metadata sidecar file for snapshot */
+static int mcp_write_snapshot_metadata(const char *vsf_path, const char *name,
+                                        const char *description, int include_roms,
+                                        int include_disks)
+{
+    char *json_path;
+    size_t json_path_len;
+    cJSON *meta;
+    char *json_str;
+    FILE *f;
+    time_t now;
+    char timestamp[32];
+
+    /* Create .json path from .vsf path */
+    json_path_len = strlen(vsf_path) + 2;  /* .vsf -> .json (+2 chars) */
+    json_path = lib_malloc(json_path_len);
+    if (json_path == NULL) {
+        return -1;
+    }
+    strcpy(json_path, vsf_path);
+    /* Replace .vsf extension with .json */
+    strcpy(json_path + strlen(json_path) - 4, ".json");
+
+    /* Build metadata JSON */
+    meta = cJSON_CreateObject();
+    if (meta == NULL) {
+        lib_free(json_path);
+        return -1;
+    }
+
+    cJSON_AddStringToObject(meta, "name", name);
+    if (description) {
+        cJSON_AddStringToObject(meta, "description", description);
+    }
+
+    /* Timestamp */
+    time(&now);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
+    cJSON_AddStringToObject(meta, "created", timestamp);
+
+    /* Machine info */
+    cJSON_AddStringToObject(meta, "machine", machine_get_name());
+    cJSON_AddStringToObject(meta, "vice_version", VERSION);
+
+    /* Save options */
+    cJSON_AddBoolToObject(meta, "includes_roms", include_roms ? 1 : 0);
+    cJSON_AddBoolToObject(meta, "includes_disks", include_disks ? 1 : 0);
+
+    /* Write to file */
+    json_str = cJSON_Print(meta);
+    cJSON_Delete(meta);
+    if (json_str == NULL) {
+        lib_free(json_path);
+        return -1;
+    }
+
+    f = fopen(json_path, "w");
+    if (f == NULL) {
+        lib_free(json_str);
+        lib_free(json_path);
+        return -1;
+    }
+    fputs(json_str, f);
+    fclose(f);
+
+    lib_free(json_str);
+    lib_free(json_path);
+    return 0;
+}
+
 /* Forward declarations for tools defined after registry */
 static cJSON* mcp_tool_tools_call(cJSON *params);
 static cJSON* mcp_tool_disassemble(cJSON *params);
@@ -241,6 +344,7 @@ static cJSON* mcp_tool_machine_reset(cJSON *params);
 static cJSON* mcp_tool_backtrace(cJSON *params);
 static cJSON* mcp_tool_keyboard_matrix(cJSON *params);
 static cJSON* mcp_tool_run_until(cJSON *params);
+/* snapshot tools are declared extern in mcp_tools.h */
 
 /* Tool registry - const to prevent modification */
 static const mcp_tool_t tool_registry[] = {
@@ -313,6 +417,11 @@ static const mcp_tool_t tool_registry[] = {
     { "vice.backtrace", "Show call stack (JSR return addresses)", mcp_tool_backtrace },
     { "vice.run_until", "Run until address or for N cycles (with timeout)", mcp_tool_run_until },
     { "vice.keyboard.matrix", "Direct keyboard matrix control (for games that scan keyboard directly)", mcp_tool_keyboard_matrix },
+
+    /* Snapshot Management */
+    { "vice.snapshot.save", "Save emulator state to named snapshot with metadata", mcp_tool_snapshot_save },
+    { "vice.snapshot.load", "Load emulator state from named snapshot", mcp_tool_snapshot_load },
+    { "vice.snapshot.list", "List available snapshots with metadata", mcp_tool_snapshot_list },
 
     { NULL, NULL, NULL } /* Sentinel */
 };
@@ -4694,4 +4803,124 @@ void mcp_notify_execution_state_changed(const char *state)
     /* TODO: Build JSON event */
     /* TODO: Send via SSE */
     /* mcp_transport_sse_send_event("execution_state", json_data); */
+}
+
+/* =========================================================================
+ * Snapshot Management Tools
+ * ========================================================================= */
+
+cJSON* mcp_tool_snapshot_save(cJSON *params)
+{
+    cJSON *response;
+    cJSON *name_item, *desc_item, *roms_item, *disks_item;
+    const char *name;
+    const char *description = NULL;
+    int include_roms = 0;
+    int include_disks = 0;
+    char *snapshots_dir;
+    char *vsf_path;
+    int result;
+
+    log_message(mcp_tools_log, "Handling vice.snapshot.save");
+
+    /* Get required name parameter */
+    name_item = cJSON_GetObjectItem(params, "name");
+    if (name_item == NULL || !cJSON_IsString(name_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing required parameter: name (string) - a descriptive name for this snapshot");
+    }
+    name = name_item->valuestring;
+
+    /* Validate name - alphanumeric, underscore, hyphen only */
+    {
+        const char *p;
+        for (p = name; *p; p++) {
+            if (!isalnum((unsigned char)*p) && *p != '_' && *p != '-') {
+                return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                    "Invalid name: use only alphanumeric characters, underscores, and hyphens");
+            }
+        }
+    }
+
+    /* Get optional parameters */
+    desc_item = cJSON_GetObjectItem(params, "description");
+    if (desc_item != NULL && cJSON_IsString(desc_item)) {
+        description = desc_item->valuestring;
+    }
+
+    roms_item = cJSON_GetObjectItem(params, "include_roms");
+    if (roms_item != NULL && cJSON_IsBool(roms_item)) {
+        include_roms = cJSON_IsTrue(roms_item) ? 1 : 0;
+    }
+
+    disks_item = cJSON_GetObjectItem(params, "include_disks");
+    if (disks_item != NULL && cJSON_IsBool(disks_item)) {
+        include_disks = cJSON_IsTrue(disks_item) ? 1 : 0;
+    }
+
+    /* Get/create snapshots directory */
+    snapshots_dir = mcp_get_snapshots_dir();
+    if (snapshots_dir == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR,
+            "Failed to access snapshots directory");
+    }
+
+    /* Build full path */
+    vsf_path = util_join_paths(snapshots_dir, name, NULL);
+    lib_free(snapshots_dir);
+    if (vsf_path == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to build snapshot path");
+    }
+
+    /* Add .vsf extension */
+    {
+        size_t len = strlen(vsf_path);
+        char *full_path = lib_malloc(len + 5);  /* +5 for ".vsf\0" */
+        if (full_path == NULL) {
+            lib_free(vsf_path);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        sprintf(full_path, "%s.vsf", vsf_path);
+        lib_free(vsf_path);
+        vsf_path = full_path;
+    }
+
+    /* Save snapshot */
+    result = machine_write_snapshot(vsf_path, include_roms, include_disks, 0);
+    if (result != 0) {
+        lib_free(vsf_path);
+        return mcp_error(MCP_ERROR_SNAPSHOT_FAILED,
+            "Failed to save snapshot - check if emulator state is valid");
+    }
+
+    /* Write metadata sidecar */
+    mcp_write_snapshot_metadata(vsf_path, name, description, include_roms, include_disks);
+
+    /* Build success response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        lib_free(vsf_path);
+        return NULL;
+    }
+
+    cJSON_AddStringToObject(response, "name", name);
+    cJSON_AddStringToObject(response, "path", vsf_path);
+    if (description) {
+        cJSON_AddStringToObject(response, "description", description);
+    }
+
+    lib_free(vsf_path);
+    return response;
+}
+
+cJSON* mcp_tool_snapshot_load(cJSON *params)
+{
+    (void)params;
+    return mcp_error(MCP_ERROR_NOT_IMPLEMENTED, "snapshot.load not yet implemented");
+}
+
+cJSON* mcp_tool_snapshot_list(cJSON *params)
+{
+    (void)params;
+    return mcp_error(MCP_ERROR_NOT_IMPLEMENTED, "snapshot.list not yet implemented");
 }

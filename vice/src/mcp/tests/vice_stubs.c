@@ -565,3 +565,47 @@ const char *archdep_user_config_path(void)
 {
     return "/tmp/vice-test-config";
 }
+
+/* archdep_mkdir stub - just succeeds */
+int archdep_mkdir(const char *pathname, int mode)
+{
+    (void)pathname;
+    (void)mode;
+    return 0;  /* Success */
+}
+
+/* util_join_paths stub - simple concatenation for testing */
+char *util_join_paths(const char *path, ...)
+{
+    va_list args;
+    const char *component;
+    size_t total_len = 0;
+    char *result;
+    char *p;
+
+    /* Calculate total length needed */
+    total_len = strlen(path);
+    va_start(args, path);
+    while ((component = va_arg(args, const char *)) != NULL) {
+        total_len += 1 + strlen(component);  /* +1 for '/' */
+    }
+    va_end(args);
+
+    /* Allocate and build result */
+    result = lib_malloc(total_len + 1);
+    if (result == NULL) {
+        return NULL;
+    }
+    strcpy(result, path);
+    p = result + strlen(result);
+
+    va_start(args, path);
+    while ((component = va_arg(args, const char *)) != NULL) {
+        *p++ = '/';
+        strcpy(p, component);
+        p += strlen(component);
+    }
+    va_end(args);
+
+    return result;
+}
