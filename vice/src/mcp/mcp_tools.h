@@ -43,21 +43,46 @@
 #define MCP_ERROR_INVALID_ADDRESS  -32002  /* Address out of range */
 #define MCP_ERROR_INVALID_VALUE    -32003  /* Value out of range */
 
-/* Tool handler function signature */
+/** @brief Function signature for MCP tool handlers.
+ *
+ *  @param params  JSON object containing tool parameters (may be NULL)
+ *  @return JSON object with result or error response (caller must free)
+ */
 typedef cJSON* (*mcp_tool_handler_t)(cJSON *params);
 
-/* Tool registration */
+/** @brief Tool registration entry.
+ *
+ *  Each MCP tool is registered with a name, description, and handler function.
+ */
 typedef struct mcp_tool_s {
-    const char *name;
-    const char *description;
-    mcp_tool_handler_t handler;
+    const char *name;           /**< Tool name (e.g., "vice.ping") */
+    const char *description;    /**< Human-readable description */
+    mcp_tool_handler_t handler; /**< Handler function */
 } mcp_tool_t;
 
-/* MCP tools initialization and cleanup */
+/** @brief Initialize the MCP tools subsystem.
+ *
+ *  Registers all available tools. Must be called before mcp_tools_dispatch().
+ *
+ *  @return 0 on success, -1 on failure
+ */
 extern int mcp_tools_init(void);
+
+/** @brief Shutdown the MCP tools subsystem.
+ *
+ *  Frees any resources allocated by mcp_tools_init().
+ */
 extern void mcp_tools_shutdown(void);
 
-/* Tool dispatch */
+/** @brief Dispatch a tool call by name.
+ *
+ *  Looks up the tool by name and calls its handler with the given params.
+ *  This function is called from the transport layer for each JSON-RPC request.
+ *
+ *  @param tool_name  The tool name (e.g., "vice.ping", "tools/call")
+ *  @param params     JSON object with parameters (passed to handler)
+ *  @return JSON response object (caller must free with cJSON_Delete)
+ */
 extern cJSON* mcp_tools_dispatch(const char *tool_name, cJSON *params);
 
 /* Tool handlers - MCP Base Protocol */
@@ -125,8 +150,23 @@ extern cJSON* mcp_tool_keyboard_key_press(cJSON *params);
 extern cJSON* mcp_tool_keyboard_key_release(cJSON *params);
 extern cJSON* mcp_tool_joystick_set(cJSON *params);
 
-/* Notification helpers */
+/** @brief Send a breakpoint hit notification to SSE clients.
+ *
+ *  Called when a breakpoint is hit during execution. Sends an SSE event
+ *  to all connected clients with the breakpoint details.
+ *
+ *  @param pc     Program counter address where breakpoint was hit
+ *  @param bp_id  The breakpoint ID that was triggered
+ */
 extern void mcp_notify_breakpoint(uint16_t pc, uint32_t bp_id);
+
+/** @brief Send an execution state change notification to SSE clients.
+ *
+ *  Called when the emulator execution state changes (run, pause, step).
+ *  Sends an SSE event to all connected clients.
+ *
+ *  @param state  The new state string ("running", "paused", "stepping")
+ */
 extern void mcp_notify_execution_state_changed(const char *state);
 
 #endif /* VICE_MCP_TOOLS_H */

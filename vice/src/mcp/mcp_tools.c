@@ -2354,6 +2354,7 @@ cJSON* mcp_tool_cia_get_state(cJSON *params)
     cJSON *response, *cia1_obj, *cia2_obj, *cia_item;
     int cia;
 
+    /* Note: cJSON_GetObjectItem safely returns NULL when params is NULL */
     cia_item = cJSON_GetObjectItem(params, "cia");
     if (cia_item != NULL && cJSON_IsNumber(cia_item)) {
         cia = cia_item->valueint;
@@ -3479,101 +3480,140 @@ cJSON* mcp_tool_keyboard_type(cJSON *params)
     return response;
 }
 
-cJSON* mcp_tool_keyboard_key_press(cJSON *params)
+/**
+ * Parse a key name or code from JSON to a VHK key code.
+ *
+ * @param key_item  JSON item containing key name (string) or code (number)
+ * @param key_code  Output: the parsed key code
+ * @return 0 on success, -1 if key_item is NULL, -2 if key name is unknown,
+ *         -3 if key_item is neither string nor number
+ */
+static int parse_key_code(cJSON *key_item, signed long *key_code)
 {
-    cJSON *response;
-    cJSON *key_item, *mod_item;
-    signed long key_code = 0;
-    int modifiers = 0;
     const char *key_name;
 
-    log_message(mcp_tools_log, "Keyboard key press request");
-
-    /* Get required key parameter */
-    key_item = cJSON_GetObjectItem(params, "key");
     if (key_item == NULL) {
-        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing 'key' parameter");
+        return -1;
     }
 
-    /* Key can be either a string name or numeric code */
     if (cJSON_IsString(key_item)) {
         key_name = key_item->valuestring;
 
         /* Map common key names to VHK codes */
         if (strcmp(key_name, "Return") == 0 || strcmp(key_name, "Enter") == 0) {
-            key_code = VHK_KEY_Return;
+            *key_code = VHK_KEY_Return;
         } else if (strcmp(key_name, "Space") == 0) {
-            key_code = ' ';
+            *key_code = ' ';
         } else if (strcmp(key_name, "BackSpace") == 0) {
-            key_code = VHK_KEY_BackSpace;
+            *key_code = VHK_KEY_BackSpace;
         } else if (strcmp(key_name, "Delete") == 0) {
-            key_code = VHK_KEY_Delete;
+            *key_code = VHK_KEY_Delete;
         } else if (strcmp(key_name, "Escape") == 0) {
-            key_code = VHK_KEY_Escape;
+            *key_code = VHK_KEY_Escape;
         } else if (strcmp(key_name, "Tab") == 0) {
-            key_code = VHK_KEY_Tab;
+            *key_code = VHK_KEY_Tab;
         } else if (strcmp(key_name, "Up") == 0) {
-            key_code = VHK_KEY_Up;
+            *key_code = VHK_KEY_Up;
         } else if (strcmp(key_name, "Down") == 0) {
-            key_code = VHK_KEY_Down;
+            *key_code = VHK_KEY_Down;
         } else if (strcmp(key_name, "Left") == 0) {
-            key_code = VHK_KEY_Left;
+            *key_code = VHK_KEY_Left;
         } else if (strcmp(key_name, "Right") == 0) {
-            key_code = VHK_KEY_Right;
+            *key_code = VHK_KEY_Right;
         } else if (strcmp(key_name, "Home") == 0) {
-            key_code = VHK_KEY_Home;
+            *key_code = VHK_KEY_Home;
         } else if (strcmp(key_name, "End") == 0) {
-            key_code = VHK_KEY_End;
+            *key_code = VHK_KEY_End;
         } else if (strcmp(key_name, "F1") == 0) {
-            key_code = VHK_KEY_F1;
+            *key_code = VHK_KEY_F1;
         } else if (strcmp(key_name, "F2") == 0) {
-            key_code = VHK_KEY_F2;
+            *key_code = VHK_KEY_F2;
         } else if (strcmp(key_name, "F3") == 0) {
-            key_code = VHK_KEY_F3;
+            *key_code = VHK_KEY_F3;
         } else if (strcmp(key_name, "F4") == 0) {
-            key_code = VHK_KEY_F4;
+            *key_code = VHK_KEY_F4;
         } else if (strcmp(key_name, "F5") == 0) {
-            key_code = VHK_KEY_F5;
+            *key_code = VHK_KEY_F5;
         } else if (strcmp(key_name, "F6") == 0) {
-            key_code = VHK_KEY_F6;
+            *key_code = VHK_KEY_F6;
         } else if (strcmp(key_name, "F7") == 0) {
-            key_code = VHK_KEY_F7;
+            *key_code = VHK_KEY_F7;
         } else if (strcmp(key_name, "F8") == 0) {
-            key_code = VHK_KEY_F8;
+            *key_code = VHK_KEY_F8;
         } else if (strlen(key_name) == 1) {
             /* Single character - use ASCII value */
-            key_code = (signed long)key_name[0];
+            *key_code = (signed long)key_name[0];
         } else {
-            return mcp_error(MCP_ERROR_INVALID_PARAMS, "Unknown key name");
+            return -2;  /* Unknown key name */
         }
     } else if (cJSON_IsNumber(key_item)) {
-        key_code = (signed long)key_item->valueint;
+        *key_code = (signed long)key_item->valueint;
     } else {
+        return -3;  /* Invalid type */
+    }
+
+    return 0;
+}
+
+/**
+ * Parse keyboard modifiers from a JSON array.
+ *
+ * @param mod_item  JSON array of modifier strings (may be NULL)
+ * @return Combined modifier bitmask (VHK_MOD_*)
+ */
+static int parse_key_modifiers(cJSON *mod_item)
+{
+    int modifiers = 0;
+    int i;
+
+    if (mod_item == NULL || !cJSON_IsArray(mod_item)) {
+        return 0;
+    }
+
+    for (i = 0; i < cJSON_GetArraySize(mod_item); i++) {
+        cJSON *mod = cJSON_GetArrayItem(mod_item, i);
+        if (cJSON_IsString(mod)) {
+            const char *mod_name = mod->valuestring;
+            if (strcmp(mod_name, "shift") == 0) {
+                modifiers |= VHK_MOD_SHIFT;
+            } else if (strcmp(mod_name, "control") == 0 || strcmp(mod_name, "ctrl") == 0) {
+                modifiers |= VHK_MOD_CONTROL;
+            } else if (strcmp(mod_name, "alt") == 0) {
+                modifiers |= VHK_MOD_ALT;
+            } else if (strcmp(mod_name, "meta") == 0) {
+                modifiers |= VHK_MOD_META;
+            } else if (strcmp(mod_name, "command") == 0 || strcmp(mod_name, "cmd") == 0) {
+                modifiers |= VHK_MOD_COMMAND;
+            }
+        }
+    }
+
+    return modifiers;
+}
+
+cJSON* mcp_tool_keyboard_key_press(cJSON *params)
+{
+    cJSON *response;
+    cJSON *key_item;
+    signed long key_code = 0;
+    int modifiers = 0;
+    int result;
+
+    log_message(mcp_tools_log, "Keyboard key press request");
+
+    /* Get required key parameter */
+    key_item = cJSON_GetObjectItem(params, "key");
+    result = parse_key_code(key_item, &key_code);
+    if (result == -1) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing 'key' parameter");
+    } else if (result == -2) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Unknown key name");
+    } else if (result == -3) {
         return mcp_error(MCP_ERROR_INVALID_PARAMS, "'key' must be string or number");
     }
 
     /* Get optional modifiers */
-    mod_item = cJSON_GetObjectItem(params, "modifiers");
-    if (mod_item != NULL && cJSON_IsArray(mod_item)) {
-        int i;
-        for (i = 0; i < cJSON_GetArraySize(mod_item); i++) {
-            cJSON *mod = cJSON_GetArrayItem(mod_item, i);
-            if (cJSON_IsString(mod)) {
-                const char *mod_name = mod->valuestring;
-                if (strcmp(mod_name, "shift") == 0) {
-                    modifiers |= VHK_MOD_SHIFT;
-                } else if (strcmp(mod_name, "control") == 0 || strcmp(mod_name, "ctrl") == 0) {
-                    modifiers |= VHK_MOD_CONTROL;
-                } else if (strcmp(mod_name, "alt") == 0) {
-                    modifiers |= VHK_MOD_ALT;
-                } else if (strcmp(mod_name, "meta") == 0) {
-                    modifiers |= VHK_MOD_META;
-                } else if (strcmp(mod_name, "command") == 0 || strcmp(mod_name, "cmd") == 0) {
-                    modifiers |= VHK_MOD_COMMAND;
-                }
-            }
-        }
-    }
+    modifiers = parse_key_modifiers(cJSON_GetObjectItem(params, "modifiers"));
 
     log_message(mcp_tools_log, "Pressing key: code=%ld, modifiers=0x%04x", key_code, (unsigned int)modifiers);
 
@@ -3595,98 +3635,26 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
 cJSON* mcp_tool_keyboard_key_release(cJSON *params)
 {
     cJSON *response;
-    cJSON *key_item, *mod_item;
+    cJSON *key_item;
     signed long key_code = 0;
     int modifiers = 0;
-    const char *key_name;
+    int result;
 
     log_message(mcp_tools_log, "Keyboard key release request");
 
     /* Get required key parameter */
     key_item = cJSON_GetObjectItem(params, "key");
-    if (key_item == NULL) {
+    result = parse_key_code(key_item, &key_code);
+    if (result == -1) {
         return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing 'key' parameter");
-    }
-
-    /* Key can be either a string name or numeric code */
-    if (cJSON_IsString(key_item)) {
-        key_name = key_item->valuestring;
-
-        /* Map common key names to VHK codes (same as key_press) */
-        if (strcmp(key_name, "Return") == 0 || strcmp(key_name, "Enter") == 0) {
-            key_code = VHK_KEY_Return;
-        } else if (strcmp(key_name, "Space") == 0) {
-            key_code = ' ';
-        } else if (strcmp(key_name, "BackSpace") == 0) {
-            key_code = VHK_KEY_BackSpace;
-        } else if (strcmp(key_name, "Delete") == 0) {
-            key_code = VHK_KEY_Delete;
-        } else if (strcmp(key_name, "Escape") == 0) {
-            key_code = VHK_KEY_Escape;
-        } else if (strcmp(key_name, "Tab") == 0) {
-            key_code = VHK_KEY_Tab;
-        } else if (strcmp(key_name, "Up") == 0) {
-            key_code = VHK_KEY_Up;
-        } else if (strcmp(key_name, "Down") == 0) {
-            key_code = VHK_KEY_Down;
-        } else if (strcmp(key_name, "Left") == 0) {
-            key_code = VHK_KEY_Left;
-        } else if (strcmp(key_name, "Right") == 0) {
-            key_code = VHK_KEY_Right;
-        } else if (strcmp(key_name, "Home") == 0) {
-            key_code = VHK_KEY_Home;
-        } else if (strcmp(key_name, "End") == 0) {
-            key_code = VHK_KEY_End;
-        } else if (strcmp(key_name, "F1") == 0) {
-            key_code = VHK_KEY_F1;
-        } else if (strcmp(key_name, "F2") == 0) {
-            key_code = VHK_KEY_F2;
-        } else if (strcmp(key_name, "F3") == 0) {
-            key_code = VHK_KEY_F3;
-        } else if (strcmp(key_name, "F4") == 0) {
-            key_code = VHK_KEY_F4;
-        } else if (strcmp(key_name, "F5") == 0) {
-            key_code = VHK_KEY_F5;
-        } else if (strcmp(key_name, "F6") == 0) {
-            key_code = VHK_KEY_F6;
-        } else if (strcmp(key_name, "F7") == 0) {
-            key_code = VHK_KEY_F7;
-        } else if (strcmp(key_name, "F8") == 0) {
-            key_code = VHK_KEY_F8;
-        } else if (strlen(key_name) == 1) {
-            /* Single character - use ASCII value */
-            key_code = (signed long)key_name[0];
-        } else {
-            return mcp_error(MCP_ERROR_INVALID_PARAMS, "Unknown key name");
-        }
-    } else if (cJSON_IsNumber(key_item)) {
-        key_code = (signed long)key_item->valueint;
-    } else {
+    } else if (result == -2) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Unknown key name");
+    } else if (result == -3) {
         return mcp_error(MCP_ERROR_INVALID_PARAMS, "'key' must be string or number");
     }
 
     /* Get optional modifiers */
-    mod_item = cJSON_GetObjectItem(params, "modifiers");
-    if (mod_item != NULL && cJSON_IsArray(mod_item)) {
-        int i;
-        for (i = 0; i < cJSON_GetArraySize(mod_item); i++) {
-            cJSON *mod = cJSON_GetArrayItem(mod_item, i);
-            if (cJSON_IsString(mod)) {
-                const char *mod_name = mod->valuestring;
-                if (strcmp(mod_name, "shift") == 0) {
-                    modifiers |= VHK_MOD_SHIFT;
-                } else if (strcmp(mod_name, "control") == 0 || strcmp(mod_name, "ctrl") == 0) {
-                    modifiers |= VHK_MOD_CONTROL;
-                } else if (strcmp(mod_name, "alt") == 0) {
-                    modifiers |= VHK_MOD_ALT;
-                } else if (strcmp(mod_name, "meta") == 0) {
-                    modifiers |= VHK_MOD_META;
-                } else if (strcmp(mod_name, "command") == 0 || strcmp(mod_name, "cmd") == 0) {
-                    modifiers |= VHK_MOD_COMMAND;
-                }
-            }
-        }
-    }
+    modifiers = parse_key_modifiers(cJSON_GetObjectItem(params, "modifiers"));
 
     log_message(mcp_tools_log, "Releasing key: code=%ld, modifiers=0x%04x", key_code, (unsigned int)modifiers);
 

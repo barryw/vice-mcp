@@ -30,10 +30,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+/* POSIX-specific headers - MCP server only builds on POSIX systems.
+ * Windows support is planned for a future release.
+ * See configure.ac for the POSIX system detection logic.
+ */
+#ifdef HAVE_PTHREAD_H
 #include <pthread.h>
+#endif
+#ifdef HAVE_SYS_SOCKET_H
 #include <sys/socket.h>
+#endif
+#ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
+#endif
+#ifdef HAVE_ARPA_INET_H
 #include <arpa/inet.h>
+#endif
+
 #include <microhttpd.h>
 
 #include "mcp_transport.h"

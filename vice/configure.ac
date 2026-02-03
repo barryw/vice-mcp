@@ -455,6 +455,7 @@ HAVE_IOSID_SUPPORT="no "
 HAVE_IPV6_SUPPORT="no "
 HAVE_LIBIEEE1284_SUPPORT="no "
 HAVE_LIGHTPEN_SUPPORT="no "
+HAVE_MCP_SERVER="no "
 HAVE_MIDI_SUPPORT="no "
 HAVE_MOUSE_SUPPORT="no "
 HAVE_NETWORK_SUPPORT="no "
@@ -2225,16 +2226,30 @@ if test x"$with_libcurl" != "xno"; then
 fi
 
 dnl ----- MCP Server Support -----
+dnl MCP server requires POSIX systems (Unix/Linux/macOS) - Windows support planned for future
 if test x"$enable_mcp_server" = "xyes"; then
-  PKG_CHECK_MODULES(LIBMICROHTTPD, [libmicrohttpd >= 0.9.0], [have_libmicrohttpd=yes], [have_libmicrohttpd=no])
-  if test x"$have_libmicrohttpd" = "xno"; then
-    AC_MSG_ERROR([MCP server support requested, but libmicrohttpd was not found.])
+  if test x"$is_unix_x11" = "xyes" -o x"$is_unix_macosx" = "xyes"; then
+    dnl Check for required POSIX headers
+    MCP_HEADERS_PRESENT=yes
+    AC_CHECK_HEADERS(pthread.h sys/socket.h netinet/in.h arpa/inet.h,,
+                     [MCP_HEADERS_PRESENT=no],)
+    if test x"$MCP_HEADERS_PRESENT" = "xno"; then
+      AC_MSG_ERROR([MCP server support requested, but required POSIX headers were not found.])
+    fi
+
+    PKG_CHECK_MODULES(LIBMICROHTTPD, [libmicrohttpd >= 0.9.0], [have_libmicrohttpd=yes], [have_libmicrohttpd=no])
+    if test x"$have_libmicrohttpd" = "xno"; then
+      AC_MSG_ERROR([MCP server support requested, but libmicrohttpd was not found.])
+    fi
+    HAVE_MCP_SERVER="yes"
+    VICE_CFLAGS="$VICE_CFLAGS $LIBMICROHTTPD_CFLAGS"
+    VICE_LDFLAGS="$VICE_LDFLAGS $LIBMICROHTTPD_LDFLAGS"
+    LIBS="$LIBS $LIBMICROHTTPD_LIBS"
+    AC_DEFINE(HAVE_MCP_SERVER, , [MCP server support])
+  else
+    AC_MSG_WARN([MCP server support is only available on POSIX systems (Unix/Linux/macOS). Windows support is planned for a future release.])
+    HAVE_MCP_SERVER="no "
   fi
-  HAVE_MCP_SERVER="yes"
-  VICE_CFLAGS="$VICE_CFLAGS $LIBMICROHTTPD_CFLAGS"
-  VICE_LDFLAGS="$VICE_LDFLAGS $LIBMICROHTTPD_LDFLAGS"
-  LIBS="$LIBS $LIBMICROHTTPD_LIBS"
-  AC_DEFINE(HAVE_MCP_SERVER, , [MCP server support])
 fi
 AM_CONDITIONAL(HAVE_MCP_SERVER, test x"$HAVE_MCP_SERVER" = "xyes")
 

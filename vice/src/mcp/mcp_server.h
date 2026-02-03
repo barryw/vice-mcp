@@ -53,25 +53,103 @@
 #define MCP_DEFAULT_HOST "127.0.0.1"
 #define MCP_DEFAULT_PORT 6510
 
-/* MCP server initialization and cleanup */
+/** @brief Initialize the MCP server subsystem.
+ *
+ *  Must be called once during VICE startup before using other MCP functions.
+ *  Allocates resources and registers with VICE's configuration system.
+ *
+ *  @return 0 on success, -1 on failure
+ */
 extern int mcp_server_init(void);
+
+/** @brief Shutdown the MCP server and free all resources.
+ *
+ *  Should be called during VICE shutdown. Stops the server if running
+ *  and deallocates all MCP-related resources.
+ */
 extern void mcp_server_shutdown(void);
 
-/* MCP server control */
+/** @brief Start the MCP HTTP server.
+ *
+ *  Starts listening for MCP JSON-RPC requests on the specified host and port.
+ *  The server runs in a separate thread using libmicrohttpd.
+ *
+ *  @param host  IP address to bind to (e.g., "127.0.0.1" or "0.0.0.0")
+ *  @param port  TCP port number to listen on
+ *  @return 0 on success, -1 on failure
+ */
 extern int mcp_server_start(const char *host, int port);
+
+/** @brief Stop the MCP HTTP server.
+ *
+ *  Stops accepting new connections and shuts down the HTTP server thread.
+ *  Safe to call even if server is not running.
+ */
 extern void mcp_server_stop(void);
+
+/** @brief Check if the MCP server is currently running.
+ *
+ *  @return 1 if server is running, 0 otherwise
+ */
 extern int mcp_server_is_running(void);
 
-/* MCP server configuration */
+/** @brief Enable or disable the MCP server.
+ *
+ *  When enabled, the server will start automatically on VICE startup
+ *  if configured via resources.
+ *
+ *  @param enabled  1 to enable, 0 to disable
+ *  @return 0 on success
+ */
 extern int mcp_server_set_enabled(int enabled);
+
+/** @brief Get the MCP server enabled state.
+ *
+ *  @return 1 if enabled, 0 if disabled
+ */
 extern int mcp_server_get_enabled(void);
+
+/** @brief Set the MCP server port number.
+ *
+ *  @param port  TCP port number (1-65535)
+ *  @return 0 on success, -1 if port is invalid
+ */
 extern int mcp_server_set_port(int port);
+
+/** @brief Get the configured MCP server port.
+ *
+ *  @return The port number
+ */
 extern int mcp_server_get_port(void);
+
+/** @brief Set the MCP server bind address.
+ *
+ *  @param host  IP address string (e.g., "127.0.0.1")
+ *  @return 0 on success
+ */
 extern int mcp_server_set_host(const char *host);
+
+/** @brief Get the configured MCP server bind address.
+ *
+ *  @return The host address string
+ */
 extern const char *mcp_server_get_host(void);
 
-/* Resource registration */
+/** @brief Register MCP server VICE resources.
+ *
+ *  Registers MCPServer, MCPServerPort, MCPServerHost resources
+ *  with VICE's resource system for configuration persistence.
+ *
+ *  @return 0 on success, -1 on failure
+ */
 extern int mcp_server_register_resources(void);
+
+/** @brief Register MCP server command-line options.
+ *
+ *  Registers -mcpserver, -mcpserverport, -mcpserverhost options.
+ *
+ *  @return 0 on success, -1 on failure
+ */
 extern int mcp_server_register_cmdline_options(void);
 
 #endif /* VICE_MCP_SERVER_H */
