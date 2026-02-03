@@ -42,6 +42,7 @@
 #define MCP_ERROR_EMULATOR_RUNNING -32001  /* Operation requires pause */
 #define MCP_ERROR_INVALID_ADDRESS  -32002  /* Address out of range */
 #define MCP_ERROR_INVALID_VALUE    -32003  /* Value out of range */
+#define MCP_ERROR_SNAPSHOT_FAILED  -32004  /* Snapshot operation failed */
 
 /** @brief Function signature for MCP tool handlers.
  *
@@ -149,6 +150,11 @@ extern cJSON* mcp_tool_keyboard_type(cJSON *params);
 extern cJSON* mcp_tool_keyboard_key_press(cJSON *params);
 extern cJSON* mcp_tool_keyboard_key_release(cJSON *params);
 extern cJSON* mcp_tool_joystick_set(cJSON *params);
+
+/* Tool handlers - Snapshot Management */
+extern cJSON* mcp_tool_snapshot_save(cJSON *params);
+extern cJSON* mcp_tool_snapshot_load(cJSON *params);
+extern cJSON* mcp_tool_snapshot_list(cJSON *params);
 
 /** @brief Send a breakpoint hit notification to SSE clients.
  *
