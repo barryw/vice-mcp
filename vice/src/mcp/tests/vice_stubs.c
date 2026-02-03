@@ -500,3 +500,22 @@ void alarm_log_too_many_alarms(void)
 {
     /* Stub - should never be called in tests */
 }
+
+/* D3: Trap-based dispatch stubs */
+#include <stdbool.h>
+
+bool monitor_is_inside_monitor(void)
+{
+    /* For tests, always return true so direct dispatch is used
+     * (trap-based dispatch requires a running emulator main loop) */
+    return true;
+}
+
+void interrupt_maincpu_trigger_trap(void (*trap_func)(uint16_t, void *data), void *data)
+{
+    /* For tests, execute the trap handler immediately (simulates main thread)
+     * This makes the trap-based dispatch work in test environment */
+    if (trap_func != NULL) {
+        trap_func(0, data);
+    }
+}

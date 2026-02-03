@@ -40,6 +40,8 @@
 #include "mcp_tools.h"
 #include "cJSON.h"
 #include "log.h"
+#include "interrupt.h"
+#include "monitor.h"
 
 /* From mcp_tools.c */
 extern const char *CATASTROPHIC_ERROR_JSON;
@@ -99,6 +101,111 @@ static void request_context_free(struct request_context *ctx)
         }
         free(ctx);
     }
+}
+
+/* ============================================================================
+ * D3: Trap-based dispatch for thread-safe tool execution
+ *
+ * The emulator runs continuously. MCP requests are dispatched via VICE's trap
+ * mechanism, which schedules execution on the main CPU thread. This ensures:
+ * - Thread safety: all tool logic runs on main thread
+ * - Live emulator: no pause/resume bouncing
+ * - Consistent state: reads/writes happen at a defined point
+ * ============================================================================ */
+
+/* Request structure for trap-based dispatch */
+typedef struct mcp_trap_request_s {
+    const char *tool_name;
+    cJSON *params;
+    cJSON *response;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    int complete;
+} mcp_trap_request_t;
+
+/* Trap handler - executes on VICE main thread */
+static void mcp_trap_handler(uint16_t addr, void *data)
+{
+    mcp_trap_request_t *req = (mcp_trap_request_t *)data;
+
+    (void)addr;  /* Unused - trap address not relevant for MCP */
+
+    /* Execute tool on main thread - thread safe! */
+    req->response = mcp_tools_dispatch(req->tool_name, req->params);
+
+    /* Signal completion to waiting HTTP thread */
+    pthread_mutex_lock(&req->mutex);
+    req->complete = 1;
+    pthread_cond_signal(&req->cond);
+    pthread_mutex_unlock(&req->mutex);
+}
+
+/* Dispatch tool via trap mechanism for thread safety
+ *
+ * If emulator is running: queue trap, wait for execution on main thread
+ * If in monitor mode: direct dispatch (safe because main loop is blocked)
+ */
+static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
+{
+    /* If we're inside the monitor, the main loop is blocked waiting for input.
+     * In this case, we can safely dispatch directly since there's no concurrent
+     * execution. This also handles the case where traps won't fire. */
+    if (monitor_is_inside_monitor()) {
+        log_message(mcp_transport_log, "Monitor active - using direct dispatch for: %s", tool_name);
+        return mcp_tools_dispatch(tool_name, params);
+    }
+
+    /* Emulator is running - use trap for thread-safe dispatch */
+    mcp_trap_request_t req;
+    struct timespec timeout;
+    int wait_result;
+
+    /* Initialize request */
+    req.tool_name = tool_name;
+    req.params = params;
+    req.response = NULL;
+    req.complete = 0;
+    pthread_mutex_init(&req.mutex, NULL);
+    pthread_cond_init(&req.cond, NULL);
+
+    /* Queue trap to execute on main thread */
+    log_message(mcp_transport_log, "Queuing trap dispatch for: %s", tool_name);
+    interrupt_maincpu_trigger_trap(mcp_trap_handler, &req);
+
+    /* Wait for trap to complete with timeout (5 seconds) */
+    clock_gettime(CLOCK_REALTIME, &timeout);
+    timeout.tv_sec += 5;
+
+    pthread_mutex_lock(&req.mutex);
+    while (!req.complete) {
+        wait_result = pthread_cond_timedwait(&req.cond, &req.mutex, &timeout);
+        if (wait_result != 0) {
+            /* Timeout or error */
+            pthread_mutex_unlock(&req.mutex);
+            log_error(mcp_transport_log, "Trap dispatch timeout for: %s (emulator may be paused)", tool_name);
+
+            /* Cleanup */
+            pthread_mutex_destroy(&req.mutex);
+            pthread_cond_destroy(&req.cond);
+
+            /* Return error response */
+            cJSON *error = cJSON_CreateObject();
+            if (error) {
+                cJSON_AddNumberToObject(error, "code", -32000);
+                cJSON_AddStringToObject(error, "message", "Timeout: emulator may be paused or unresponsive");
+            }
+            return error;
+        }
+    }
+    pthread_mutex_unlock(&req.mutex);
+
+    log_message(mcp_transport_log, "Trap dispatch completed for: %s", tool_name);
+
+    /* Cleanup */
+    pthread_mutex_destroy(&req.mutex);
+    pthread_cond_destroy(&req.cond);
+
+    return req.response;
 }
 
 /* Process JSON-RPC 2.0 request and return response */
@@ -195,11 +302,11 @@ static char* process_jsonrpc_request(const char *request_body, size_t body_size)
         return response_str;
     }
 
-    /* Dispatch to tool */
+    /* Dispatch to tool via trap mechanism for thread safety */
     const char *method_name = method_item->valuestring;
     log_message(mcp_transport_log, "JSON-RPC request: %s", method_name);
 
-    cJSON *result = mcp_tools_dispatch(method_name, params_item);
+    cJSON *result = mcp_dispatch_via_trap(method_name, params_item);
 
     /* Copy ID before deleting request */
     cJSON *id_copy = NULL;

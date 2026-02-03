@@ -882,7 +882,6 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "text", mcp_prop_string("Text to type (converts to PETSCII). Use \\n for Return."));
             cJSON_AddItemToObject(props, "petscii_upper", mcp_prop_boolean("Default true: uppercase ASCII displays as uppercase on C64. Set false for raw PETSCII (uppercase ASCII maps to graphics)"));
-            cJSON_AddItemToObject(props, "auto_run", mcp_prop_boolean("Default true: resume emulation after typing so KERNAL processes input. Set false to just queue without resuming."));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("text"));
             schema = mcp_schema_object(props, required);
@@ -3396,12 +3395,11 @@ cJSON* mcp_tool_display_get_dimensions(cJSON *params)
 cJSON* mcp_tool_keyboard_type(cJSON *params)
 {
     cJSON *response;
-    cJSON *text_item, *petscii_upper_item, *auto_run_item;
+    cJSON *text_item, *petscii_upper_item;
     const char *text;
     char *converted_text = NULL;
     int result;
     int petscii_upper = 1;  /* Default: convert for uppercase PETSCII mode */
-    int auto_run = 1;       /* Default: resume execution after typing */
 
     log_message(mcp_tools_log, "Keyboard type request");
 
@@ -3432,20 +3430,7 @@ cJSON* mcp_tool_keyboard_type(cJSON *params)
         }
     }
 
-    /* Check optional auto_run parameter (default true)
-     * When true (default): Resume emulation after typing so KERNAL can process input
-     * When false: Just queue characters without resuming (for debugging)
-     */
-    auto_run_item = cJSON_GetObjectItem(params, "auto_run");
-    if (auto_run_item != NULL) {
-        if (cJSON_IsBool(auto_run_item)) {
-            auto_run = cJSON_IsTrue(auto_run_item);
-        } else if (cJSON_IsNumber(auto_run_item)) {
-            auto_run = (auto_run_item->valueint != 0);
-        }
-    }
-
-    log_message(mcp_tools_log, "Typing text: %s (petscii_upper=%d, auto_run=%d)", text, petscii_upper, auto_run);
+    log_message(mcp_tools_log, "Typing text: %s (petscii_upper=%d)", text, petscii_upper);
 
     /* If petscii_upper is enabled, convert uppercase ASCII to lowercase
      * so that VICE's PETSCII conversion produces unshifted codes (0x41-0x5A)
@@ -3483,13 +3468,6 @@ cJSON* mcp_tool_keyboard_type(cJSON *params)
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to queue keyboard input (buffer full or disabled)");
     }
 
-    /* Resume execution so KERNAL can process the keyboard input
-     * Without this, characters sit in the buffer but are never consumed */
-    if (auto_run) {
-        exit_mon = exit_mon_continue;
-        log_message(mcp_tools_log, "Resuming execution for keyboard input processing");
-    }
-
     response = cJSON_CreateObject();
     if (response == NULL) {
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
@@ -3497,7 +3475,6 @@ cJSON* mcp_tool_keyboard_type(cJSON *params)
 
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "characters_queued", (int)strlen(text_item->valuestring));
-    cJSON_AddBoolToObject(response, "execution_resumed", auto_run);
 
     return response;
 }
@@ -3505,10 +3482,9 @@ cJSON* mcp_tool_keyboard_type(cJSON *params)
 cJSON* mcp_tool_keyboard_key_press(cJSON *params)
 {
     cJSON *response;
-    cJSON *key_item, *mod_item, *auto_run_item;
+    cJSON *key_item, *mod_item;
     signed long key_code = 0;
     int modifiers = 0;
-    int auto_run = 1;  /* Default: resume execution after pressing key */
     const char *key_name;
 
     log_message(mcp_tools_log, "Keyboard key press request");
@@ -3599,22 +3575,10 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
         }
     }
 
-    /* Get optional auto_run parameter (default true) */
-    auto_run_item = cJSON_GetObjectItem(params, "auto_run");
-    if (auto_run_item != NULL && cJSON_IsBool(auto_run_item)) {
-        auto_run = cJSON_IsTrue(auto_run_item);
-    }
-
     log_message(mcp_tools_log, "Pressing key: code=%ld, modifiers=0x%04x", key_code, (unsigned int)modifiers);
 
     /* Press the key */
     keyboard_key_pressed(key_code, modifiers);
-
-    /* Resume execution so the key press can be processed */
-    if (auto_run) {
-        exit_mon = exit_mon_continue;
-        log_message(mcp_tools_log, "Resuming execution for key press processing");
-    }
 
     response = cJSON_CreateObject();
     if (response == NULL) {
@@ -3624,7 +3588,6 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "key_code", key_code);
     cJSON_AddNumberToObject(response, "modifiers", modifiers);
-    cJSON_AddBoolToObject(response, "execution_resumed", auto_run);
 
     return response;
 }
@@ -3632,10 +3595,9 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
 cJSON* mcp_tool_keyboard_key_release(cJSON *params)
 {
     cJSON *response;
-    cJSON *key_item, *mod_item, *auto_run_item;
+    cJSON *key_item, *mod_item;
     signed long key_code = 0;
     int modifiers = 0;
-    int auto_run = 1;  /* Default: resume execution after releasing key */
     const char *key_name;
 
     log_message(mcp_tools_log, "Keyboard key release request");
@@ -3726,22 +3688,10 @@ cJSON* mcp_tool_keyboard_key_release(cJSON *params)
         }
     }
 
-    /* Get optional auto_run parameter (default true) */
-    auto_run_item = cJSON_GetObjectItem(params, "auto_run");
-    if (auto_run_item != NULL && cJSON_IsBool(auto_run_item)) {
-        auto_run = cJSON_IsTrue(auto_run_item);
-    }
-
     log_message(mcp_tools_log, "Releasing key: code=%ld, modifiers=0x%04x", key_code, (unsigned int)modifiers);
 
     /* Release the key */
     keyboard_key_released(key_code, modifiers);
-
-    /* Resume execution so the key release can be processed */
-    if (auto_run) {
-        exit_mon = exit_mon_continue;
-        log_message(mcp_tools_log, "Resuming execution for key release processing");
-    }
 
     response = cJSON_CreateObject();
     if (response == NULL) {
@@ -3751,7 +3701,6 @@ cJSON* mcp_tool_keyboard_key_release(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "key_code", key_code);
     cJSON_AddNumberToObject(response, "modifiers", modifiers);
-    cJSON_AddBoolToObject(response, "execution_resumed", auto_run);
 
     return response;
 }
@@ -3759,10 +3708,9 @@ cJSON* mcp_tool_keyboard_key_release(cJSON *params)
 cJSON* mcp_tool_joystick_set(cJSON *params)
 {
     cJSON *response;
-    cJSON *port_item, *dir_item, *fire_item, *auto_run_item;
+    cJSON *port_item, *dir_item, *fire_item;
     unsigned int port = 1;  /* Default to port 1 */
     uint16_t value = 0;
-    int auto_run = 1;  /* Default: resume execution after setting joystick */
 
     log_message(mcp_tools_log, "Joystick set request");
 
@@ -3819,22 +3767,10 @@ cJSON* mcp_tool_joystick_set(cJSON *params)
         }
     }
 
-    /* Get optional auto_run parameter (default true) */
-    auto_run_item = cJSON_GetObjectItem(params, "auto_run");
-    if (auto_run_item != NULL && cJSON_IsBool(auto_run_item)) {
-        auto_run = cJSON_IsTrue(auto_run_item);
-    }
-
     log_message(mcp_tools_log, "Setting joystick port %u to value 0x%04x", port, value);
 
     /* Set joystick state */
     joystick_set_value_absolute(port, value);
-
-    /* Resume execution so the joystick input can be processed */
-    if (auto_run) {
-        exit_mon = exit_mon_continue;
-        log_message(mcp_tools_log, "Resuming execution for joystick processing");
-    }
 
     response = cJSON_CreateObject();
     if (response == NULL) {
@@ -3844,7 +3780,6 @@ cJSON* mcp_tool_joystick_set(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "port", port);
     cJSON_AddNumberToObject(response, "value", value);
-    cJSON_AddBoolToObject(response, "execution_resumed", auto_run);
 
     return response;
 }
@@ -4589,20 +4524,9 @@ static int keyboard_matrix_alarm_initialized = 0;
 /* Alarm callback to release keys */
 static void keyboard_matrix_alarm_callback(CLOCK offset, void *data)
 {
-    int i;
     (void)offset;
     (void)data;
-
-    /* Release all pending keys */
-    for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
-        if (pending_key_releases[i].active) {
-            keyboard_set_keyarr(pending_key_releases[i].row,
-                               pending_key_releases[i].col, 0);
-            pending_key_releases[i].active = 0;
-            log_message(mcp_tools_log, "Key released: row=%d, col=%d",
-                       pending_key_releases[i].row, pending_key_releases[i].col);
-        }
-    }
+    /* DEBUG: Empty callback to test if alarm itself is the issue */
 }
 
 /* Initialize the keyboard matrix alarm (lazy init) */
@@ -4637,12 +4561,11 @@ static int add_pending_key_release(int row, int col)
 static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
 {
     cJSON *response, *row_item, *col_item, *pressed_item, *key_item;
-    cJSON *hold_frames_item, *hold_ms_item, *auto_run_item;
+    cJSON *hold_frames_item, *hold_ms_item;
     int row, col;
     int pressed = 1;  /* Default: press the key */
     int hold_frames = 0;
     int hold_ms = 0;
-    int auto_run = 1;  /* Default: resume execution after setting key */
     CLOCK hold_cycles = 0;
 
     log_message(mcp_tools_log, "Handling vice.keyboard.matrix");
@@ -4748,12 +4671,6 @@ static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
         hold_cycles = (CLOCK)hold_ms * 1000;
     }
 
-    /* Get auto_run parameter (default true) - resume execution so game can scan keyboard */
-    auto_run_item = cJSON_GetObjectItem(params, "auto_run");
-    if (auto_run_item != NULL && cJSON_IsBool(auto_run_item)) {
-        auto_run = cJSON_IsTrue(auto_run_item);
-    }
-
     /* Initialize alarm system if needed */
     keyboard_matrix_init_alarm();
 
@@ -4762,28 +4679,16 @@ static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
         keyboard_set_keyarr(row, col, 1);
         log_message(mcp_tools_log, "Key pressed: row=%d, col=%d", row, col);
 
-        /* If hold duration specified, schedule release */
-        if (hold_cycles > 0 && keyboard_matrix_alarm != NULL) {
-            if (add_pending_key_release(row, col) == 0) {
-                alarm_set(keyboard_matrix_alarm, maincpu_clk + hold_cycles);
-                log_message(mcp_tools_log, "Scheduled key release in %lu cycles", (unsigned long)hold_cycles);
-            } else {
-                log_warning(mcp_tools_log, "Too many pending key releases, releasing immediately");
-                keyboard_set_keyarr(row, col, 0);
-            }
+        /* If hold duration specified, log a warning - alarm-based release is disabled
+         * because it breaks trap-based dispatch. Caller should send explicit release.
+         * TODO: Investigate alarm/trap conflict in VICE's scheduling system.
+         */
+        if (hold_cycles > 0) {
+            log_warning(mcp_tools_log, "hold_ms/hold_frames ignored - send explicit release instead");
         }
     } else {
         keyboard_set_keyarr(row, col, 0);
         log_message(mcp_tools_log, "Key released: row=%d, col=%d", row, col);
-    }
-
-    /* Resume execution so game can scan the keyboard matrix.
-     * Without this, the key is set but the game never runs to detect it.
-     * This is critical for games that directly scan CIA registers ($DC00/$DC01)
-     * rather than using KERNAL keyboard routines. */
-    if (auto_run) {
-        exit_mon = exit_mon_continue;
-        log_message(mcp_tools_log, "Resuming execution for keyboard matrix processing");
     }
 
     response = cJSON_CreateObject();
@@ -4801,7 +4706,6 @@ static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
     if (hold_ms > 0) {
         cJSON_AddNumberToObject(response, "hold_ms", hold_ms);
     }
-    cJSON_AddBoolToObject(response, "execution_resumed", auto_run);
 
     return response;
 }
