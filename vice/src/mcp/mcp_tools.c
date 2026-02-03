@@ -3505,9 +3505,10 @@ cJSON* mcp_tool_keyboard_type(cJSON *params)
 cJSON* mcp_tool_keyboard_key_press(cJSON *params)
 {
     cJSON *response;
-    cJSON *key_item, *mod_item;
+    cJSON *key_item, *mod_item, *auto_run_item;
     signed long key_code = 0;
     int modifiers = 0;
+    int auto_run = 1;  /* Default: resume execution after pressing key */
     const char *key_name;
 
     log_message(mcp_tools_log, "Keyboard key press request");
@@ -3598,10 +3599,22 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
         }
     }
 
+    /* Get optional auto_run parameter (default true) */
+    auto_run_item = cJSON_GetObjectItem(params, "auto_run");
+    if (auto_run_item != NULL && cJSON_IsBool(auto_run_item)) {
+        auto_run = cJSON_IsTrue(auto_run_item);
+    }
+
     log_message(mcp_tools_log, "Pressing key: code=%ld, modifiers=0x%04x", key_code, (unsigned int)modifiers);
 
     /* Press the key */
     keyboard_key_pressed(key_code, modifiers);
+
+    /* Resume execution so the key press can be processed */
+    if (auto_run) {
+        exit_mon = exit_mon_continue;
+        log_message(mcp_tools_log, "Resuming execution for key press processing");
+    }
 
     response = cJSON_CreateObject();
     if (response == NULL) {
@@ -3611,6 +3624,7 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "key_code", key_code);
     cJSON_AddNumberToObject(response, "modifiers", modifiers);
+    cJSON_AddBoolToObject(response, "execution_resumed", auto_run);
 
     return response;
 }
@@ -3618,9 +3632,10 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
 cJSON* mcp_tool_keyboard_key_release(cJSON *params)
 {
     cJSON *response;
-    cJSON *key_item, *mod_item;
+    cJSON *key_item, *mod_item, *auto_run_item;
     signed long key_code = 0;
     int modifiers = 0;
+    int auto_run = 1;  /* Default: resume execution after releasing key */
     const char *key_name;
 
     log_message(mcp_tools_log, "Keyboard key release request");
@@ -3711,10 +3726,22 @@ cJSON* mcp_tool_keyboard_key_release(cJSON *params)
         }
     }
 
+    /* Get optional auto_run parameter (default true) */
+    auto_run_item = cJSON_GetObjectItem(params, "auto_run");
+    if (auto_run_item != NULL && cJSON_IsBool(auto_run_item)) {
+        auto_run = cJSON_IsTrue(auto_run_item);
+    }
+
     log_message(mcp_tools_log, "Releasing key: code=%ld, modifiers=0x%04x", key_code, (unsigned int)modifiers);
 
     /* Release the key */
     keyboard_key_released(key_code, modifiers);
+
+    /* Resume execution so the key release can be processed */
+    if (auto_run) {
+        exit_mon = exit_mon_continue;
+        log_message(mcp_tools_log, "Resuming execution for key release processing");
+    }
 
     response = cJSON_CreateObject();
     if (response == NULL) {
@@ -3724,6 +3751,7 @@ cJSON* mcp_tool_keyboard_key_release(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "key_code", key_code);
     cJSON_AddNumberToObject(response, "modifiers", modifiers);
+    cJSON_AddBoolToObject(response, "execution_resumed", auto_run);
 
     return response;
 }
@@ -3731,9 +3759,10 @@ cJSON* mcp_tool_keyboard_key_release(cJSON *params)
 cJSON* mcp_tool_joystick_set(cJSON *params)
 {
     cJSON *response;
-    cJSON *port_item, *dir_item, *fire_item;
+    cJSON *port_item, *dir_item, *fire_item, *auto_run_item;
     unsigned int port = 1;  /* Default to port 1 */
     uint16_t value = 0;
+    int auto_run = 1;  /* Default: resume execution after setting joystick */
 
     log_message(mcp_tools_log, "Joystick set request");
 
@@ -3790,10 +3819,22 @@ cJSON* mcp_tool_joystick_set(cJSON *params)
         }
     }
 
+    /* Get optional auto_run parameter (default true) */
+    auto_run_item = cJSON_GetObjectItem(params, "auto_run");
+    if (auto_run_item != NULL && cJSON_IsBool(auto_run_item)) {
+        auto_run = cJSON_IsTrue(auto_run_item);
+    }
+
     log_message(mcp_tools_log, "Setting joystick port %u to value 0x%04x", port, value);
 
     /* Set joystick state */
     joystick_set_value_absolute(port, value);
+
+    /* Resume execution so the joystick input can be processed */
+    if (auto_run) {
+        exit_mon = exit_mon_continue;
+        log_message(mcp_tools_log, "Resuming execution for joystick processing");
+    }
 
     response = cJSON_CreateObject();
     if (response == NULL) {
@@ -3803,6 +3844,7 @@ cJSON* mcp_tool_joystick_set(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "port", port);
     cJSON_AddNumberToObject(response, "value", value);
+    cJSON_AddBoolToObject(response, "execution_resumed", auto_run);
 
     return response;
 }
