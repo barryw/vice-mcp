@@ -42,6 +42,18 @@ extern int test_symbol_table_get_count(void);
 extern const char *test_symbol_table_get_name(int index);
 extern unsigned int test_symbol_table_get_addr(int index);
 
+/* Test snapshot helpers from vice_stubs.c */
+extern const char *test_snapshot_get_last_saved(void);
+extern const char *test_snapshot_get_last_loaded(void);
+extern void test_snapshot_set_save_result(int result);
+extern void test_snapshot_set_load_result(int result);
+extern void test_snapshot_reset(void);
+
+/* Snapshot tool declarations */
+extern cJSON* mcp_tool_snapshot_save(cJSON *params);
+extern cJSON* mcp_tool_snapshot_load(cJSON *params);
+extern cJSON* mcp_tool_snapshot_list(cJSON *params);
+
 static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -1837,6 +1849,111 @@ TEST(disassemble_with_hex_address)
     cJSON_Delete(response);
 }
 
+/* =================================================================
+ * Snapshot Tool Tests
+ * ================================================================= */
+
+/* Test: Snapshot save with valid name returns success */
+TEST(snapshot_save_with_name_succeeds)
+{
+    cJSON *response, *params;
+    cJSON *name_item, *path_item;
+
+    test_snapshot_reset();
+    test_snapshot_set_save_result(0);  /* Success */
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "test_debug_state");
+    cJSON_AddStringToObject(params, "description", "Before sprite collision bug");
+
+    response = mcp_tool_snapshot_save(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return name */
+    name_item = cJSON_GetObjectItem(response, "name");
+    ASSERT_NOT_NULL(name_item);
+    ASSERT_STR_EQ(name_item->valuestring, "test_debug_state");
+
+    /* Should return path */
+    path_item = cJSON_GetObjectItem(response, "path");
+    ASSERT_NOT_NULL(path_item);
+    ASSERT_TRUE(strstr(path_item->valuestring, "test_debug_state.vsf") != NULL);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: Snapshot save without name returns error */
+TEST(snapshot_save_without_name_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    test_snapshot_reset();
+
+    params = cJSON_CreateObject();
+    /* No name provided */
+
+    response = mcp_tool_snapshot_save(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* Invalid params */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: Snapshot save with options includes ROMs and disks */
+TEST(snapshot_save_with_options_succeeds)
+{
+    cJSON *response, *params;
+
+    test_snapshot_reset();
+    test_snapshot_set_save_result(0);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "full_state");
+    cJSON_AddBoolToObject(params, "include_roms", 1);
+    cJSON_AddBoolToObject(params, "include_disks", 1);
+
+    response = mcp_tool_snapshot_save(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should succeed */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: Snapshot save failure returns error */
+TEST(snapshot_save_failure_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    test_snapshot_reset();
+    test_snapshot_set_save_result(-1);  /* Simulate failure */
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "will_fail");
+
+    response = mcp_tool_snapshot_save(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, -32004);  /* Snapshot failed */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -1949,6 +2066,12 @@ int main(void)
     RUN_TEST(keyboard_matrix_key_release);
     RUN_TEST(watch_add_with_symbol);
     RUN_TEST(disassemble_with_hex_address);
+
+    /* Snapshot tests */
+    RUN_TEST(snapshot_save_with_name_succeeds);
+    RUN_TEST(snapshot_save_without_name_returns_error);
+    RUN_TEST(snapshot_save_with_options_succeeds);
+    RUN_TEST(snapshot_save_failure_returns_error);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);
