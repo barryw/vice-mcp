@@ -41,6 +41,8 @@ extern void test_symbol_table_clear(void);
 extern int test_symbol_table_get_count(void);
 extern const char *test_symbol_table_get_name(int index);
 extern unsigned int test_symbol_table_get_addr(int index);
+extern void mon_add_name_to_symbol_table(unsigned int addr, char *name);
+extern char *lib_strdup(const char *str);
 
 /* Test snapshot helpers from vice_stubs.c */
 extern const char *test_snapshot_get_last_saved(void);
@@ -5923,6 +5925,296 @@ TEST(interrupt_log_read_dispatch_works)
     cJSON_Delete(read_response);
 }
 
+/* =================================================================
+ * Memory Map Tests (Phase 5.5)
+ * ================================================================= */
+
+/* Memory map tool declaration */
+extern cJSON* mcp_tool_memory_map(cJSON *params);
+
+/* Test: memory.map with null params returns full memory map */
+TEST(memory_map_null_params_returns_full_map)
+{
+    cJSON *response, *regions_item, *region_count_item;
+
+    response = mcp_tool_memory_map(NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should have regions array */
+    regions_item = cJSON_GetObjectItem(response, "regions");
+    ASSERT_NOT_NULL(regions_item);
+    ASSERT_TRUE(cJSON_IsArray(regions_item));
+
+    /* Should have multiple regions */
+    region_count_item = cJSON_GetObjectItem(response, "region_count");
+    ASSERT_NOT_NULL(region_count_item);
+    ASSERT_TRUE(cJSON_IsNumber(region_count_item));
+    ASSERT_TRUE(region_count_item->valueint > 0);
+
+    cJSON_Delete(response);
+}
+
+/* Test: memory.map returns regions with required fields */
+TEST(memory_map_regions_have_required_fields)
+{
+    cJSON *response, *regions_item, *region_obj;
+
+    response = mcp_tool_memory_map(NULL);
+    ASSERT_NOT_NULL(response);
+
+    regions_item = cJSON_GetObjectItem(response, "regions");
+    ASSERT_NOT_NULL(regions_item);
+
+    /* Get first region */
+    region_obj = cJSON_GetArrayItem(regions_item, 0);
+    ASSERT_NOT_NULL(region_obj);
+
+    /* Check required fields */
+    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "start"));
+    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "end"));
+    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "type"));
+    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "name"));
+    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "bank"));
+    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "contents_hint"));
+
+    cJSON_Delete(response);
+}
+
+/* Test: memory.map returns zero page as first region */
+TEST(memory_map_returns_zero_page_first)
+{
+    cJSON *response, *regions_item, *region_obj, *name_item, *start_item;
+
+    response = mcp_tool_memory_map(NULL);
+    ASSERT_NOT_NULL(response);
+
+    regions_item = cJSON_GetObjectItem(response, "regions");
+    ASSERT_NOT_NULL(regions_item);
+
+    /* First region should be Zero Page */
+    region_obj = cJSON_GetArrayItem(regions_item, 0);
+    ASSERT_NOT_NULL(region_obj);
+
+    name_item = cJSON_GetObjectItem(region_obj, "name");
+    ASSERT_NOT_NULL(name_item);
+    ASSERT_STR_EQ(name_item->valuestring, "Zero Page");
+
+    start_item = cJSON_GetObjectItem(region_obj, "start");
+    ASSERT_NOT_NULL(start_item);
+    ASSERT_STR_EQ(start_item->valuestring, "$0000");
+
+    cJSON_Delete(response);
+}
+
+/* Test: memory.map with start/end filters regions */
+TEST(memory_map_with_start_end_filters_regions)
+{
+    cJSON *response, *params, *regions_item, *region_count_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0xD000);
+    cJSON_AddNumberToObject(params, "end", 0xDFFF);
+
+    response = mcp_tool_memory_map(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should have regions array with I/O regions only */
+    regions_item = cJSON_GetObjectItem(response, "regions");
+    ASSERT_NOT_NULL(regions_item);
+
+    /* Should have fewer regions than full map (just I/O) */
+    region_count_item = cJSON_GetObjectItem(response, "region_count");
+    ASSERT_NOT_NULL(region_count_item);
+    ASSERT_TRUE(region_count_item->valueint >= 1);
+    ASSERT_TRUE(region_count_item->valueint <= 8);  /* I/O area has several sub-regions */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.map with hex string addresses */
+TEST(memory_map_with_hex_string_addresses)
+{
+    cJSON *response, *params, *regions_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "start", "$A000");
+    cJSON_AddStringToObject(params, "end", "$BFFF");
+
+    response = mcp_tool_memory_map(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should have regions (BASIC ROM) */
+    regions_item = cJSON_GetObjectItem(response, "regions");
+    ASSERT_NOT_NULL(regions_item);
+    ASSERT_TRUE(cJSON_GetArraySize(regions_item) >= 1);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.map invalid range returns error */
+TEST(memory_map_invalid_range_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0xFFFF);
+    cJSON_AddNumberToObject(params, "end", 0x0000);
+
+    response = mcp_tool_memory_map(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should be an error */
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.map region types are valid strings */
+TEST(memory_map_region_types_are_valid)
+{
+    cJSON *response, *regions_item, *region_obj, *type_item;
+    int i, count;
+    const char *type;
+
+    response = mcp_tool_memory_map(NULL);
+    ASSERT_NOT_NULL(response);
+
+    regions_item = cJSON_GetObjectItem(response, "regions");
+    ASSERT_NOT_NULL(regions_item);
+
+    count = cJSON_GetArraySize(regions_item);
+    for (i = 0; i < count; i++) {
+        region_obj = cJSON_GetArrayItem(regions_item, i);
+        ASSERT_NOT_NULL(region_obj);
+
+        type_item = cJSON_GetObjectItem(region_obj, "type");
+        ASSERT_NOT_NULL(type_item);
+        ASSERT_TRUE(cJSON_IsString(type_item));
+
+        type = type_item->valuestring;
+        ASSERT_TRUE(strcmp(type, "ram") == 0 ||
+                    strcmp(type, "rom") == 0 ||
+                    strcmp(type, "io") == 0 ||
+                    strcmp(type, "unmapped") == 0 ||
+                    strcmp(type, "cartridge") == 0);
+    }
+
+    cJSON_Delete(response);
+}
+
+/* Test: memory.map returns machine name */
+TEST(memory_map_returns_machine_name)
+{
+    cJSON *response, *machine_item;
+
+    response = mcp_tool_memory_map(NULL);
+    ASSERT_NOT_NULL(response);
+
+    machine_item = cJSON_GetObjectItem(response, "machine");
+    ASSERT_NOT_NULL(machine_item);
+    ASSERT_TRUE(cJSON_IsString(machine_item));
+
+    cJSON_Delete(response);
+}
+
+/* Test: memory.map with symbols shows content_hint */
+TEST(memory_map_with_symbols_shows_content_hint)
+{
+    cJSON *response, *regions_item, *region_obj, *hint_item;
+    int i, count, found_hint = 0;
+
+    /* Clear any existing symbols and add a test symbol in zero page */
+    test_symbol_table_clear();
+    /* Add a symbol at $0002 (zero page) */
+    mon_add_name_to_symbol_table(0x0002, lib_strdup("test_symbol"));
+
+    response = mcp_tool_memory_map(NULL);
+    ASSERT_NOT_NULL(response);
+
+    regions_item = cJSON_GetObjectItem(response, "regions");
+    ASSERT_NOT_NULL(regions_item);
+
+    /* Check if any region has a non-null contents_hint */
+    count = cJSON_GetArraySize(regions_item);
+    for (i = 0; i < count; i++) {
+        region_obj = cJSON_GetArrayItem(regions_item, i);
+        hint_item = cJSON_GetObjectItem(region_obj, "contents_hint");
+        if (hint_item != NULL && !cJSON_IsNull(hint_item)) {
+            found_hint = 1;
+            break;
+        }
+    }
+
+    /* Should have found a content hint since we added a symbol */
+    ASSERT_TRUE(found_hint);
+
+    cJSON_Delete(response);
+    test_symbol_table_clear();
+}
+
+/* Test: memory.map dispatch works */
+TEST(memory_map_dispatch_works)
+{
+    cJSON *response, *regions_item;
+
+    response = mcp_tools_dispatch("vice.memory.map", NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    regions_item = cJSON_GetObjectItem(response, "regions");
+    ASSERT_NOT_NULL(regions_item);
+
+    cJSON_Delete(response);
+}
+
+/* Test: memory.map with granularity parameter */
+TEST(memory_map_with_granularity)
+{
+    cJSON *response1, *response2, *params, *region_count1, *region_count2;
+
+    /* Get full map */
+    response1 = mcp_tool_memory_map(NULL);
+    ASSERT_NOT_NULL(response1);
+    region_count1 = cJSON_GetObjectItem(response1, "region_count");
+    ASSERT_NOT_NULL(region_count1);
+
+    /* Get map with large granularity - may have fewer regions */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "granularity", 4096);
+
+    response2 = mcp_tool_memory_map(params);
+    ASSERT_NOT_NULL(response2);
+    region_count2 = cJSON_GetObjectItem(response2, "region_count");
+    ASSERT_NOT_NULL(region_count2);
+
+    /* Both should have valid counts */
+    ASSERT_TRUE(region_count1->valueint > 0);
+    ASSERT_TRUE(region_count2->valueint > 0);
+
+    cJSON_Delete(response1);
+    cJSON_Delete(params);
+    cJSON_Delete(response2);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -6192,6 +6484,19 @@ int main(void)
     RUN_TEST(interrupt_log_start_dispatch_works);
     RUN_TEST(interrupt_log_stop_dispatch_works);
     RUN_TEST(interrupt_log_read_dispatch_works);
+
+    /* Memory map tests (Phase 5.5) */
+    RUN_TEST(memory_map_null_params_returns_full_map);
+    RUN_TEST(memory_map_regions_have_required_fields);
+    RUN_TEST(memory_map_returns_zero_page_first);
+    RUN_TEST(memory_map_with_start_end_filters_regions);
+    RUN_TEST(memory_map_with_hex_string_addresses);
+    RUN_TEST(memory_map_invalid_range_returns_error);
+    RUN_TEST(memory_map_region_types_are_valid);
+    RUN_TEST(memory_map_returns_machine_name);
+    RUN_TEST(memory_map_with_symbols_shows_content_hint);
+    RUN_TEST(memory_map_dispatch_works);
+    RUN_TEST(memory_map_with_granularity);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);

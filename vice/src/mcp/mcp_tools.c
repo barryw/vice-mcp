@@ -1014,6 +1014,13 @@ static const mcp_tool_t tool_registry[] = {
       "Supports incremental reads via since_index parameter.",
       mcp_tool_interrupt_log_read },
 
+    /* Phase 5.5: Memory Map */
+    { "vice.memory.map",
+      "Display memory region layout with optional symbol-based content hints. "
+      "Returns the C64 memory map showing RAM, ROM, I/O, and cartridge regions. "
+      "When symbols are loaded, adds content_hint showing symbols in each region.",
+      mcp_tool_memory_map },
+
     { NULL, NULL, NULL } /* Sentinel */
 };
 
@@ -7952,6 +7959,271 @@ cJSON* mcp_tool_interrupt_log_read(cJSON *params)
 
     log_message(mcp_tools_log, "Interrupt log read: %s (returned %d entries from index %d)",
                 log_id, entry_count - since_index, since_index);
+
+    return response;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Phase 5.5: Memory Map Tool
+ *
+ * Display memory region layout with optional symbol-based content hints.
+ * Uses a static C64 memory map for now. content_hint is populated when
+ * symbols are loaded by scanning the symbol table for addresses in each region.
+ * ------------------------------------------------------------------------- */
+
+/* C64 memory region types */
+typedef enum {
+    MCP_MEM_TYPE_RAM,
+    MCP_MEM_TYPE_ROM,
+    MCP_MEM_TYPE_IO,
+    MCP_MEM_TYPE_UNMAPPED,
+    MCP_MEM_TYPE_CARTRIDGE
+} mcp_mem_region_type_t;
+
+/* C64 memory region definition */
+typedef struct {
+    uint16_t start;
+    uint16_t end;
+    mcp_mem_region_type_t type;
+    const char *name;
+    int bank;
+} mcp_mem_region_t;
+
+/* Static C64 memory map (default configuration with BASIC + KERNAL ROMs)
+ * This is a simplified view. The actual C64 has a more complex banking system,
+ * but this covers the standard layout. */
+static const mcp_mem_region_t c64_memory_map[] = {
+    { 0x0000, 0x00FF, MCP_MEM_TYPE_RAM,  "Zero Page",         0 },
+    { 0x0100, 0x01FF, MCP_MEM_TYPE_RAM,  "Stack",             0 },
+    { 0x0200, 0x03FF, MCP_MEM_TYPE_RAM,  "BASIC Work Area",   0 },
+    { 0x0400, 0x07FF, MCP_MEM_TYPE_RAM,  "Screen Memory",     0 },
+    { 0x0800, 0x9FFF, MCP_MEM_TYPE_RAM,  "BASIC Program Area",0 },
+    { 0xA000, 0xBFFF, MCP_MEM_TYPE_ROM,  "BASIC ROM",         0 },
+    { 0xC000, 0xCFFF, MCP_MEM_TYPE_RAM,  "Upper RAM",         0 },
+    { 0xD000, 0xD3FF, MCP_MEM_TYPE_IO,   "VIC-II",            0 },
+    { 0xD400, 0xD7FF, MCP_MEM_TYPE_IO,   "SID",               0 },
+    { 0xD800, 0xDBFF, MCP_MEM_TYPE_IO,   "Color RAM",         0 },
+    { 0xDC00, 0xDCFF, MCP_MEM_TYPE_IO,   "CIA 1",             0 },
+    { 0xDD00, 0xDDFF, MCP_MEM_TYPE_IO,   "CIA 2",             0 },
+    { 0xDE00, 0xDEFF, MCP_MEM_TYPE_IO,   "I/O 1 (Expansion)", 0 },
+    { 0xDF00, 0xDFFF, MCP_MEM_TYPE_IO,   "I/O 2 (Expansion)", 0 },
+    { 0xE000, 0xFFFF, MCP_MEM_TYPE_ROM,  "KERNAL ROM",        0 },
+    { 0, 0, 0, NULL, 0 }  /* Sentinel */
+};
+
+static const char* mcp_mem_type_to_string(mcp_mem_region_type_t type)
+{
+    switch (type) {
+        case MCP_MEM_TYPE_RAM:       return "ram";
+        case MCP_MEM_TYPE_ROM:       return "rom";
+        case MCP_MEM_TYPE_IO:        return "io";
+        case MCP_MEM_TYPE_UNMAPPED:  return "unmapped";
+        case MCP_MEM_TYPE_CARTRIDGE: return "cartridge";
+        default:                     return "unknown";
+    }
+}
+
+/* Build content hint string by scanning symbol table for addresses in range.
+ * Returns allocated string (caller must free) or NULL if no symbols found. */
+static char* mcp_build_content_hint(uint16_t start, uint16_t end, int max_symbols)
+{
+    char *result = NULL;
+    char *symbols_found[32];  /* Max symbols to include in hint */
+    int symbol_count = 0;
+    int i;
+    int addr;
+    char *name;
+    size_t total_len;
+    char *p;
+
+    /* Scan address range for symbols */
+    for (addr = start; addr <= end && symbol_count < max_symbols && symbol_count < 32; addr++) {
+        name = mon_symbol_table_lookup_name(e_comp_space, (uint16_t)addr);
+        if (name != NULL) {
+            symbols_found[symbol_count++] = name;
+        }
+    }
+
+    if (symbol_count == 0) {
+        return NULL;
+    }
+
+    /* Calculate total string length needed */
+    total_len = 0;
+    for (i = 0; i < symbol_count; i++) {
+        total_len += strlen(symbols_found[i]) + 2;  /* +2 for ", " separator */
+    }
+
+    /* Allocate and build result string */
+    result = lib_malloc(total_len + 1);
+    if (result == NULL) {
+        return NULL;
+    }
+
+    p = result;
+    for (i = 0; i < symbol_count; i++) {
+        if (i > 0) {
+            *p++ = ',';
+            *p++ = ' ';
+        }
+        strcpy(p, symbols_found[i]);
+        p += strlen(symbols_found[i]);
+    }
+    *p = '\0';
+
+    return result;
+}
+
+/* Display memory region layout with optional symbol-based content hints.
+ *
+ * Parameters:
+ *   start: Start address (optional, default $0000) - number or hex string
+ *   end: End address (optional, default $FFFF) - number or hex string
+ *   granularity: Minimum region size (optional, default 256) - affects merging
+ *
+ * Returns:
+ *   regions: Array of memory region objects with:
+ *     - start: Hex address string
+ *     - end: Hex address string
+ *     - type: "ram", "rom", "io", "unmapped", "cartridge"
+ *     - name: Human-readable region name
+ *     - bank: Memory bank number
+ *     - contents_hint: Symbol names found in region (or null)
+ */
+cJSON* mcp_tool_memory_map(cJSON *params)
+{
+    cJSON *response, *regions_array, *region_obj;
+    cJSON *start_item, *end_item, *granularity_item;
+    int start_addr = 0x0000;
+    int end_addr = 0xFFFF;
+    int granularity = 256;
+    const char *error_msg;
+    int i;
+    char addr_str[8];
+
+    log_message(mcp_tools_log, "Handling vice.memory.map");
+
+    /* Parse optional parameters */
+    if (params != NULL) {
+        /* Get start address if provided */
+        start_item = cJSON_GetObjectItem(params, "start");
+        if (start_item != NULL) {
+            int resolved = mcp_resolve_address(start_item, &error_msg);
+            if (resolved < 0) {
+                char err_buf[128];
+                snprintf(err_buf, sizeof(err_buf), "Cannot resolve start address: %s", error_msg);
+                return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+            }
+            start_addr = resolved;
+        }
+
+        /* Get end address if provided */
+        end_item = cJSON_GetObjectItem(params, "end");
+        if (end_item != NULL) {
+            int resolved = mcp_resolve_address(end_item, &error_msg);
+            if (resolved < 0) {
+                char err_buf[128];
+                snprintf(err_buf, sizeof(err_buf), "Cannot resolve end address: %s", error_msg);
+                return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+            }
+            end_addr = resolved;
+        }
+
+        /* Get granularity if provided */
+        granularity_item = cJSON_GetObjectItem(params, "granularity");
+        if (granularity_item != NULL && cJSON_IsNumber(granularity_item)) {
+            granularity = granularity_item->valueint;
+            if (granularity < 1) {
+                granularity = 1;
+            }
+            if (granularity > 65536) {
+                granularity = 65536;
+            }
+        }
+    }
+
+    /* Validate range */
+    if (start_addr > end_addr) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "start address must be <= end address");
+    }
+    if (start_addr < 0 || start_addr > 0xFFFF) {
+        return mcp_error(MCP_ERROR_INVALID_ADDRESS, "start address out of range (0x0000-0xFFFF)");
+    }
+    if (end_addr < 0 || end_addr > 0xFFFF) {
+        return mcp_error(MCP_ERROR_INVALID_ADDRESS, "end address out of range (0x0000-0xFFFF)");
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    regions_array = cJSON_CreateArray();
+    if (regions_array == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Add machine info */
+    cJSON_AddStringToObject(response, "machine", machine_get_name());
+
+    /* Iterate through the C64 memory map and add regions that overlap with requested range */
+    for (i = 0; c64_memory_map[i].name != NULL; i++) {
+        const mcp_mem_region_t *region = &c64_memory_map[i];
+        uint16_t region_start, region_end;
+        char *content_hint;
+
+        /* Skip regions that don't overlap with requested range */
+        if (region->end < start_addr || region->start > end_addr) {
+            continue;
+        }
+
+        /* Clamp region to requested range */
+        region_start = (region->start < start_addr) ? start_addr : region->start;
+        region_end = (region->end > end_addr) ? end_addr : region->end;
+
+        /* Skip regions smaller than granularity (unless they're the only region) */
+        if ((region_end - region_start + 1) < (uint16_t)granularity &&
+            cJSON_GetArraySize(regions_array) > 0) {
+            continue;
+        }
+
+        /* Create region object */
+        region_obj = cJSON_CreateObject();
+        if (region_obj == NULL) {
+            cJSON_Delete(response);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        /* Add region fields */
+        snprintf(addr_str, sizeof(addr_str), "$%04X", region_start);
+        cJSON_AddStringToObject(region_obj, "start", addr_str);
+
+        snprintf(addr_str, sizeof(addr_str), "$%04X", region_end);
+        cJSON_AddStringToObject(region_obj, "end", addr_str);
+
+        cJSON_AddStringToObject(region_obj, "type", mcp_mem_type_to_string(region->type));
+        cJSON_AddStringToObject(region_obj, "name", region->name);
+        cJSON_AddNumberToObject(region_obj, "bank", region->bank);
+
+        /* Build content hint from symbols in this region */
+        content_hint = mcp_build_content_hint(region_start, region_end, 5);
+        if (content_hint != NULL) {
+            cJSON_AddStringToObject(region_obj, "contents_hint", content_hint);
+            lib_free(content_hint);
+        } else {
+            cJSON_AddNullToObject(region_obj, "contents_hint");
+        }
+
+        cJSON_AddItemToArray(regions_array, region_obj);
+    }
+
+    cJSON_AddItemToObject(response, "regions", regions_array);
+    cJSON_AddNumberToObject(response, "region_count", cJSON_GetArraySize(regions_array));
+
+    log_message(mcp_tools_log, "Memory map returned %d regions for range $%04X-$%04X",
+                cJSON_GetArraySize(regions_array), (unsigned int)start_addr, (unsigned int)end_addr);
 
     return response;
 }
