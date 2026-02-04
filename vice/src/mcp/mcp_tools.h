@@ -159,6 +159,7 @@ extern cJSON* mcp_tool_snapshot_list(cJSON *params);
 
 /* Tool handlers - Phase 5.1: Enhanced Debugging */
 extern cJSON* mcp_tool_cycles_stopwatch(cJSON *params);
+extern cJSON* mcp_tool_memory_fill(cJSON *params);
 
 /** @brief Send a breakpoint hit notification to SSE clients.
  *

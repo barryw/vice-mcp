@@ -502,6 +502,11 @@ static const mcp_tool_t tool_registry[] = {
       "Use 'reset' to start timing, 'read' to get elapsed cycles, or 'reset_and_read' "
       "for atomic read-and-reset. Ideal for measuring raster routine timing.",
       mcp_tool_cycles_stopwatch },
+    { "vice.memory.fill",
+      "Fill memory range with a repeating byte pattern. "
+      "Useful for clearing memory, creating NOP sleds, or setting up test conditions. "
+      "The pattern repeats to fill the entire range from start to end (inclusive).",
+      mcp_tool_memory_fill },
 
     { NULL, NULL, NULL } /* Sentinel */
 };
@@ -1203,6 +1208,20 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             }
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("action"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.memory.fill") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "start", mcp_prop_string(
+                "Start address: number, hex string ($A000), or symbol name"));
+            cJSON_AddItemToObject(props, "end", mcp_prop_string(
+                "End address (inclusive): number, hex string ($DFFF), or symbol name"));
+            cJSON_AddItemToObject(props, "pattern", mcp_prop_array("number",
+                "Byte pattern to repeat, e.g., [0] for zero-fill, [0xAA, 0x55] for alternating"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("start"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("end"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("pattern"));
             schema = mcp_schema_object(props, required);
 
         } else {
@@ -5534,6 +5553,130 @@ cJSON* mcp_tool_cycles_stopwatch(cJSON *params)
     }
 
     cJSON_AddStringToObject(response, "memspace", "computer");
+
+    return response;
+}
+
+/* ========================================================================= */
+/* Phase 5.1: Memory Fill Tool                                               */
+/* ========================================================================= */
+
+/**
+ * @brief Fill a memory range with a repeating byte pattern.
+ *
+ * Parameters:
+ *   start: (required) Start address - number, hex string ($A000), or symbol
+ *   end: (required) End address (inclusive) - number, hex string, or symbol
+ *   pattern: (required) Array of bytes to repeat, e.g., [0] or [0xAA, 0x55]
+ *
+ * Returns:
+ *   bytes_written: Total number of bytes written
+ *   pattern_repetitions: Number of complete pattern repetitions
+ *
+ * Examples:
+ *   Zero-fill: {"start": "$A000", "end": "$DFFF", "pattern": [0]}
+ *   Screen spaces: {"start": "$0400", "end": "$07FF", "pattern": [32]}
+ *   NOP sled: {"start": "$C000", "end": "$C0FF", "pattern": [0xEA]}
+ *   Alternating: {"start": "$2000", "end": "$3FFF", "pattern": [0xAA, 0x55]}
+ *
+ * Use case: Clear memory regions, set up test conditions, patch code areas
+ * without needing thousands of individual memory write API calls.
+ */
+cJSON* mcp_tool_memory_fill(cJSON *params)
+{
+    cJSON *response;
+    cJSON *start_item, *end_item, *pattern_item;
+    int start_addr, end_addr;
+    int pattern_len;
+    int i;
+    uint16_t addr;
+    long bytes_to_write;
+    long bytes_written = 0;
+    long pattern_reps = 0;
+    const char *error_msg;
+
+    log_message(mcp_tools_log, "Handling vice.memory.fill");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Get and validate start address */
+    start_item = cJSON_GetObjectItem(params, "start");
+    if (start_item == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "start address required");
+    }
+    start_addr = mcp_resolve_address(start_item, &error_msg);
+    if (start_addr < 0) {
+        char err_buf[128];
+        snprintf(err_buf, sizeof(err_buf), "Cannot resolve start address: %s", error_msg);
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+    }
+
+    /* Get and validate end address */
+    end_item = cJSON_GetObjectItem(params, "end");
+    if (end_item == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "end address required");
+    }
+    end_addr = mcp_resolve_address(end_item, &error_msg);
+    if (end_addr < 0) {
+        char err_buf[128];
+        snprintf(err_buf, sizeof(err_buf), "Cannot resolve end address: %s", error_msg);
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+    }
+
+    /* Validate range */
+    if (start_addr > end_addr) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "start address must be <= end address");
+    }
+
+    /* Get and validate pattern */
+    pattern_item = cJSON_GetObjectItem(params, "pattern");
+    if (pattern_item == NULL || !cJSON_IsArray(pattern_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "pattern array required");
+    }
+    pattern_len = cJSON_GetArraySize(pattern_item);
+    if (pattern_len < 1) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "pattern array must not be empty");
+    }
+    if (pattern_len > 256) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "pattern array too large (max 256 bytes)");
+    }
+
+    /* Validate all pattern bytes before writing */
+    for (i = 0; i < pattern_len; i++) {
+        cJSON *byte_item = cJSON_GetArrayItem(pattern_item, i);
+        if (!cJSON_IsNumber(byte_item)) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "pattern array must contain only numbers");
+        }
+        if (byte_item->valueint < 0 || byte_item->valueint > 255) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "pattern byte values must be 0-255");
+        }
+    }
+
+    /* Calculate bytes to write */
+    bytes_to_write = (long)(end_addr - start_addr) + 1;
+
+    /* Fill memory with repeating pattern */
+    addr = (uint16_t)start_addr;
+    for (bytes_written = 0; bytes_written < bytes_to_write; bytes_written++) {
+        cJSON *byte_item = cJSON_GetArrayItem(pattern_item, (int)(bytes_written % pattern_len));
+        uint8_t byte_val = (uint8_t)byte_item->valueint;
+        mem_store(addr, byte_val);
+        addr++;
+    }
+
+    /* Calculate complete pattern repetitions */
+    pattern_reps = bytes_written / pattern_len;
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddNumberToObject(response, "bytes_written", (double)bytes_written);
+    cJSON_AddNumberToObject(response, "pattern_repetitions", (double)pattern_reps);
 
     return response;
 }

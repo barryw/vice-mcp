@@ -109,8 +109,10 @@ uint8_t mem_read(uint16_t addr)
 
 void mem_store(uint16_t addr, uint8_t value)
 {
-    (void)addr;
-    (void)value;
+    if (!test_memory_buffer_initialized) {
+        test_memory_init();
+    }
+    test_memory_buffer[addr] = value;
 }
 
 /* Memory bank stubs */
@@ -663,6 +665,15 @@ void test_memory_clear(void)
 {
     memset(test_memory_buffer, 0, sizeof(test_memory_buffer));
     test_memory_buffer_initialized = 1;
+}
+
+/* Get a single byte from test memory */
+uint8_t test_memory_get_byte(uint16_t addr)
+{
+    if (!test_memory_buffer_initialized) {
+        test_memory_init();
+    }
+    return test_memory_buffer[addr];
 }
 
 /* =============================================================================

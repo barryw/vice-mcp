@@ -60,6 +60,9 @@ extern cJSON* mcp_tool_memory_search(cJSON *params);
 /* Cycles stopwatch tool declaration */
 extern cJSON* mcp_tool_cycles_stopwatch(cJSON *params);
 
+/* Memory fill tool declaration */
+extern cJSON* mcp_tool_memory_fill(cJSON *params);
+
 /* Test stopwatch helpers from vice_stubs.c */
 extern void test_stopwatch_reset(void);
 extern void test_stopwatch_set_cycles(unsigned long cycles);
@@ -69,6 +72,7 @@ extern unsigned long test_stopwatch_get_cycles(void);
 extern void test_memory_set(uint16_t addr, const uint8_t *data, size_t len);
 extern void test_memory_set_byte(uint16_t addr, uint8_t value);
 extern void test_memory_clear(void);
+extern uint8_t test_memory_get_byte(uint16_t addr);
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -2600,6 +2604,368 @@ TEST(cycles_stopwatch_dispatch_works)
     cJSON_Delete(response);
 }
 
+/* =================================================================
+ * Memory Fill Tests
+ * ================================================================= */
+
+/* Test: memory.fill requires start parameter */
+TEST(memory_fill_requires_start)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "end", 0x07FF);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0}, 1));
+
+    response = mcp_tool_memory_fill(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill requires end parameter */
+TEST(memory_fill_requires_end)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0400);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0}, 1));
+
+    response = mcp_tool_memory_fill(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill requires pattern parameter */
+TEST(memory_fill_requires_pattern)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0400);
+    cJSON_AddNumberToObject(params, "end", 0x07FF);
+
+    response = mcp_tool_memory_fill(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill null params returns error */
+TEST(memory_fill_null_params_returns_error)
+{
+    cJSON *response, *code_item;
+
+    response = mcp_tool_memory_fill(NULL);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill with single byte pattern (zero-fill) */
+TEST(memory_fill_single_byte_pattern)
+{
+    cJSON *response, *params, *bytes_item, *reps_item;
+
+    /* Clear memory first */
+    test_memory_clear();
+    /* Set some non-zero values */
+    test_memory_set_byte(0x0400, 0xFF);
+    test_memory_set_byte(0x0401, 0xFF);
+    test_memory_set_byte(0x0402, 0xFF);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0400);
+    cJSON_AddNumberToObject(params, "end", 0x0403);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0}, 1));
+
+    response = mcp_tool_memory_fill(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return bytes_written */
+    bytes_item = cJSON_GetObjectItem(response, "bytes_written");
+    ASSERT_NOT_NULL(bytes_item);
+    ASSERT_INT_EQ(bytes_item->valueint, 4);  /* 0x0400-0x0403 inclusive = 4 bytes */
+
+    /* Should return pattern_repetitions */
+    reps_item = cJSON_GetObjectItem(response, "pattern_repetitions");
+    ASSERT_NOT_NULL(reps_item);
+    ASSERT_INT_EQ(reps_item->valueint, 4);  /* Single byte pattern repeated 4 times */
+
+    /* Verify memory was actually filled */
+    ASSERT_INT_EQ(test_memory_get_byte(0x0400), 0);
+    ASSERT_INT_EQ(test_memory_get_byte(0x0401), 0);
+    ASSERT_INT_EQ(test_memory_get_byte(0x0402), 0);
+    ASSERT_INT_EQ(test_memory_get_byte(0x0403), 0);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill with screen space pattern */
+TEST(memory_fill_screen_spaces)
+{
+    cJSON *response, *params, *bytes_item;
+
+    test_memory_clear();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0400);
+    cJSON_AddNumberToObject(params, "end", 0x07FF);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){32}, 1));
+
+    response = mcp_tool_memory_fill(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* 0x0400-0x07FF = 1024 bytes */
+    bytes_item = cJSON_GetObjectItem(response, "bytes_written");
+    ASSERT_NOT_NULL(bytes_item);
+    ASSERT_INT_EQ(bytes_item->valueint, 1024);
+
+    /* Verify first and last bytes */
+    ASSERT_INT_EQ(test_memory_get_byte(0x0400), 32);
+    ASSERT_INT_EQ(test_memory_get_byte(0x07FF), 32);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill with two-byte alternating pattern */
+TEST(memory_fill_alternating_pattern)
+{
+    cJSON *response, *params, *bytes_item, *reps_item;
+
+    test_memory_clear();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x2000);
+    cJSON_AddNumberToObject(params, "end", 0x2007);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0xAA, 0x55}, 2));
+
+    response = mcp_tool_memory_fill(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* 8 bytes filled */
+    bytes_item = cJSON_GetObjectItem(response, "bytes_written");
+    ASSERT_NOT_NULL(bytes_item);
+    ASSERT_INT_EQ(bytes_item->valueint, 8);
+
+    /* 4 complete repetitions of 2-byte pattern */
+    reps_item = cJSON_GetObjectItem(response, "pattern_repetitions");
+    ASSERT_NOT_NULL(reps_item);
+    ASSERT_INT_EQ(reps_item->valueint, 4);
+
+    /* Verify pattern */
+    ASSERT_INT_EQ(test_memory_get_byte(0x2000), 0xAA);
+    ASSERT_INT_EQ(test_memory_get_byte(0x2001), 0x55);
+    ASSERT_INT_EQ(test_memory_get_byte(0x2002), 0xAA);
+    ASSERT_INT_EQ(test_memory_get_byte(0x2003), 0x55);
+    ASSERT_INT_EQ(test_memory_get_byte(0x2004), 0xAA);
+    ASSERT_INT_EQ(test_memory_get_byte(0x2005), 0x55);
+    ASSERT_INT_EQ(test_memory_get_byte(0x2006), 0xAA);
+    ASSERT_INT_EQ(test_memory_get_byte(0x2007), 0x55);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill with partial pattern repetition */
+TEST(memory_fill_partial_pattern)
+{
+    cJSON *response, *params, *bytes_item, *reps_item;
+
+    test_memory_clear();
+
+    /* 3-byte pattern into 7 bytes = 2 full reps + 1 partial byte */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x3000);
+    cJSON_AddNumberToObject(params, "end", 0x3006);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0x11, 0x22, 0x33}, 3));
+
+    response = mcp_tool_memory_fill(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* 7 bytes filled */
+    bytes_item = cJSON_GetObjectItem(response, "bytes_written");
+    ASSERT_NOT_NULL(bytes_item);
+    ASSERT_INT_EQ(bytes_item->valueint, 7);
+
+    /* 2 complete repetitions */
+    reps_item = cJSON_GetObjectItem(response, "pattern_repetitions");
+    ASSERT_NOT_NULL(reps_item);
+    ASSERT_INT_EQ(reps_item->valueint, 2);
+
+    /* Verify pattern including partial */
+    ASSERT_INT_EQ(test_memory_get_byte(0x3000), 0x11);
+    ASSERT_INT_EQ(test_memory_get_byte(0x3001), 0x22);
+    ASSERT_INT_EQ(test_memory_get_byte(0x3002), 0x33);
+    ASSERT_INT_EQ(test_memory_get_byte(0x3003), 0x11);
+    ASSERT_INT_EQ(test_memory_get_byte(0x3004), 0x22);
+    ASSERT_INT_EQ(test_memory_get_byte(0x3005), 0x33);
+    ASSERT_INT_EQ(test_memory_get_byte(0x3006), 0x11);  /* Partial repeat */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill with hex string addresses */
+TEST(memory_fill_hex_string_addresses)
+{
+    cJSON *response, *params, *bytes_item;
+
+    test_memory_clear();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "start", "$C000");
+    cJSON_AddStringToObject(params, "end", "$C0FF");
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0xEA}, 1));
+
+    response = mcp_tool_memory_fill(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* 256 bytes */
+    bytes_item = cJSON_GetObjectItem(response, "bytes_written");
+    ASSERT_NOT_NULL(bytes_item);
+    ASSERT_INT_EQ(bytes_item->valueint, 256);
+
+    /* Verify NOP sled */
+    ASSERT_INT_EQ(test_memory_get_byte(0xC000), 0xEA);
+    ASSERT_INT_EQ(test_memory_get_byte(0xC0FF), 0xEA);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill empty pattern returns error */
+TEST(memory_fill_empty_pattern_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0400);
+    cJSON_AddNumberToObject(params, "end", 0x07FF);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateArray());
+
+    response = mcp_tool_memory_fill(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill with start > end returns error */
+TEST(memory_fill_invalid_range_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x07FF);
+    cJSON_AddNumberToObject(params, "end", 0x0400);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0}, 1));
+
+    response = mcp_tool_memory_fill(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill with invalid byte value returns error */
+TEST(memory_fill_invalid_byte_value_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0400);
+    cJSON_AddNumberToObject(params, "end", 0x07FF);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){256}, 1));
+
+    response = mcp_tool_memory_fill(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.fill dispatch works */
+TEST(memory_fill_dispatch_works)
+{
+    cJSON *response, *params, *bytes_item;
+
+    test_memory_clear();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x1000);
+    cJSON_AddNumberToObject(params, "end", 0x1003);
+    cJSON_AddItemToObject(params, "pattern", cJSON_CreateIntArray((const int[]){0x42}, 1));
+
+    response = mcp_tools_dispatch("vice.memory.fill", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    bytes_item = cJSON_GetObjectItem(response, "bytes_written");
+    ASSERT_NOT_NULL(bytes_item);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -2747,6 +3113,21 @@ int main(void)
     RUN_TEST(cycles_stopwatch_read_returns_cycles);
     RUN_TEST(cycles_stopwatch_reset_and_read_works);
     RUN_TEST(cycles_stopwatch_dispatch_works);
+
+    /* Memory fill tests */
+    RUN_TEST(memory_fill_requires_start);
+    RUN_TEST(memory_fill_requires_end);
+    RUN_TEST(memory_fill_requires_pattern);
+    RUN_TEST(memory_fill_null_params_returns_error);
+    RUN_TEST(memory_fill_single_byte_pattern);
+    RUN_TEST(memory_fill_screen_spaces);
+    RUN_TEST(memory_fill_alternating_pattern);
+    RUN_TEST(memory_fill_partial_pattern);
+    RUN_TEST(memory_fill_hex_string_addresses);
+    RUN_TEST(memory_fill_empty_pattern_returns_error);
+    RUN_TEST(memory_fill_invalid_range_returns_error);
+    RUN_TEST(memory_fill_invalid_byte_value_returns_error);
+    RUN_TEST(memory_fill_dispatch_works);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);
