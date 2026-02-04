@@ -150,6 +150,7 @@ extern cJSON* mcp_tool_display_get_dimensions(cJSON *params);
 extern cJSON* mcp_tool_keyboard_type(cJSON *params);
 extern cJSON* mcp_tool_keyboard_key_press(cJSON *params);
 extern cJSON* mcp_tool_keyboard_key_release(cJSON *params);
+extern cJSON* mcp_tool_keyboard_restore(cJSON *params);
 extern cJSON* mcp_tool_joystick_set(cJSON *params);
 
 /* Tool handlers - Snapshot Management */
@@ -207,5 +208,21 @@ extern void mcp_notify_breakpoint(uint16_t pc, uint32_t bp_id);
  *  @param state  The new state string ("running", "paused", "stepping")
  */
 extern void mcp_notify_execution_state_changed(const char *state);
+
+/** @brief Check if MCP step mode is active.
+ *
+ *  When active, the monitor should use ui_pause_enable() instead of
+ *  monitor_startup() when stepping completes. This prevents the monitor
+ *  window from opening during MCP-controlled stepping operations.
+ *
+ *  @return 1 if MCP step mode is active, 0 otherwise
+ */
+extern int mcp_is_step_active(void);
+
+/** @brief Clear MCP step mode flag.
+ *
+ *  Called by the monitor when stepping completes to reset the flag.
+ */
+extern void mcp_clear_step_active(void);
 
 #endif /* VICE_MCP_TOOLS_H */

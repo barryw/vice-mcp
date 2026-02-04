@@ -56,6 +56,8 @@
 #include "log.h"
 #include "interrupt.h"
 #include "monitor.h"
+#include "ui.h"  /* For ui_pause_active/enable/disable */
+#include "mainlock.h"  /* For mainlock_obtain/release during UI pause */
 
 /* From mcp_tools.c */
 extern const char *CATASTROPHIC_ERROR_JSON;
@@ -95,19 +97,23 @@ static int server_running = 0;  /* 1 when HTTP server is active */
  * (Claude, web UI, debug tools). 10 provides headroom without excessive
  * memory overhead (10 * sizeof(struct) = 160 bytes on 64-bit). */
 #define MAX_SSE_CONNECTIONS 10
-static struct {
+
+/* SSE connection tracking */
+typedef struct sse_connection_s {
     struct MHD_Connection *connection;  /* libmicrohttpd connection handle */
     int active;                          /* 1 if connection is open, 0 if free slot */
-} sse_connections[MAX_SSE_CONNECTIONS] = {{NULL, 0}};
+} sse_connection_t;
+
+static sse_connection_t sse_connections[MAX_SSE_CONNECTIONS] = {{NULL, 0}};
 
 /* Request context for POST body accumulation */
-struct request_context {
+struct request_context_s {
     char *body;
     size_t body_size;
     size_t body_capacity;
 };
 
-static void request_context_free(struct request_context *ctx)
+static void request_context_free(struct request_context_s *ctx)
 {
     if (ctx != NULL) {
         if (ctx->body != NULL) {
@@ -167,6 +173,19 @@ static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
     if (monitor_is_inside_monitor()) {
         log_message(mcp_transport_log, "Monitor active - using direct dispatch for: %s", tool_name);
         return mcp_tools_dispatch(tool_name, params);
+    }
+
+    /* If UI pause is active, the emulator main loop is paused but not in
+     * monitor mode. In this state, traps won't fire because the CPU loop
+     * isn't running. We need to acquire the mainlock to safely access
+     * emulator state while the pause loop periodically yields it. */
+    if (ui_pause_active()) {
+        cJSON *response;
+        log_message(mcp_transport_log, "UI paused - acquiring mainlock for dispatch: %s", tool_name);
+        mainlock_obtain();
+        response = mcp_tools_dispatch(tool_name, params);
+        mainlock_release();
+        return response;
     }
 
     /* Emulator is running - use trap for thread-safe dispatch */
@@ -449,7 +468,7 @@ static void request_completed(void *cls,
     /* Unregister SSE connection if registered */
     unregister_sse_connection(connection);
 
-    struct request_context *ctx = *con_cls;
+    struct request_context_s *ctx = *con_cls;
     if (ctx != NULL) {
         request_context_free(ctx);
         *con_cls = NULL;
@@ -494,7 +513,7 @@ static enum MHD_Result http_handler(void *cls,
 
     /* Route requests */
     if (strcmp(url, "/mcp") == 0 && strcmp(method, "POST") == 0) {
-        struct request_context *ctx = *con_cls;
+        struct request_context_s *ctx = *con_cls;
 
         /* First call - initialize context and validate headers */
         if (ctx == NULL) {
@@ -544,7 +563,7 @@ static enum MHD_Result http_handler(void *cls,
                 return ret;
             }
 
-            ctx = calloc(1, sizeof(struct request_context));
+            ctx = calloc(1, sizeof(struct request_context_s));
             if (ctx == NULL) {
                 log_error(mcp_transport_log, "Failed to allocate request context");
                 return MHD_NO;
@@ -897,7 +916,8 @@ void mcp_transport_stop(void)
  */
 int mcp_transport_sse_send_event(const char *event_type, const char *data)
 {
-    int i, active_count = 0;
+    int i;
+    int active_count = 0;
     char *event_message;
     size_t msg_len;
 

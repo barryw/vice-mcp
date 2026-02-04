@@ -60,6 +60,7 @@
 #include "keyboard.h"
 #include "joyport/joystick.h"
 #include "arch/shared/hotkeys/vhkkeysyms.h"
+#include "ui.h"  /* For ui_pause_enable/disable/active */
 #include "archdep_user_config_path.h"
 #include "archdep_mkdir.h"
 #include "util.h"
@@ -70,10 +71,27 @@
 static log_t mcp_tools_log = LOG_DEFAULT;
 static int mcp_tools_initialized = 0;  /* Double-initialization guard */
 
+/* MCP step mode flag - when set, monitor_check_icount() will use ui_pause_enable()
+ * instead of monitor_startup() when stepping completes. This prevents the monitor
+ * window from opening during MCP-controlled stepping operations. */
+static int mcp_step_active = 0;
+
+/* Check if MCP step mode is active (called from monitor.c) */
+int mcp_is_step_active(void)
+{
+    return mcp_step_active;
+}
+
+/* Clear MCP step mode (called from monitor.c when stepping completes) */
+void mcp_clear_step_active(void)
+{
+    mcp_step_active = 0;
+}
+
 /* Forward declarations for keyboard auto-release (defined later with matrix code) */
 static void mcp_keyboard_vsync_callback(void *unused);
 static void mcp_keyboard_schedule_vsync_check(void);
-static int add_pending_vhk_key_release(signed long key_code, int modifiers, CLOCK release_at);
+static int add_pending_vhk_key_release(signed long key_code, int modifiers, int frames);
 
 /* -------------------------------------------------------------------------
  * Checkpoint Group Management (MCP-side bookkeeping)
@@ -85,7 +103,7 @@ static int add_pending_vhk_key_release(signed long key_code, int modifiers, CLOC
 #define MCP_MAX_CHECKPOINTS_PER_GROUP 64
 #define MCP_MAX_GROUP_NAME_LEN 64
 
-typedef struct {
+typedef struct mcp_checkpoint_group_s {
     char name[MCP_MAX_GROUP_NAME_LEN];
     int checkpoint_ids[MCP_MAX_CHECKPOINTS_PER_GROUP];
     int checkpoint_count;
@@ -164,7 +182,7 @@ static int mcp_checkpoint_group_find_free(void)
 #define MCP_MAX_AUTO_SNAPSHOTS 64
 #define MCP_MAX_SNAPSHOT_PREFIX_LEN 64
 
-typedef struct {
+typedef struct mcp_auto_snapshot_config_s {
     int checkpoint_id;                        /* Associated checkpoint */
     char prefix[MCP_MAX_SNAPSHOT_PREFIX_LEN]; /* Filename prefix */
     int max_snapshots;                        /* Ring buffer size (default 10) */
@@ -257,7 +275,7 @@ static int mcp_auto_snapshot_find_free(void)
 #define MCP_MAX_TRACE_CONFIGS 16
 #define MCP_MAX_TRACE_FILE_LEN 256
 
-typedef struct {
+typedef struct mcp_trace_config_s {
     char trace_id[32];              /* Unique trace identifier */
     char output_file[MCP_MAX_TRACE_FILE_LEN]; /* Output file path */
     uint16_t pc_filter_start;       /* Start address for PC filter (0 = no filter) */
@@ -915,6 +933,7 @@ static const mcp_tool_t tool_registry[] = {
     { "vice.keyboard.type", "Type text (uppercase ASCII displays as uppercase on C64 by default)", mcp_tool_keyboard_type },
     { "vice.keyboard.key_press", "Press a specific key", mcp_tool_keyboard_key_press },
     { "vice.keyboard.key_release", "Release a specific key", mcp_tool_keyboard_key_release },
+    { "vice.keyboard.restore", "Press/release RESTORE key (triggers NMI, not in matrix)", mcp_tool_keyboard_restore },
     { "vice.joystick.set", "Set joystick state", mcp_tool_joystick_set },
 
     /* Phase 4: Advanced Debugging */
@@ -1147,20 +1166,25 @@ cJSON* mcp_tool_ping(cJSON *params)
     cJSON_AddStringToObject(response, "version", VERSION);
     cJSON_AddStringToObject(response, "machine", machine_get_name());
 
-    /* Report execution state based on exit_mon flag
-     * exit_mon_no = 0: paused (in monitor)
-     * exit_mon_continue = 1: running
-     * Other values indicate transitions */
-    switch (exit_mon) {
-        case 0:  /* exit_mon_no */
-            exec_state = "paused";
-            break;
-        case 1:  /* exit_mon_continue */
-            exec_state = "running";
-            break;
-        default:
-            exec_state = "transitioning";
-            break;
+    /* Report execution state based on UI pause state AND monitor state.
+     * The emulator can be paused in two ways:
+     * 1. UI pause - controlled by ui_pause_enable/disable
+     * 2. Monitor mode - controlled by exit_mon variable
+     * We report "paused" if either is active. */
+    if (ui_pause_active()) {
+        exec_state = "paused";
+    } else {
+        switch (exit_mon) {
+            case 0:  /* exit_mon_no - in monitor */
+                exec_state = "paused";
+                break;
+            case 1:  /* exit_mon_continue - running */
+                exec_state = "running";
+                break;
+            default:
+                exec_state = "transitioning";
+                break;
+        }
     }
     cJSON_AddStringToObject(response, "execution", exec_state);
 
@@ -1919,7 +1943,19 @@ cJSON* mcp_tool_execution_run(cJSON *params)
 
     log_message(mcp_tools_log, "Handling vice.execution.run");
 
-    /* Signal monitor to exit and continue execution */
+    /* Handle both UI pause mode and monitor mode.
+     * The emulator can be paused in two ways:
+     * 1. UI pause - controlled by ui_pause_enable/disable
+     * 2. Monitor mode - controlled by exit_mon variable
+     * We need to handle both cases. */
+
+    /* Disable UI pause if active */
+    if (ui_pause_active()) {
+        log_message(mcp_tools_log, "Disabling UI pause");
+        ui_pause_disable();
+    }
+
+    /* Also signal monitor to exit if in monitor mode */
     exit_mon = exit_mon_continue;
 
     response = cJSON_CreateObject();
@@ -1941,9 +1977,14 @@ cJSON* mcp_tool_execution_pause(cJSON *params)
 
     log_message(mcp_tools_log, "Handling vice.execution.pause");
 
-    /* Trigger monitor entry via interrupt trap
-     * This will pause execution at the next safe point */
-    monitor_startup_trap();
+    /* Use UI pause to stop the emulator without entering monitor mode.
+     * This keeps the emulator window visible (no monitor popup) while
+     * still stopping CPU execution. The transport layer acquires the
+     * mainlock when dispatching during UI pause for thread safety. */
+    if (!ui_pause_active()) {
+        log_message(mcp_tools_log, "Enabling UI pause");
+        ui_pause_enable();
+    }
 
     response = cJSON_CreateObject();
     if (response == NULL) {
@@ -1951,7 +1992,7 @@ cJSON* mcp_tool_execution_pause(cJSON *params)
     }
 
     cJSON_AddStringToObject(response, "status", "ok");
-    cJSON_AddStringToObject(response, "message", "Pause requested (will stop at next safe point)");
+    cJSON_AddStringToObject(response, "message", "Execution paused");
 
     return response;
 }
@@ -1981,6 +2022,11 @@ cJSON* mcp_tool_execution_step(cJSON *params)
         }
     }
 
+    /* Set MCP step mode flag - this tells monitor_check_icount() to use
+     * ui_pause_enable() instead of monitor_startup() when stepping completes,
+     * preventing the monitor window from opening during MCP operations. */
+    mcp_step_active = 1;
+
     /* Use VICE's step functions:
      * - mon_instructions_step: Step into subroutines
      * - mon_instructions_next: Step over subroutines */
@@ -2005,7 +2051,11 @@ cJSON* mcp_tool_execution_step(cJSON *params)
 cJSON* mcp_tool_registers_get(cJSON *params)
 {
     cJSON *response;
-    unsigned int pc, a, x, y, sp;
+    unsigned int pc;
+    unsigned int a;
+    unsigned int x;
+    unsigned int y;
+    unsigned int sp;
 
     log_message(mcp_tools_log, "Handling vice.registers.get");
 
@@ -2268,9 +2318,12 @@ cJSON* mcp_tool_memory_read(cJSON *params)
 cJSON* mcp_tool_memory_write(cJSON *params)
 {
     cJSON *response;
-    cJSON *addr_item, *data_item, *value_item;
+    cJSON *addr_item;
+    cJSON *data_item;
+    cJSON *value_item;
     uint16_t address;
-    int i, array_size;
+    int i;
+    int array_size;
     uint8_t byte_val;
     const char *error_msg;
     int resolved;
@@ -2413,8 +2466,10 @@ cJSON* mcp_tool_memory_search(cJSON *params)
 {
     cJSON *response, *matches_array;
     cJSON *start_item, *end_item, *pattern_item, *mask_item, *max_item;
-    int start_addr, end_addr;
-    int pattern_len, mask_len;
+    int start_addr;
+    int end_addr;
+    int pattern_len;
+    int mask_len;
     uint8_t *pattern_buf = NULL;
     uint8_t *mask_buf = NULL;
     int max_results = 100;  /* Default max results */
@@ -2735,7 +2790,8 @@ cJSON* mcp_tool_checkpoint_list(cJSON *params)
 {
     cJSON *response, *checkpoints_array;
     mon_checkpoint_t **checkpoint_list;
-    unsigned int count, i;
+    unsigned int count;
+    unsigned int i;
 
     (void)params;  /* Unused */
 
@@ -2761,7 +2817,8 @@ cJSON* mcp_tool_checkpoint_list(cJSON *params)
         mon_checkpoint_t *cp = checkpoint_list[i];
         cJSON *cp_obj = cJSON_CreateObject();
         char *start_symbol, *end_symbol;
-        uint16_t start_loc, end_loc;
+        uint16_t start_loc;
+        uint16_t end_loc;
 
         if (cp_obj == NULL) {
             cJSON_Delete(checkpoints_array);
@@ -3045,7 +3102,8 @@ cJSON* mcp_tool_checkpoint_set_condition(cJSON *params)
 cJSON* mcp_tool_checkpoint_set_ignore_count(cJSON *params)
 {
     cJSON *response, *num_item, *count_item;
-    int checkpoint_num, ignore_count;
+    int checkpoint_num;
+    int ignore_count;
     char *params_str;
 
     log_message(mcp_tools_log, "Handling vice.checkpoint.set_ignore_count");
@@ -3119,7 +3177,8 @@ cJSON* mcp_tool_checkpoint_group_create(cJSON *params)
 {
     cJSON *response, *name_item, *ids_item;
     const char *name;
-    int group_idx, i;
+    int group_idx;
+    int i;
 
     log_message(mcp_tools_log, "Handling vice.checkpoint.group.create");
 
@@ -3192,7 +3251,9 @@ cJSON* mcp_tool_checkpoint_group_add(cJSON *params)
 {
     cJSON *response, *group_item, *ids_item;
     const char *group_name;
-    int group_idx, i, added_count = 0;
+    int group_idx;
+    int i;
+    int added_count = 0;
 
     log_message(mcp_tools_log, "Handling vice.checkpoint.group.add");
 
@@ -3253,7 +3314,9 @@ cJSON* mcp_tool_checkpoint_group_toggle(cJSON *params)
 {
     cJSON *response, *group_item, *enabled_item;
     const char *group_name;
-    int group_idx, i, affected_count = 0;
+    int group_idx;
+    int i;
+    int affected_count = 0;
     bool enabled;
 
     log_message(mcp_tools_log, "Handling vice.checkpoint.group.toggle");
@@ -3339,7 +3402,9 @@ cJSON* mcp_tool_checkpoint_group_list(cJSON *params)
         if (checkpoint_groups[i].active) {
             cJSON *group_obj = cJSON_CreateObject();
             cJSON *ids_array;
-            int j, enabled_count = 0, disabled_count = 0;
+            int j;
+            int enabled_count = 0;
+            int disabled_count = 0;
 
             if (group_obj == NULL) {
                 cJSON_Delete(groups_array);
@@ -3399,7 +3464,9 @@ cJSON* mcp_tool_sprite_get(cJSON *params)
 {
     cJSON *response, *sprite_obj, *sprite_item;
     int sprite_num = -1;  /* -1 = all sprites */
-    int i, start, end;
+    int i;
+    int start;
+    int end;
 
     log_message(mcp_tools_log, "Handling vice.sprite.get");
 
@@ -3430,9 +3497,15 @@ cJSON* mcp_tool_sprite_get(cJSON *params)
 
     /* Read sprite data for requested sprite(s) */
     for (i = start; i <= end; i++) {
-        uint16_t x, y;
-        uint8_t enable_reg, x_msb_reg, multicolor_reg, expand_x_reg, expand_y_reg;
-        uint8_t priority_reg, color;
+        uint16_t x;
+        uint16_t y;
+        uint8_t enable_reg;
+        uint8_t x_msb_reg;
+        uint8_t multicolor_reg;
+        uint8_t expand_x_reg;
+        uint8_t expand_y_reg;
+        uint8_t priority_reg;
+        uint8_t color;
         char sprite_key[16];
 
         /* Read VIC-II registers */
@@ -3488,7 +3561,11 @@ cJSON* mcp_tool_sprite_set(cJSON *params)
     cJSON *enabled_item, *multicolor_item, *expand_x_item, *expand_y_item;
     cJSON *priority_item, *color_item;
     int sprite_num;
-    uint8_t enable_reg, x_msb_reg, multicolor_reg, expand_x_reg, expand_y_reg;
+    uint8_t enable_reg;
+    uint8_t x_msb_reg;
+    uint8_t multicolor_reg;
+    uint8_t expand_x_reg;
+    uint8_t expand_y_reg;
     uint8_t priority_reg;
 
     log_message(mcp_tools_log, "Handling vice.sprite.set");
@@ -3630,7 +3707,8 @@ cJSON* mcp_tool_vicii_get_state(cJSON *params)
 {
     cJSON *response, *registers_obj;
     int i;
-    uint8_t d011, d012;
+    uint8_t d011;
+    uint8_t d012;
 
     (void)params;  /* Unused */
 
@@ -3709,8 +3787,11 @@ cJSON* mcp_tool_sid_get_state(cJSON *params)
 
     /* Read all 3 voices */
     for (v = 0; v < 3; v++) {
-        uint16_t freq, pulse_width;
-        uint8_t control, attack_decay, sustain_release;
+        uint16_t freq;
+        uint16_t pulse_width;
+        uint8_t control;
+        uint8_t attack_decay;
+        uint8_t sustain_release;
         int base = SID_BASE + (v * 7);
 
         freq = mem_read(base + 0) | (mem_read(base + 1) << 8);
@@ -3789,7 +3870,8 @@ cJSON* mcp_tool_cia_get_state(cJSON *params)
 
     /* Helper function to build CIA state */
     #define BUILD_CIA_STATE(obj, base) do { \
-        uint16_t timer_a, timer_b; \
+        uint16_t timer_a; \
+        uint16_t timer_b; \
         obj = cJSON_CreateObject(); \
         if (obj == NULL) { \
             cJSON_Delete(response); \
@@ -3840,7 +3922,8 @@ cJSON* mcp_tool_vicii_set_state(cJSON *params)
     /* Generic register array - allows setting any VIC-II register by offset */
     registers_array = cJSON_GetObjectItem(params, "registers");
     if (registers_array != NULL && cJSON_IsArray(registers_array)) {
-        int i, array_size = cJSON_GetArraySize(registers_array);
+        int i;
+        int array_size = cJSON_GetArraySize(registers_array);
         for (i = 0; i < array_size; i++) {
             cJSON *reg_obj = cJSON_GetArrayItem(registers_array, i);
             if (reg_obj != NULL && cJSON_IsObject(reg_obj)) {
@@ -3946,7 +4029,8 @@ cJSON* mcp_tool_sid_set_state(cJSON *params)
     /* Generic register array - allows setting any SID register by offset */
     registers_array = cJSON_GetObjectItem(params, "registers");
     if (registers_array != NULL && cJSON_IsArray(registers_array)) {
-        int i, array_size = cJSON_GetArraySize(registers_array);
+        int i;
+        int array_size = cJSON_GetArraySize(registers_array);
         for (i = 0; i < array_size; i++) {
             cJSON *reg_obj = cJSON_GetArrayItem(registers_array, i);
             if (reg_obj != NULL && cJSON_IsObject(reg_obj)) {
@@ -4052,7 +4136,8 @@ cJSON* mcp_tool_cia_set_state(cJSON *params)
     /* Generic register arrays for CIA1 and CIA2 */
     registers_array = cJSON_GetObjectItem(params, "cia1_registers");
     if (registers_array != NULL && cJSON_IsArray(registers_array)) {
-        int i, array_size = cJSON_GetArraySize(registers_array);
+        int i;
+        int array_size = cJSON_GetArraySize(registers_array);
         for (i = 0; i < array_size; i++) {
             cJSON *reg_obj = cJSON_GetArrayItem(registers_array, i);
             if (reg_obj != NULL && cJSON_IsObject(reg_obj)) {
@@ -4072,7 +4157,8 @@ cJSON* mcp_tool_cia_set_state(cJSON *params)
 
     registers_array = cJSON_GetObjectItem(params, "cia2_registers");
     if (registers_array != NULL && cJSON_IsArray(registers_array)) {
-        int i, array_size = cJSON_GetArraySize(registers_array);
+        int i;
+        int array_size = cJSON_GetArraySize(registers_array);
         for (i = 0; i < array_size; i++) {
             cJSON *reg_obj = cJSON_GetArrayItem(registers_array, i);
             if (reg_obj != NULL && cJSON_IsObject(reg_obj)) {
@@ -4172,7 +4258,8 @@ cJSON* mcp_tool_cia_set_state(cJSON *params)
 cJSON* mcp_tool_disk_attach(cJSON *params)
 {
     cJSON *response, *unit_item, *drive_item, *path_item;
-    unsigned int unit, drive;
+    unsigned int unit;
+    unsigned int drive;
     const char *path;
     int result;
 
@@ -4233,7 +4320,8 @@ cJSON* mcp_tool_disk_attach(cJSON *params)
 cJSON* mcp_tool_disk_detach(cJSON *params)
 {
     cJSON *response, *unit_item, *drive_item;
-    unsigned int unit, drive;
+    unsigned int unit;
+    unsigned int drive;
 
     /* Parse unit parameter (required, 8-11) */
     unit_item = cJSON_GetObjectItem(params, "unit");
@@ -4366,12 +4454,15 @@ cJSON* mcp_tool_disk_list(cJSON *params)
 cJSON* mcp_tool_disk_read_sector(cJSON *params)
 {
     cJSON *response, *unit_item, *track_item, *sector_item;
-    unsigned int unit, track, sector;
+    unsigned int unit;
+    unsigned int track;
+    unsigned int sector;
     vdrive_t *vdrive;
     uint8_t sector_buf[256];
     char hex_buf[768];  /* 256 bytes * 3 chars (XX ) = 768 */
     char *p;
-    int result, i;
+    int result;
+    int i;
 
     /* Parse unit parameter (required, 8-11) */
     unit_item = cJSON_GetObjectItem(params, "unit");
@@ -4600,7 +4691,8 @@ static const char base64_chars[] =
 /* Encode binary data to base64 - caller must free returned string */
 static char* base64_encode(const uint8_t *data, size_t input_length, size_t *output_length)
 {
-    size_t i, j;
+    size_t i;
+    size_t j;
     size_t out_len = 4 * ((input_length + 2) / 3);
     char *encoded = malloc(out_len + 1);
 
@@ -4774,7 +4866,8 @@ cJSON* mcp_tool_display_get_dimensions(cJSON *params)
 {
     cJSON *response;
     struct video_canvas_s *canvas;
-    unsigned int width, height;
+    unsigned int width;
+    unsigned int height;
 
     (void)params;  /* Unused */
 
@@ -5014,7 +5107,6 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
     int modifiers = 0;
     int hold_frames = 0;
     int hold_ms = 0;
-    CLOCK hold_cycles = 0;
     int result;
 
     log_message(mcp_tools_log, "Keyboard key press request");
@@ -5042,9 +5134,6 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
         if (hold_frames < 1 || hold_frames > 300) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "hold_frames must be 1-300");
         }
-        /* Convert frames to cycles: ~19656 cycles per frame (PAL), ~17095 (NTSC) */
-        /* Using ~20000 as approximate for both */
-        hold_cycles = (CLOCK)hold_frames * 20000;
     }
 
     if (hold_ms_item != NULL && cJSON_IsNumber(hold_ms_item)) {
@@ -5052,9 +5141,9 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
         if (hold_ms < 1 || hold_ms > 5000) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "hold_ms must be 1-5000");
         }
-        /* Convert ms to cycles: ~985 cycles per ms (PAL) / ~1023 (NTSC) */
-        /* Using ~1000 as approximate */
-        hold_cycles = (CLOCK)hold_ms * 1000;
+        /* Convert ms to frames: 50fps (PAL) = 20ms/frame, round up, minimum 1 */
+        hold_frames = (hold_ms + 19) / 20;
+        if (hold_frames < 1) hold_frames = 1;
     }
 
     log_message(mcp_tools_log, "Pressing key: code=%ld, modifiers=0x%04x", key_code, (unsigned int)modifiers);
@@ -5063,13 +5152,9 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
     keyboard_key_pressed(key_code, modifiers);
 
     /* Schedule auto-release if hold duration specified */
-    if (hold_cycles > 0) {
-        CLOCK release_at = maincpu_clk + hold_cycles;
-        if (add_pending_vhk_key_release(key_code, modifiers, release_at) < 0) {
+    if (hold_frames > 0) {
+        if (add_pending_vhk_key_release(key_code, modifiers, hold_frames) < 0) {
             log_warning(mcp_tools_log, "Failed to schedule auto-release (no slots)");
-        } else {
-            log_message(mcp_tools_log, "Scheduled VHK auto-release at clk=%lu (in %lu cycles)",
-                       (unsigned long)release_at, (unsigned long)hold_cycles);
         }
     }
 
@@ -5083,10 +5168,8 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
     cJSON_AddNumberToObject(response, "modifiers", modifiers);
 
     /* Report scheduled auto-release if applicable */
-    if (hold_cycles > 0) {
-        if (hold_frames > 0) {
-            cJSON_AddNumberToObject(response, "hold_frames", hold_frames);
-        }
+    if (hold_frames > 0) {
+        cJSON_AddNumberToObject(response, "hold_frames", hold_frames);
         if (hold_ms > 0) {
             cJSON_AddNumberToObject(response, "hold_ms", hold_ms);
         }
@@ -5133,6 +5216,55 @@ cJSON* mcp_tool_keyboard_key_release(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "key_code", key_code);
     cJSON_AddNumberToObject(response, "modifiers", modifiers);
+
+    return response;
+}
+
+/**
+ * Press or release the RESTORE key.
+ *
+ * RESTORE is special - it's not in the keyboard matrix but directly triggers
+ * an NMI (Non-Maskable Interrupt). This is used for:
+ * - RUN/STOP + RESTORE: Soft reset (returns to READY prompt)
+ * - RESTORE alone: Triggers NMI handler
+ *
+ * Parameters:
+ *   pressed: boolean - true to press, false to release (default: true)
+ *
+ * For RUN/STOP + RESTORE combination:
+ *   1. Press RUN/STOP via keyboard.matrix (row 7, col 7)
+ *   2. Press RESTORE via this tool
+ *   3. Release both
+ */
+cJSON* mcp_tool_keyboard_restore(cJSON *params)
+{
+    cJSON *response;
+    cJSON *pressed_item;
+    int pressed = 1;  /* Default: press */
+
+    log_message(mcp_tools_log, "RESTORE key request");
+
+    /* Get optional pressed parameter */
+    if (params != NULL) {
+        pressed_item = cJSON_GetObjectItem(params, "pressed");
+        if (pressed_item != NULL && cJSON_IsBool(pressed_item)) {
+            pressed = cJSON_IsTrue(pressed_item);
+        }
+    }
+
+    log_message(mcp_tools_log, "RESTORE key %s", pressed ? "pressed" : "released");
+
+    /* Trigger RESTORE via machine API - this triggers NMI */
+    machine_set_restore_key(pressed ? 1 : 0);
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddBoolToObject(response, "pressed", pressed);
+    cJSON_AddStringToObject(response, "message", pressed ? "RESTORE pressed (NMI triggered)" : "RESTORE released");
 
     return response;
 }
@@ -5283,7 +5415,10 @@ static cJSON* mcp_tool_disassemble(cJSON *params)
         const char *disasm;
         unsigned int opc_size = 0;
         cJSON *line_obj;
-        uint8_t opc, p1, p2, p3;
+        uint8_t opc;
+        uint8_t p1;
+        uint8_t p2;
+        uint8_t p3;
         char *addr_symbol = NULL;
         char *target_symbol = NULL;
         uint16_t target_addr = 0;
@@ -5673,7 +5808,8 @@ static cJSON* mcp_tool_symbols_lookup(cJSON *params)
 static cJSON* mcp_tool_watch_add(cJSON *params)
 {
     cJSON *response, *addr_item, *type_item, *size_item, *condition_item;
-    uint16_t address, end_address;
+    uint16_t address;
+    uint16_t end_address;
     int size = 1;
     MEMORY_OP op = 0;
     const char *watch_type = "write";
@@ -5796,9 +5932,11 @@ static cJSON* mcp_tool_watch_add(cJSON *params)
 static cJSON* mcp_tool_backtrace(cJSON *params)
 {
     cJSON *response, *frames_array, *depth_item;
-    int sp, max_depth;
+    int sp;
+    int max_depth;
     int frame_count = 0;
-    uint8_t lo, hi;
+    uint8_t lo;
+    uint8_t hi;
     uint16_t ret_addr;
     char *symbol;
 
@@ -5986,20 +6124,20 @@ static cJSON* mcp_tool_run_until(cJSON *params)
  * - See C64 keyboard matrix diagram for key positions
  */
 
-/* Structure to track pending matrix key releases */
+/* Structure to track pending matrix key releases using FRAME counting */
 #define MAX_PENDING_KEY_RELEASES 16
-typedef struct {
+typedef struct pending_key_release_s {
     int row;
     int col;
-    CLOCK release_at;  /* Clock time when key should be released */
+    int frames_remaining;  /* Frames until release (decremented each vsync) */
     int active;
 } pending_key_release_t;
 
 /* Structure to track pending VHK key releases (for key_press) */
-typedef struct {
+typedef struct pending_vhk_key_release_s {
     signed long key_code;
     int modifiers;
-    CLOCK release_at;
+    int frames_remaining;  /* Frames until release (decremented each vsync) */
     int active;
 } pending_vhk_key_release_t;
 
@@ -6011,7 +6149,7 @@ static int vsync_callback_registered = 0;
 /* Forward declarations */
 static void mcp_keyboard_vsync_callback(void *unused);
 static void mcp_keyboard_schedule_vsync_check(void);
-static int add_pending_vhk_key_release(signed long key_code, int modifiers, CLOCK release_at);
+static int add_pending_vhk_key_release(signed long key_code, int modifiers, int frames);
 
 /**
  * Vsync callback to check and release pending keys.
@@ -6020,23 +6158,22 @@ static int add_pending_vhk_key_release(signed long key_code, int modifiers, CLOC
  * releasing keys. Unlike alarms, vsync callbacks don't conflict with
  * trap handlers.
  *
- * The callback:
- * 1. Checks all pending releases against current maincpu_clk
- * 2. Releases any keys whose time has come
- * 3. Re-registers itself if there are still pending releases
+ * Uses FRAME COUNTING instead of clock comparison to avoid infinite loops.
+ * Each vsync decrements the frame counter. When it reaches 0, release the key.
+ * This is simpler and more reliable than clock-based timing.
  */
 static void mcp_keyboard_vsync_callback(void *unused)
 {
     int i;
-    CLOCK now = maincpu_clk;
     int still_pending = 0;
 
     (void)unused;
 
-    /* Release all matrix keys whose time has come */
+    /* Release all matrix keys whose frames have elapsed */
     for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
         if (pending_key_releases[i].active) {
-            if (pending_key_releases[i].release_at <= now) {
+            pending_key_releases[i].frames_remaining--;
+            if (pending_key_releases[i].frames_remaining <= 0) {
                 keyboard_set_keyarr(pending_key_releases[i].row,
                                    pending_key_releases[i].col, 0);
                 log_message(mcp_tools_log, "Auto-released matrix key: row=%d, col=%d",
@@ -6048,10 +6185,11 @@ static void mcp_keyboard_vsync_callback(void *unused)
         }
     }
 
-    /* Release all VHK keys whose time has come */
+    /* Release all VHK keys whose frames have elapsed */
     for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
         if (pending_vhk_releases[i].active) {
-            if (pending_vhk_releases[i].release_at <= now) {
+            pending_vhk_releases[i].frames_remaining--;
+            if (pending_vhk_releases[i].frames_remaining <= 0) {
                 keyboard_key_released(pending_vhk_releases[i].key_code,
                                      pending_vhk_releases[i].modifiers);
                 log_message(mcp_tools_log, "Auto-released VHK key: code=%ld, modifiers=0x%04x",
@@ -6064,11 +6202,14 @@ static void mcp_keyboard_vsync_callback(void *unused)
         }
     }
 
-    /* Re-register if there are still pending releases */
+    /* Clear the flag - we've processed this vsync */
+    vsync_callback_registered = 0;
+
+    /* If there are still pending releases, register for the NEXT vsync.
+     * IMPORTANT: This registration happens AFTER we clear vsync_callback_registered,
+     * so the next vsync will trigger a new callback invocation. */
     if (still_pending) {
-        vsync_on_vsync_do(mcp_keyboard_vsync_callback, NULL);
-    } else {
-        vsync_callback_registered = 0;
+        mcp_keyboard_schedule_vsync_check();
     }
 }
 
@@ -6098,8 +6239,8 @@ static void mcp_keyboard_init_pending_releases(void)
     }
 }
 
-/* Add a pending matrix key release with specific release time */
-static int add_pending_key_release(int row, int col, CLOCK release_at)
+/* Add a pending matrix key release with frame count */
+static int add_pending_key_release(int row, int col, int frames)
 {
     int i;
 
@@ -6109,17 +6250,19 @@ static int add_pending_key_release(int row, int col, CLOCK release_at)
         if (!pending_key_releases[i].active) {
             pending_key_releases[i].row = row;
             pending_key_releases[i].col = col;
-            pending_key_releases[i].release_at = release_at;
+            pending_key_releases[i].frames_remaining = frames;
             pending_key_releases[i].active = 1;
             mcp_keyboard_schedule_vsync_check();
+            log_message(mcp_tools_log, "Scheduled matrix key release: row=%d, col=%d, frames=%d",
+                       row, col, frames);
             return 0;
         }
     }
     return -1;  /* No free slots */
 }
 
-/* Add a pending VHK key release with specific release time */
-static int add_pending_vhk_key_release(signed long key_code, int modifiers, CLOCK release_at)
+/* Add a pending VHK key release with frame count */
+static int add_pending_vhk_key_release(signed long key_code, int modifiers, int frames)
 {
     int i;
 
@@ -6129,9 +6272,11 @@ static int add_pending_vhk_key_release(signed long key_code, int modifiers, CLOC
         if (!pending_vhk_releases[i].active) {
             pending_vhk_releases[i].key_code = key_code;
             pending_vhk_releases[i].modifiers = modifiers;
-            pending_vhk_releases[i].release_at = release_at;
+            pending_vhk_releases[i].frames_remaining = frames;
             pending_vhk_releases[i].active = 1;
             mcp_keyboard_schedule_vsync_check();
+            log_message(mcp_tools_log, "Scheduled VHK key release: code=%ld, modifiers=0x%04x, frames=%d",
+                       key_code, (unsigned int)modifiers, frames);
             return 0;
         }
     }
@@ -6142,11 +6287,11 @@ static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
 {
     cJSON *response, *row_item, *col_item, *pressed_item, *key_item;
     cJSON *hold_frames_item, *hold_ms_item;
-    int row, col;
+    int row;
+    int col;
     int pressed = 1;  /* Default: press the key */
     int hold_frames = 0;
     int hold_ms = 0;
-    CLOCK hold_cycles = 0;
 
     log_message(mcp_tools_log, "Handling vice.keyboard.matrix");
 
@@ -6184,6 +6329,28 @@ static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
         else if (strcmp(key, "DOWN") == 0)   { row = 0; col = 7; }
         else if (strcmp(key, "LEFT") == 0)   { row = 0; col = 2; }  /* Shifted CRSR RIGHT */
         else if (strcmp(key, "RIGHT") == 0)  { row = 0; col = 2; }
+        /* Modifier keys */
+        else if (strcmp(key, "LSHIFT") == 0) { row = 1; col = 7; }
+        else if (strcmp(key, "RSHIFT") == 0) { row = 6; col = 4; }
+        else if (strcmp(key, "CTRL") == 0)   { row = 7; col = 2; }
+        else if (strcmp(key, "CBM") == 0 || strcmp(key, "C=") == 0) { row = 7; col = 5; }
+        /* Special keys */
+        else if (strcmp(key, "HOME") == 0)   { row = 6; col = 3; }
+        else if (strcmp(key, "CLR") == 0)    { row = 6; col = 3; }  /* Same as HOME, but shifted */
+        else if (strcmp(key, "DEL") == 0 || strcmp(key, "INST") == 0) { row = 0; col = 0; }
+        else if (strcmp(key, "POUND") == 0)  { row = 6; col = 0; }  /* £ key */
+        else if (strcmp(key, "ARROWUP") == 0){ row = 6; col = 6; }  /* ↑ key */
+        else if (strcmp(key, "ARROWLEFT") == 0) { row = 7; col = 1; } /* ← key */
+        else if (strcmp(key, "PLUS") == 0)   { row = 5; col = 0; }
+        else if (strcmp(key, "MINUS") == 0)  { row = 5; col = 3; }
+        else if (strcmp(key, "ASTERISK") == 0) { row = 6; col = 1; }
+        else if (strcmp(key, "AT") == 0)     { row = 5; col = 6; }  /* @ key */
+        else if (strcmp(key, "COLON") == 0)  { row = 5; col = 5; }
+        else if (strcmp(key, "SEMICOLON") == 0) { row = 6; col = 2; }
+        else if (strcmp(key, "EQUALS") == 0) { row = 6; col = 5; }
+        else if (strcmp(key, "COMMA") == 0)  { row = 5; col = 7; }
+        else if (strcmp(key, "PERIOD") == 0) { row = 5; col = 4; }
+        else if (strcmp(key, "SLASH") == 0)  { row = 6; col = 7; }
         /* Letters (unshifted) */
         else if (strlen(key) == 1 && key[0] >= 'A' && key[0] <= 'Z') {
             /* Simple mapping for letters - this is approximate */
@@ -6236,9 +6403,6 @@ static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
         if (hold_frames < 0 || hold_frames > 300) {  /* Max 5 seconds at 60Hz */
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "hold_frames must be 0-300");
         }
-        /* Convert frames to cycles: ~19656 cycles per frame (PAL) */
-        /* Using ~20000 as approximate for both PAL/NTSC */
-        hold_cycles = (CLOCK)hold_frames * 20000;
     }
 
     if (hold_ms_item != NULL && cJSON_IsNumber(hold_ms_item)) {
@@ -6246,9 +6410,9 @@ static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
         if (hold_ms < 0 || hold_ms > 5000) {  /* Max 5 seconds */
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "hold_ms must be 0-5000");
         }
-        /* Convert ms to cycles: ~985 cycles per ms (PAL) / ~1023 (NTSC) */
-        /* Using ~1000 as approximate */
-        hold_cycles = (CLOCK)hold_ms * 1000;
+        /* Convert ms to frames: 50fps (PAL) = 20ms/frame, round up, minimum 1 */
+        hold_frames = (hold_ms + 19) / 20;
+        if (hold_frames < 1) hold_frames = 1;
     }
 
     /* Set or release the key in VICE's keyboard matrix */
@@ -6257,13 +6421,9 @@ static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
         log_message(mcp_tools_log, "Key pressed: row=%d, col=%d", row, col);
 
         /* Schedule auto-release if hold duration specified */
-        if (hold_cycles > 0) {
-            CLOCK release_at = maincpu_clk + hold_cycles;
-            if (add_pending_key_release(row, col, release_at) < 0) {
+        if (hold_frames > 0) {
+            if (add_pending_key_release(row, col, hold_frames) < 0) {
                 log_warning(mcp_tools_log, "Failed to schedule auto-release (no slots)");
-            } else {
-                log_message(mcp_tools_log, "Scheduled auto-release at clk=%lu (in %lu cycles)",
-                           (unsigned long)release_at, (unsigned long)hold_cycles);
             }
         }
     } else {
@@ -6282,10 +6442,8 @@ static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
     cJSON_AddBoolToObject(response, "pressed", pressed);
 
     /* Report scheduled auto-release if applicable */
-    if (hold_cycles > 0 && pressed) {
-        if (hold_frames > 0) {
-            cJSON_AddNumberToObject(response, "hold_frames", hold_frames);
-        }
+    if (hold_frames > 0 && pressed) {
+        cJSON_AddNumberToObject(response, "hold_frames", hold_frames);
         if (hold_ms > 0) {
             cJSON_AddNumberToObject(response, "hold_ms", hold_ms);
         }
@@ -6738,7 +6896,8 @@ cJSON* mcp_tool_memory_fill(cJSON *params)
 {
     cJSON *response;
     cJSON *start_item, *end_item, *pattern_item;
-    int start_addr, end_addr;
+    int start_addr;
+    int end_addr;
     int pattern_len;
     int i;
     uint16_t addr;
@@ -6859,7 +7018,9 @@ cJSON* mcp_tool_memory_compare(cJSON *params)
     cJSON *mode_item, *range1_start_item, *range1_end_item, *range2_start_item;
     cJSON *max_diff_item;
     const char *mode_str;
-    int range1_start, range1_end, range2_start;
+    int range1_start;
+    int range1_end;
+    int range2_start;
     int max_differences = 100;  /* Default max differences to return */
     int total_differences = 0;
     int differences_returned = 0;
@@ -6867,7 +7028,8 @@ cJSON* mcp_tool_memory_compare(cJSON *params)
     long offset;
     const char *error_msg;
     char addr_str[8];
-    uint8_t byte1, byte2;
+    uint8_t byte1;
+    uint8_t byte2;
 
     log_message(mcp_tools_log, "Handling vice.memory.compare");
 
@@ -6994,7 +7156,8 @@ cJSON* mcp_tool_memory_compare(cJSON *params)
         char *snapshots_dir;
         char *vsf_path;
         uint8_t *snapshot_ram;
-        int start_addr, end_addr;
+        int start_addr;
+        int end_addr;
         int vsf_result;
 
         /* Get and validate snapshot_name */
@@ -7690,7 +7853,7 @@ cJSON* mcp_tool_trace_stop(cJSON *params)
 #define MCP_INTERRUPT_TYPE_ALL (MCP_INTERRUPT_TYPE_IRQ | MCP_INTERRUPT_TYPE_NMI | MCP_INTERRUPT_TYPE_BRK)
 
 /* Single interrupt log entry */
-typedef struct {
+typedef struct mcp_interrupt_entry_s {
     uint8_t type;              /* MCP_INTERRUPT_TYPE_* */
     unsigned long cycle;       /* CPU cycle when interrupt occurred */
     uint16_t pc;               /* Program counter when interrupted */
@@ -7699,7 +7862,7 @@ typedef struct {
 } mcp_interrupt_entry_t;
 
 /* Interrupt log configuration */
-typedef struct {
+typedef struct mcp_interrupt_log_config_s {
     char log_id[32];                                    /* Unique log identifier */
     uint8_t type_filter;                                /* Bitmask of types to log */
     int max_entries;                                    /* Maximum entries (default 1000) */
@@ -7826,7 +7989,8 @@ cJSON* mcp_tool_interrupt_log_start(cJSON *params)
     int max_entries = 1000;
     int config_idx;
     char log_id[32];
-    int i, arr_size;
+    int i;
+    int arr_size;
 
     log_message(mcp_tools_log, "Handling vice.interrupt.log.start");
 
@@ -8152,7 +8316,7 @@ cJSON* mcp_tool_interrupt_log_read(cJSON *params)
  * ------------------------------------------------------------------------- */
 
 /* C64 memory region types */
-typedef enum {
+typedef enum mcp_mem_region_type_e {
     MCP_MEM_TYPE_RAM,
     MCP_MEM_TYPE_ROM,
     MCP_MEM_TYPE_IO,
@@ -8161,7 +8325,7 @@ typedef enum {
 } mcp_mem_region_type_t;
 
 /* C64 memory region definition */
-typedef struct {
+typedef struct mcp_mem_region_s {
     uint16_t start;
     uint16_t end;
     mcp_mem_region_type_t type;
@@ -8351,7 +8515,8 @@ cJSON* mcp_tool_memory_map(cJSON *params)
     /* Iterate through the C64 memory map and add regions that overlap with requested range */
     for (i = 0; c64_memory_map[i].name != NULL; i++) {
         const mcp_mem_region_t *region = &c64_memory_map[i];
-        uint16_t region_start, region_end;
+        uint16_t region_start;
+        uint16_t region_end;
         char *content_hint;
 
         /* Skip regions that don't overlap with requested range */
@@ -8446,14 +8611,21 @@ cJSON* mcp_tool_sprite_inspect(cJSON *params)
     int sprite_number;
     const char *format_str = "ascii";  /* Default format */
     uint8_t pointer_value;
-    uint16_t pointer_addr, data_addr;
-    uint8_t multicolor_reg, sprite_color, multi1_color, multi2_color;
+    uint16_t pointer_addr;
+    uint16_t data_addr;
+    uint8_t multicolor_reg;
+    uint8_t sprite_color;
+    uint8_t multi1_color;
+    uint8_t multi2_color;
     int is_multicolor;
     uint8_t sprite_data[SPRITE_BYTES];
     char addr_str[8];
     char *bitmap_str;
     size_t bitmap_size;
-    int row, col, byte_idx, bit_idx;
+    int row;
+    int col;
+    int byte_idx;
+    int bit_idx;
     int i;
 
     log_message(mcp_tools_log, "Handling vice.sprite.inspect");

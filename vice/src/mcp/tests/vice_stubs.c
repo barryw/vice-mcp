@@ -189,6 +189,15 @@ void keyboard_key_released(signed long key, int mod)
     (void)mod;
 }
 
+/* Vsync callback stub - used for keyboard auto-release */
+typedef void (*vsync_callback_func_t)(void *param);
+void vsync_on_vsync_do(vsync_callback_func_t callback_func, void *callback_param)
+{
+    (void)callback_func;
+    (void)callback_param;
+    /* In tests, we don't actually call the callback - just record that it was scheduled */
+}
+
 void joystick_set_value_absolute(unsigned int joyport, uint16_t value)
 {
     (void)joyport;
@@ -585,6 +594,11 @@ void machine_trigger_reset(unsigned int reset_mode)
     (void)reset_mode;
 }
 
+void machine_set_restore_key(int value)
+{
+    (void)value;
+}
+
 /* Keyboard matrix stubs */
 void keyboard_set_keyarr(int row, int col, int value)
 {
@@ -950,4 +964,39 @@ int test_create_mock_vsf(const char *path)
 
     fclose(f);
     return 0;
+}
+
+/* =============================================================================
+ * UI Pause API stubs
+ *
+ * Simulates the UI pause functionality for testing execution control tools.
+ * ============================================================================= */
+
+static int test_ui_pause_state = 0;
+
+int ui_pause_active(void)
+{
+    return test_ui_pause_state;
+}
+
+void ui_pause_enable(void)
+{
+    test_ui_pause_state = 1;
+}
+
+void ui_pause_disable(void)
+{
+    test_ui_pause_state = 0;
+}
+
+/* Test helper to reset UI pause state */
+void test_ui_pause_reset(void)
+{
+    test_ui_pause_state = 0;
+}
+
+/* Test helper to set UI pause state directly */
+void test_ui_pause_set(int paused)
+{
+    test_ui_pause_state = paused;
 }

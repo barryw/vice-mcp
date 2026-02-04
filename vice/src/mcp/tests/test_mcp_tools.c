@@ -13,7 +13,7 @@
 #include <string.h>
 #include <assert.h>
 
-#include "../cJSON.h"
+#include "cJSON.h"
 
 /* Forward declarations - avoid full VICE header dependencies */
 #define MCP_ERROR_PARSE_ERROR      -32700
@@ -950,6 +950,465 @@ TEST(execution_step_dispatch_works)
     ASSERT_TRUE(cJSON_GetObjectItem(response, "code") == NULL);
 
     cJSON_Delete(response);
+}
+
+/* ===================================================================
+ * UI Pause State Tests
+ *
+ * These tests verify the execution.pause and execution.run tools
+ * properly manage the UI pause state, which is critical for:
+ * 1. Pausing without showing the monitor window
+ * 2. Allowing MCP commands to work while paused
+ * 3. Proper state reporting via ping
+ * =================================================================== */
+
+/* External declarations for UI pause state test helpers */
+extern void test_ui_pause_reset(void);
+extern void test_ui_pause_set(int paused);
+extern int ui_pause_active(void);
+extern int exit_mon;
+
+/* Test: execution.pause enables UI pause state */
+TEST(execution_pause_enables_ui_pause)
+{
+    cJSON *response;
+
+    /* Start with UI not paused */
+    test_ui_pause_reset();
+    ASSERT_INT_EQ(ui_pause_active(), 0);
+
+    /* Call pause */
+    response = mcp_tool_execution_pause(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+
+    /* UI pause should now be active */
+    ASSERT_INT_EQ(ui_pause_active(), 1);
+
+    /* Cleanup */
+    test_ui_pause_reset();
+}
+
+/* Test: execution.run disables UI pause state */
+TEST(execution_run_disables_ui_pause)
+{
+    cJSON *response;
+
+    /* Start with UI paused */
+    test_ui_pause_set(1);
+    ASSERT_INT_EQ(ui_pause_active(), 1);
+
+    /* Call run */
+    response = mcp_tool_execution_run(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+
+    /* UI pause should now be inactive */
+    ASSERT_INT_EQ(ui_pause_active(), 0);
+}
+
+/* Test: ping reports "paused" when UI pause is active */
+TEST(ping_reports_paused_when_ui_paused)
+{
+    cJSON *response, *exec_item;
+
+    /* Set UI pause active */
+    test_ui_pause_set(1);
+
+    /* Call ping */
+    response = mcp_tool_ping(NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Check execution state is "paused" */
+    exec_item = cJSON_GetObjectItem(response, "execution");
+    ASSERT_NOT_NULL(exec_item);
+    ASSERT_TRUE(cJSON_IsString(exec_item));
+    ASSERT_STR_EQ(exec_item->valuestring, "paused");
+
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* Test: ping reports "running" when UI pause is not active */
+TEST(ping_reports_running_when_not_paused)
+{
+    cJSON *response, *exec_item;
+
+    /* Ensure UI pause is not active and exit_mon indicates running */
+    test_ui_pause_reset();
+    exit_mon = 1;  /* exit_mon_continue = running */
+
+    /* Call ping */
+    response = mcp_tool_ping(NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Check execution state is "running" */
+    exec_item = cJSON_GetObjectItem(response, "execution");
+    ASSERT_NOT_NULL(exec_item);
+    ASSERT_TRUE(cJSON_IsString(exec_item));
+    ASSERT_STR_EQ(exec_item->valuestring, "running");
+
+    cJSON_Delete(response);
+}
+
+/* Test: pause is idempotent - calling pause when already paused succeeds */
+TEST(execution_pause_idempotent)
+{
+    cJSON *response, *status_item;
+
+    /* Set UI already paused */
+    test_ui_pause_set(1);
+
+    /* Call pause again - should still succeed */
+    response = mcp_tool_execution_pause(NULL);
+    ASSERT_NOT_NULL(response);
+
+    status_item = cJSON_GetObjectItem(response, "status");
+    ASSERT_NOT_NULL(status_item);
+    ASSERT_STR_EQ(status_item->valuestring, "ok");
+
+    /* Should still be paused */
+    ASSERT_INT_EQ(ui_pause_active(), 1);
+
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* Test: run is idempotent - calling run when already running succeeds */
+TEST(execution_run_idempotent)
+{
+    cJSON *response, *status_item;
+
+    /* Ensure not paused */
+    test_ui_pause_reset();
+
+    /* Call run - should succeed even though not paused */
+    response = mcp_tool_execution_run(NULL);
+    ASSERT_NOT_NULL(response);
+
+    status_item = cJSON_GetObjectItem(response, "status");
+    ASSERT_NOT_NULL(status_item);
+    ASSERT_STR_EQ(status_item->valuestring, "ok");
+
+    /* Should still not be paused */
+    ASSERT_INT_EQ(ui_pause_active(), 0);
+
+    cJSON_Delete(response);
+}
+
+/* Test: full pause/run cycle works correctly */
+TEST(execution_pause_run_cycle)
+{
+    cJSON *response, *exec_item;
+
+    /* Start not paused */
+    test_ui_pause_reset();
+    exit_mon = 1;  /* running */
+
+    /* Verify initial state is running */
+    response = mcp_tool_ping(NULL);
+    exec_item = cJSON_GetObjectItem(response, "execution");
+    ASSERT_STR_EQ(exec_item->valuestring, "running");
+    cJSON_Delete(response);
+
+    /* Pause */
+    response = mcp_tool_execution_pause(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+
+    /* Verify paused state */
+    response = mcp_tool_ping(NULL);
+    exec_item = cJSON_GetObjectItem(response, "execution");
+    ASSERT_STR_EQ(exec_item->valuestring, "paused");
+    cJSON_Delete(response);
+
+    /* Resume */
+    response = mcp_tool_execution_run(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+
+    /* Verify running state again */
+    exit_mon = 1;  /* Ensure exit_mon is set to running */
+    response = mcp_tool_ping(NULL);
+    exec_item = cJSON_GetObjectItem(response, "execution");
+    ASSERT_STR_EQ(exec_item->valuestring, "running");
+    cJSON_Delete(response);
+}
+
+/* Test: other MCP commands work while paused (simulates mainlock sync) */
+TEST(commands_work_while_paused)
+{
+    cJSON *response, *data_item;
+
+    /* Set paused state */
+    test_ui_pause_set(1);
+
+    /* Memory read should work while paused */
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "address", 0x0400);
+    cJSON_AddNumberToObject(params, "size", 16);
+
+    response = mcp_tools_dispatch("vice.memory.read", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "code") == NULL);
+
+    /* Should have data array */
+    data_item = cJSON_GetObjectItem(response, "data");
+    ASSERT_NOT_NULL(data_item);
+    ASSERT_TRUE(cJSON_IsArray(data_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* Test: register read works while paused */
+TEST(registers_readable_while_paused)
+{
+    cJSON *response;
+
+    /* Set paused state */
+    test_ui_pause_set(1);
+
+    /* Register read should work */
+    response = mcp_tools_dispatch("vice.registers.get", NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "code") == NULL);
+
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* Test: execution.run dispatch works */
+TEST(execution_run_dispatch_works)
+{
+    cJSON *response;
+
+    test_ui_pause_set(1);  /* Start paused */
+
+    response = mcp_tools_dispatch("vice.execution.run", NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "code") == NULL);
+
+    /* Should have cleared pause */
+    ASSERT_INT_EQ(ui_pause_active(), 0);
+
+    cJSON_Delete(response);
+}
+
+/* Test: execution.pause dispatch works */
+TEST(execution_pause_dispatch_works)
+{
+    cJSON *response;
+
+    test_ui_pause_reset();  /* Start not paused */
+
+    response = mcp_tools_dispatch("vice.execution.pause", NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "code") == NULL);
+
+    /* Should have set pause */
+    ASSERT_INT_EQ(ui_pause_active(), 1);
+
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* ===================================================================
+ * MCP Step Mode Tests
+ *
+ * These tests verify the MCP step mode flag, which prevents the
+ * monitor window from opening during MCP-controlled stepping.
+ * When mcp_step_active is set, monitor_check_icount() uses
+ * ui_pause_enable() instead of monitor_startup().
+ * =================================================================== */
+
+/* External declarations for MCP step mode functions */
+extern int mcp_is_step_active(void);
+extern void mcp_clear_step_active(void);
+
+/* Test: step mode starts inactive */
+TEST(mcp_step_mode_initially_inactive)
+{
+    /* Clear any prior state */
+    mcp_clear_step_active();
+
+    /* Should start inactive */
+    ASSERT_INT_EQ(mcp_is_step_active(), 0);
+}
+
+/* Test: execution.step sets step mode active */
+TEST(execution_step_sets_step_mode)
+{
+    cJSON *response;
+
+    /* Clear any prior state */
+    mcp_clear_step_active();
+    ASSERT_INT_EQ(mcp_is_step_active(), 0);
+
+    /* Call step */
+    response = mcp_tool_execution_step(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+
+    /* Step mode should now be active */
+    ASSERT_INT_EQ(mcp_is_step_active(), 1);
+
+    /* Cleanup */
+    mcp_clear_step_active();
+}
+
+/* Test: execution.step with count sets step mode */
+TEST(execution_step_with_count_sets_step_mode)
+{
+    cJSON *response, *params;
+
+    /* Clear any prior state */
+    mcp_clear_step_active();
+    ASSERT_INT_EQ(mcp_is_step_active(), 0);
+
+    /* Call step with count */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "count", 1000);
+    response = mcp_tool_execution_step(params);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+
+    /* Step mode should now be active */
+    ASSERT_INT_EQ(mcp_is_step_active(), 1);
+
+    /* Cleanup */
+    mcp_clear_step_active();
+}
+
+/* Test: mcp_clear_step_active clears the flag */
+TEST(mcp_clear_step_active_clears_flag)
+{
+    cJSON *response;
+
+    /* Set step mode via execution.step */
+    response = mcp_tool_execution_step(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(mcp_is_step_active(), 1);
+
+    /* Clear it */
+    mcp_clear_step_active();
+
+    /* Should now be inactive */
+    ASSERT_INT_EQ(mcp_is_step_active(), 0);
+}
+
+/* Test: step mode survives multiple steps */
+TEST(step_mode_survives_multiple_steps)
+{
+    cJSON *response;
+
+    mcp_clear_step_active();
+
+    /* First step */
+    response = mcp_tool_execution_step(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(mcp_is_step_active(), 1);
+
+    /* Clear (simulating what monitor_check_icount would do) */
+    mcp_clear_step_active();
+    ASSERT_INT_EQ(mcp_is_step_active(), 0);
+
+    /* Second step - should set it again */
+    response = mcp_tool_execution_step(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(mcp_is_step_active(), 1);
+
+    /* Cleanup */
+    mcp_clear_step_active();
+}
+
+/* Test: execution.run doesn't affect step mode */
+TEST(execution_run_doesnt_affect_step_mode)
+{
+    cJSON *response;
+
+    /* Set step mode */
+    response = mcp_tool_execution_step(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(mcp_is_step_active(), 1);
+
+    /* Run doesn't clear step mode */
+    response = mcp_tool_execution_run(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+
+    /* Step mode should still be active (run doesn't know about it) */
+    ASSERT_INT_EQ(mcp_is_step_active(), 1);
+
+    /* Cleanup */
+    mcp_clear_step_active();
+}
+
+/* Test: execution.pause doesn't affect step mode */
+TEST(execution_pause_doesnt_affect_step_mode)
+{
+    cJSON *response;
+
+    mcp_clear_step_active();
+
+    /* Pause doesn't set step mode */
+    response = mcp_tool_execution_pause(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+
+    /* Step mode should still be inactive */
+    ASSERT_INT_EQ(mcp_is_step_active(), 0);
+
+    /* Now set step mode */
+    response = mcp_tool_execution_step(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(mcp_is_step_active(), 1);
+
+    /* Pause doesn't clear step mode */
+    response = mcp_tool_execution_pause(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+
+    /* Step mode should still be active */
+    ASSERT_INT_EQ(mcp_is_step_active(), 1);
+
+    /* Cleanup */
+    mcp_clear_step_active();
+    test_ui_pause_reset();
+}
+
+/* Test: step mode via dispatch */
+TEST(step_mode_via_dispatch)
+{
+    cJSON *response;
+
+    mcp_clear_step_active();
+    ASSERT_INT_EQ(mcp_is_step_active(), 0);
+
+    response = mcp_tools_dispatch("vice.execution.step", NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+
+    /* Step mode should be active after dispatch */
+    ASSERT_INT_EQ(mcp_is_step_active(), 1);
+
+    /* Cleanup */
+    mcp_clear_step_active();
 }
 
 /* ===================================================================
@@ -6635,6 +7094,29 @@ int main(void)
     RUN_TEST(execution_step_with_count);
     RUN_TEST(execution_step_with_step_over);
     RUN_TEST(execution_step_dispatch_works);
+
+    /* UI Pause state tests (critical for pause without monitor popup) */
+    RUN_TEST(execution_pause_enables_ui_pause);
+    RUN_TEST(execution_run_disables_ui_pause);
+    RUN_TEST(ping_reports_paused_when_ui_paused);
+    RUN_TEST(ping_reports_running_when_not_paused);
+    RUN_TEST(execution_pause_idempotent);
+    RUN_TEST(execution_run_idempotent);
+    RUN_TEST(execution_pause_run_cycle);
+    RUN_TEST(commands_work_while_paused);
+    RUN_TEST(registers_readable_while_paused);
+    RUN_TEST(execution_run_dispatch_works);
+    RUN_TEST(execution_pause_dispatch_works);
+
+    /* MCP Step Mode tests (prevents monitor window during stepping) */
+    RUN_TEST(mcp_step_mode_initially_inactive);
+    RUN_TEST(execution_step_sets_step_mode);
+    RUN_TEST(execution_step_with_count_sets_step_mode);
+    RUN_TEST(mcp_clear_step_active_clears_flag);
+    RUN_TEST(step_mode_survives_multiple_steps);
+    RUN_TEST(execution_run_doesnt_affect_step_mode);
+    RUN_TEST(execution_pause_doesnt_affect_step_mode);
+    RUN_TEST(step_mode_via_dispatch);
 
     /* MCP tools/call tests (Claude Code integration) */
     RUN_TEST(tools_call_with_valid_tool_works);

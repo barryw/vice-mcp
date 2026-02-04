@@ -76,6 +76,12 @@
 #include "monitor_binary.h"
 #include "montypes.h"
 
+#ifdef HAVE_MCP_SERVER
+/* Forward declarations for MCP step mode (avoids header include issues) */
+extern int mcp_is_step_active(void);
+extern void mcp_clear_step_active(void);
+#endif
+
 #include "userport_io_sim.h"
 #include "joyport_io_sim.h"
 #include "joyport.h"
@@ -2931,6 +2937,16 @@ void monitor_check_icount(uint16_t pc)
     if (!monitor_mask[default_memspace]) {
         interrupt_monitor_trap_off(mon_interfaces[default_memspace]->int_status);
     }
+
+#ifdef HAVE_MCP_SERVER
+    /* If MCP step mode is active, use ui_pause_enable() instead of opening
+     * the monitor window. This allows MCP clients to step without UI popups. */
+    if (mcp_is_step_active()) {
+        mcp_clear_step_active();
+        ui_pause_enable();
+        return;
+    }
+#endif
 
     monitor_startup(e_default_space);
 }
