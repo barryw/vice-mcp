@@ -93,6 +93,18 @@ static void test_checkpoint_groups_reset(void)
     mcp_checkpoint_groups_reset();
 }
 
+/* Auto-snapshot config tool declarations */
+extern cJSON* mcp_tool_checkpoint_set_auto_snapshot(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_clear_auto_snapshot(cJSON *params);
+
+/* Auto-snapshot config reset function - from libmcp.a */
+extern void mcp_auto_snapshot_configs_reset(void);
+
+static void test_auto_snapshot_configs_reset(void)
+{
+    mcp_auto_snapshot_configs_reset();
+}
+
 /* Stub function for creating checkpoints in tests */
 extern int mon_breakpoint_add_checkpoint(unsigned int start, unsigned int end,
                                          int stop, int operation,
@@ -4384,6 +4396,491 @@ TEST(checkpoint_group_create_dispatch_works)
     cJSON_Delete(response);
 }
 
+/* =================================================================
+ * Auto-Snapshot Configuration Tests
+ * ================================================================= */
+
+/* Test: checkpoint.set_auto_snapshot requires checkpoint_id */
+TEST(checkpoint_set_auto_snapshot_requires_checkpoint_id)
+{
+    cJSON *response, *params, *code_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "snapshot_prefix", "test_snap");
+    /* Missing checkpoint_id */
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(cJSON_IsNumber(code_item));
+    ASSERT_TRUE(code_item->valueint == -32602);  /* INVALID_PARAMS */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.set_auto_snapshot requires snapshot_prefix */
+TEST(checkpoint_set_auto_snapshot_requires_snapshot_prefix)
+{
+    cJSON *response, *params, *code_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 1);
+    /* Missing snapshot_prefix */
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(cJSON_IsNumber(code_item));
+    ASSERT_TRUE(code_item->valueint == -32602);  /* INVALID_PARAMS */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.set_auto_snapshot with null params returns error */
+TEST(checkpoint_set_auto_snapshot_null_params_returns_error)
+{
+    cJSON *response, *code_item;
+
+    test_auto_snapshot_configs_reset();
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(NULL);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(cJSON_IsNumber(code_item));
+    ASSERT_TRUE(code_item->valueint == -32602);  /* INVALID_PARAMS */
+
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.set_auto_snapshot rejects empty prefix */
+TEST(checkpoint_set_auto_snapshot_rejects_empty_prefix)
+{
+    cJSON *response, *params, *code_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 1);
+    cJSON_AddStringToObject(params, "snapshot_prefix", "");
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.set_auto_snapshot rejects invalid prefix characters */
+TEST(checkpoint_set_auto_snapshot_rejects_invalid_prefix)
+{
+    cJSON *response, *params, *code_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 1);
+    cJSON_AddStringToObject(params, "snapshot_prefix", "test/snap");  /* Contains slash */
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.set_auto_snapshot rejects invalid checkpoint_id */
+TEST(checkpoint_set_auto_snapshot_rejects_invalid_checkpoint_id)
+{
+    cJSON *response, *params, *code_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 0);  /* Invalid: must be >= 1 */
+    cJSON_AddStringToObject(params, "snapshot_prefix", "test_snap");
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.set_auto_snapshot with valid params succeeds */
+TEST(checkpoint_set_auto_snapshot_with_valid_params_succeeds)
+{
+    cJSON *response, *params;
+    cJSON *enabled_item, *cp_id_item, *prefix_item, *max_item, *disks_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 1);
+    cJSON_AddStringToObject(params, "snapshot_prefix", "ai_move");
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    enabled_item = cJSON_GetObjectItem(response, "enabled");
+    ASSERT_NOT_NULL(enabled_item);
+    ASSERT_TRUE(cJSON_IsTrue(enabled_item));
+
+    cp_id_item = cJSON_GetObjectItem(response, "checkpoint_id");
+    ASSERT_NOT_NULL(cp_id_item);
+    ASSERT_TRUE(cp_id_item->valueint == 1);
+
+    prefix_item = cJSON_GetObjectItem(response, "snapshot_prefix");
+    ASSERT_NOT_NULL(prefix_item);
+    ASSERT_TRUE(strcmp(prefix_item->valuestring, "ai_move") == 0);
+
+    max_item = cJSON_GetObjectItem(response, "max_snapshots");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 10);  /* Default */
+
+    disks_item = cJSON_GetObjectItem(response, "include_disks");
+    ASSERT_NOT_NULL(disks_item);
+    ASSERT_TRUE(cJSON_IsFalse(disks_item));  /* Default */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.set_auto_snapshot with all options */
+TEST(checkpoint_set_auto_snapshot_with_all_options)
+{
+    cJSON *response, *params;
+    cJSON *max_item, *disks_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 5);
+    cJSON_AddStringToObject(params, "snapshot_prefix", "debug_trace");
+    cJSON_AddNumberToObject(params, "max_snapshots", 25);
+    cJSON_AddBoolToObject(params, "include_disks", true);
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    max_item = cJSON_GetObjectItem(response, "max_snapshots");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 25);
+
+    disks_item = cJSON_GetObjectItem(response, "include_disks");
+    ASSERT_NOT_NULL(disks_item);
+    ASSERT_TRUE(cJSON_IsTrue(disks_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.set_auto_snapshot clamps max_snapshots */
+TEST(checkpoint_set_auto_snapshot_clamps_max_snapshots)
+{
+    cJSON *response, *params;
+    cJSON *max_item;
+
+    test_auto_snapshot_configs_reset();
+
+    /* Test lower bound clamp */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 1);
+    cJSON_AddStringToObject(params, "snapshot_prefix", "test");
+    cJSON_AddNumberToObject(params, "max_snapshots", 0);
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    max_item = cJSON_GetObjectItem(response, "max_snapshots");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 1);  /* Clamped to minimum */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    test_auto_snapshot_configs_reset();
+
+    /* Test upper bound clamp */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 2);
+    cJSON_AddStringToObject(params, "snapshot_prefix", "test2");
+    cJSON_AddNumberToObject(params, "max_snapshots", 5000);
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    max_item = cJSON_GetObjectItem(response, "max_snapshots");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 999);  /* Clamped to maximum */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.set_auto_snapshot can update existing config */
+TEST(checkpoint_set_auto_snapshot_updates_existing_config)
+{
+    cJSON *response, *params;
+    cJSON *max_item;
+
+    test_auto_snapshot_configs_reset();
+
+    /* Create initial config */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 1);
+    cJSON_AddStringToObject(params, "snapshot_prefix", "original");
+    cJSON_AddNumberToObject(params, "max_snapshots", 10);
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    /* Update with new values */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 1);
+    cJSON_AddStringToObject(params, "snapshot_prefix", "updated");
+    cJSON_AddNumberToObject(params, "max_snapshots", 20);
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    cJSON *prefix_item = cJSON_GetObjectItem(response, "snapshot_prefix");
+    ASSERT_NOT_NULL(prefix_item);
+    ASSERT_TRUE(strcmp(prefix_item->valuestring, "updated") == 0);
+
+    max_item = cJSON_GetObjectItem(response, "max_snapshots");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 20);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.clear_auto_snapshot requires checkpoint_id */
+TEST(checkpoint_clear_auto_snapshot_requires_checkpoint_id)
+{
+    cJSON *response, *params, *code_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();  /* Missing checkpoint_id */
+
+    response = mcp_tool_checkpoint_clear_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.clear_auto_snapshot with null params returns error */
+TEST(checkpoint_clear_auto_snapshot_null_params_returns_error)
+{
+    cJSON *response, *code_item;
+
+    test_auto_snapshot_configs_reset();
+
+    response = mcp_tool_checkpoint_clear_auto_snapshot(NULL);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.clear_auto_snapshot rejects invalid checkpoint_id */
+TEST(checkpoint_clear_auto_snapshot_rejects_invalid_checkpoint_id)
+{
+    cJSON *response, *params, *code_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", -1);  /* Invalid */
+
+    response = mcp_tool_checkpoint_clear_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.clear_auto_snapshot returns cleared=false for nonexistent */
+TEST(checkpoint_clear_auto_snapshot_nonexistent_returns_false)
+{
+    cJSON *response, *params;
+    cJSON *cleared_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 999);  /* No config exists */
+
+    response = mcp_tool_checkpoint_clear_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    cleared_item = cJSON_GetObjectItem(response, "cleared");
+    ASSERT_NOT_NULL(cleared_item);
+    ASSERT_TRUE(cJSON_IsFalse(cleared_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.clear_auto_snapshot clears existing config */
+TEST(checkpoint_clear_auto_snapshot_clears_existing_config)
+{
+    cJSON *response, *params;
+    cJSON *cleared_item;
+
+    test_auto_snapshot_configs_reset();
+
+    /* First create a config */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 5);
+    cJSON_AddStringToObject(params, "snapshot_prefix", "to_clear");
+
+    response = mcp_tool_checkpoint_set_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    /* Now clear it */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 5);
+
+    response = mcp_tool_checkpoint_clear_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    cleared_item = cJSON_GetObjectItem(response, "cleared");
+    ASSERT_NOT_NULL(cleared_item);
+    ASSERT_TRUE(cJSON_IsTrue(cleared_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    /* Verify it's actually cleared by trying to clear again */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 5);
+
+    response = mcp_tool_checkpoint_clear_auto_snapshot(params);
+    ASSERT_NOT_NULL(response);
+
+    cleared_item = cJSON_GetObjectItem(response, "cleared");
+    ASSERT_NOT_NULL(cleared_item);
+    ASSERT_TRUE(cJSON_IsFalse(cleared_item));  /* Now returns false */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.set_auto_snapshot dispatch works */
+TEST(checkpoint_set_auto_snapshot_dispatch_works)
+{
+    cJSON *response, *params;
+    cJSON *enabled_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 1);
+    cJSON_AddStringToObject(params, "snapshot_prefix", "dispatch_test");
+
+    response = mcp_tools_dispatch("vice.checkpoint.set_auto_snapshot", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    enabled_item = cJSON_GetObjectItem(response, "enabled");
+    ASSERT_NOT_NULL(enabled_item);
+    ASSERT_TRUE(cJSON_IsTrue(enabled_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.clear_auto_snapshot dispatch works */
+TEST(checkpoint_clear_auto_snapshot_dispatch_works)
+{
+    cJSON *response, *params;
+    cJSON *cleared_item;
+
+    test_auto_snapshot_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_id", 1);
+
+    response = mcp_tools_dispatch("vice.checkpoint.clear_auto_snapshot", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    cleared_item = cJSON_GetObjectItem(response, "cleared");
+    ASSERT_NOT_NULL(cleared_item);
+    /* Note: cleared may be true or false depending on previous state */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -4595,6 +5092,25 @@ int main(void)
     RUN_TEST(checkpoint_group_list_returns_groups_with_details);
     RUN_TEST(checkpoint_group_list_dispatch_works);
     RUN_TEST(checkpoint_group_create_dispatch_works);
+
+    /* Auto-snapshot configuration tests */
+    RUN_TEST(checkpoint_set_auto_snapshot_requires_checkpoint_id);
+    RUN_TEST(checkpoint_set_auto_snapshot_requires_snapshot_prefix);
+    RUN_TEST(checkpoint_set_auto_snapshot_null_params_returns_error);
+    RUN_TEST(checkpoint_set_auto_snapshot_rejects_empty_prefix);
+    RUN_TEST(checkpoint_set_auto_snapshot_rejects_invalid_prefix);
+    RUN_TEST(checkpoint_set_auto_snapshot_rejects_invalid_checkpoint_id);
+    RUN_TEST(checkpoint_set_auto_snapshot_with_valid_params_succeeds);
+    RUN_TEST(checkpoint_set_auto_snapshot_with_all_options);
+    RUN_TEST(checkpoint_set_auto_snapshot_clamps_max_snapshots);
+    RUN_TEST(checkpoint_set_auto_snapshot_updates_existing_config);
+    RUN_TEST(checkpoint_clear_auto_snapshot_requires_checkpoint_id);
+    RUN_TEST(checkpoint_clear_auto_snapshot_null_params_returns_error);
+    RUN_TEST(checkpoint_clear_auto_snapshot_rejects_invalid_checkpoint_id);
+    RUN_TEST(checkpoint_clear_auto_snapshot_nonexistent_returns_false);
+    RUN_TEST(checkpoint_clear_auto_snapshot_clears_existing_config);
+    RUN_TEST(checkpoint_set_auto_snapshot_dispatch_works);
+    RUN_TEST(checkpoint_clear_auto_snapshot_dispatch_works);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);

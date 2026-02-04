@@ -146,6 +146,93 @@ static int mcp_checkpoint_group_find_free(void)
     return -1;
 }
 
+/* -------------------------------------------------------------------------
+ * Auto-Snapshot Configuration (MCP-side bookkeeping)
+ *
+ * When a checkpoint hits, automatically save a snapshot with sequential naming.
+ * This is MCP-side config storage - the actual snapshot-on-hit requires
+ * VICE integration via a callback from the checkpoint system.
+ *
+ * Ring buffer behavior: when max_snapshots exceeded, oldest is deleted.
+ * Naming pattern: {prefix}_{hit_count:03d}.vsf
+ * Example: ai_move_001.vsf, ai_move_002.vsf, ...
+ * ------------------------------------------------------------------------- */
+#define MCP_MAX_AUTO_SNAPSHOTS 64
+#define MCP_MAX_SNAPSHOT_PREFIX_LEN 64
+
+typedef struct {
+    int checkpoint_id;                        /* Associated checkpoint */
+    char prefix[MCP_MAX_SNAPSHOT_PREFIX_LEN]; /* Filename prefix */
+    int max_snapshots;                        /* Ring buffer size (default 10) */
+    int include_disks;                        /* Include disk state in snapshots */
+    int hit_count;                            /* Tracks current position in ring */
+    int active;                               /* 1 if in use, 0 if slot is free */
+} mcp_auto_snapshot_config_t;
+
+static mcp_auto_snapshot_config_t auto_snapshot_configs[MCP_MAX_AUTO_SNAPSHOTS];
+static int auto_snapshot_configs_initialized = 0;
+
+/* Initialize auto-snapshot configs (called on first use) */
+static void mcp_auto_snapshot_configs_init(void)
+{
+    int i;
+    if (!auto_snapshot_configs_initialized) {
+        for (i = 0; i < MCP_MAX_AUTO_SNAPSHOTS; i++) {
+            auto_snapshot_configs[i].checkpoint_id = -1;
+            auto_snapshot_configs[i].prefix[0] = '\0';
+            auto_snapshot_configs[i].max_snapshots = 10;
+            auto_snapshot_configs[i].include_disks = 0;
+            auto_snapshot_configs[i].hit_count = 0;
+            auto_snapshot_configs[i].active = 0;
+        }
+        auto_snapshot_configs_initialized = 1;
+    }
+}
+
+/* Reset all auto-snapshot configs (for testing)
+ * Note: Exposed for test harness, not for general use */
+extern void mcp_auto_snapshot_configs_reset(void);  /* Forward declaration for prototype */
+void mcp_auto_snapshot_configs_reset(void)
+{
+    int i;
+    for (i = 0; i < MCP_MAX_AUTO_SNAPSHOTS; i++) {
+        auto_snapshot_configs[i].checkpoint_id = -1;
+        auto_snapshot_configs[i].prefix[0] = '\0';
+        auto_snapshot_configs[i].max_snapshots = 10;
+        auto_snapshot_configs[i].include_disks = 0;
+        auto_snapshot_configs[i].hit_count = 0;
+        auto_snapshot_configs[i].active = 0;
+    }
+    auto_snapshot_configs_initialized = 1;
+}
+
+/* Find auto-snapshot config by checkpoint_id. Returns index or -1 if not found */
+static int mcp_auto_snapshot_find(int checkpoint_id)
+{
+    int i;
+    mcp_auto_snapshot_configs_init();
+    for (i = 0; i < MCP_MAX_AUTO_SNAPSHOTS; i++) {
+        if (auto_snapshot_configs[i].active &&
+            auto_snapshot_configs[i].checkpoint_id == checkpoint_id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Find a free auto-snapshot config slot. Returns index or -1 if full */
+static int mcp_auto_snapshot_find_free(void)
+{
+    int i;
+    mcp_auto_snapshot_configs_init();
+    for (i = 0; i < MCP_MAX_AUTO_SNAPSHOTS; i++) {
+        if (!auto_snapshot_configs[i].active) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 /* Catastrophic error response when we can't allocate memory */
 const char *CATASTROPHIC_ERROR_JSON =
     "{\"code\":-32603,\"message\":\"Internal error: out of memory\"}";
@@ -785,6 +872,17 @@ static const mcp_tool_t tool_registry[] = {
       "List all checkpoint groups with their member counts. "
       "Returns group names, checkpoint IDs, and enabled/disabled counts.",
       mcp_tool_checkpoint_group_list },
+
+    /* Phase 5.3: Auto-Snapshot on Checkpoint Hit */
+    { "vice.checkpoint.set_auto_snapshot",
+      "Configure automatic snapshot on checkpoint hit. "
+      "When the checkpoint triggers, saves to {prefix}_{hit_count:03d}.vsf with ring buffer. "
+      "NOTE: Actual triggering requires VICE callback integration (config stored MCP-side).",
+      mcp_tool_checkpoint_set_auto_snapshot },
+    { "vice.checkpoint.clear_auto_snapshot",
+      "Remove auto-snapshot configuration from a checkpoint. "
+      "Stops automatic snapshot-on-hit behavior for this checkpoint.",
+      mcp_tool_checkpoint_clear_auto_snapshot },
 
     { NULL, NULL, NULL } /* Sentinel */
 };
@@ -1561,6 +1659,29 @@ cJSON* mcp_tool_tools_list(cJSON *params)
 
         } else if (strcmp(name, "vice.checkpoint.group.list") == 0) {
             schema = mcp_schema_empty();
+
+        } else if (strcmp(name, "vice.checkpoint.set_auto_snapshot") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "checkpoint_id", mcp_prop_number(
+                "Checkpoint ID to configure auto-snapshot for"));
+            cJSON_AddItemToObject(props, "snapshot_prefix", mcp_prop_string(
+                "Filename prefix for snapshots (e.g., 'ai_move' -> ai_move_001.vsf)"));
+            cJSON_AddItemToObject(props, "max_snapshots", mcp_prop_number(
+                "Ring buffer size - oldest deleted when exceeded (default: 10)"));
+            cJSON_AddItemToObject(props, "include_disks", mcp_prop_boolean(
+                "Include disk state in snapshots (default: false)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("checkpoint_id"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("snapshot_prefix"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.checkpoint.clear_auto_snapshot") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "checkpoint_id", mcp_prop_number(
+                "Checkpoint ID to clear auto-snapshot configuration from"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("checkpoint_id"));
+            schema = mcp_schema_object(props, required);
 
         } else {
             /* Default: empty schema for unknown tools */
@@ -6692,4 +6813,224 @@ cJSON* mcp_tool_memory_compare(cJSON *params)
         snprintf(err_buf, sizeof(err_buf), "Unknown mode '%s' (valid: 'ranges', 'snapshot')", mode_str);
         return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
     }
+}
+
+/* =========================================================================
+ * Auto-Snapshot on Checkpoint Hit Tools
+ *
+ * These tools configure automatic snapshot saving when a checkpoint is hit.
+ * The actual snapshot-on-hit behavior requires VICE integration via a callback
+ * from the checkpoint system. This MCP-side code stores the configuration and
+ * provides a helper function that could be called from such a callback.
+ *
+ * Ring buffer behavior:
+ * - Snapshots are named {prefix}_{hit_count:03d}.vsf
+ * - When max_snapshots is reached, the oldest snapshot is deleted
+ * - hit_count wraps at max_snapshots and overwrites old files
+ *
+ * Example: prefix="ai_move", max_snapshots=10
+ * Creates: ai_move_001.vsf, ai_move_002.vsf, ..., ai_move_010.vsf
+ * On 11th hit: deletes ai_move_001.vsf, creates ai_move_001.vsf (wraps)
+ * ========================================================================= */
+
+/* vice.checkpoint.set_auto_snapshot
+ *
+ * Configure automatic snapshot on checkpoint hit.
+ *
+ * Parameters:
+ *   - checkpoint_id (number, required): Checkpoint to configure
+ *   - snapshot_prefix (string, required): Filename prefix (alphanumeric, underscore, hyphen)
+ *   - max_snapshots (number, optional): Ring buffer size (default: 10, max: 999)
+ *   - include_disks (boolean, optional): Include disk state (default: false)
+ *
+ * Returns:
+ *   - enabled (boolean): true if configuration was set
+ *   - checkpoint_id (number): The configured checkpoint ID
+ *   - snapshot_prefix (string): The configured prefix
+ *   - max_snapshots (number): The configured ring buffer size
+ *   - include_disks (boolean): Whether disks will be included
+ *   - note (string): Message about VICE integration requirement
+ */
+cJSON* mcp_tool_checkpoint_set_auto_snapshot(cJSON *params)
+{
+    cJSON *response;
+    cJSON *cp_id_item, *prefix_item, *max_item, *disks_item;
+    int checkpoint_id;
+    const char *prefix;
+    int max_snapshots = 10;  /* Default */
+    int include_disks = 0;   /* Default */
+    int config_idx;
+    const char *p;
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.set_auto_snapshot");
+
+    /* Validate params object */
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing parameters: checkpoint_id (number) and snapshot_prefix (string) required");
+    }
+
+    /* Get required checkpoint_id parameter */
+    cp_id_item = cJSON_GetObjectItem(params, "checkpoint_id");
+    if (cp_id_item == NULL || !cJSON_IsNumber(cp_id_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing required parameter: checkpoint_id (number)");
+    }
+    checkpoint_id = cp_id_item->valueint;
+
+    if (checkpoint_id < 1) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid checkpoint_id: must be a positive integer");
+    }
+
+    /* Get required snapshot_prefix parameter */
+    prefix_item = cJSON_GetObjectItem(params, "snapshot_prefix");
+    if (prefix_item == NULL || !cJSON_IsString(prefix_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing required parameter: snapshot_prefix (string)");
+    }
+    prefix = prefix_item->valuestring;
+
+    /* Validate prefix - alphanumeric, underscore, hyphen only */
+    if (prefix[0] == '\0') {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid snapshot_prefix: cannot be empty");
+    }
+    for (p = prefix; *p; p++) {
+        if (!isalnum((unsigned char)*p) && *p != '_' && *p != '-') {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                "Invalid snapshot_prefix: use only alphanumeric characters, underscores, and hyphens");
+        }
+    }
+    if (strlen(prefix) >= MCP_MAX_SNAPSHOT_PREFIX_LEN) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid snapshot_prefix: too long (max 63 characters)");
+    }
+
+    /* Get optional max_snapshots parameter */
+    max_item = cJSON_GetObjectItem(params, "max_snapshots");
+    if (max_item != NULL && cJSON_IsNumber(max_item)) {
+        max_snapshots = max_item->valueint;
+        if (max_snapshots < 1) {
+            max_snapshots = 1;
+        }
+        if (max_snapshots > 999) {
+            max_snapshots = 999;  /* Limit for %03d format */
+        }
+    }
+
+    /* Get optional include_disks parameter */
+    disks_item = cJSON_GetObjectItem(params, "include_disks");
+    if (disks_item != NULL && cJSON_IsBool(disks_item)) {
+        include_disks = cJSON_IsTrue(disks_item) ? 1 : 0;
+    }
+
+    /* Check if this checkpoint already has an auto-snapshot config */
+    config_idx = mcp_auto_snapshot_find(checkpoint_id);
+    if (config_idx < 0) {
+        /* Need a new slot */
+        config_idx = mcp_auto_snapshot_find_free();
+        if (config_idx < 0) {
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR,
+                "Maximum auto-snapshot configurations reached");
+        }
+    }
+
+    /* Store the configuration */
+    auto_snapshot_configs[config_idx].checkpoint_id = checkpoint_id;
+    strncpy(auto_snapshot_configs[config_idx].prefix, prefix, MCP_MAX_SNAPSHOT_PREFIX_LEN - 1);
+    auto_snapshot_configs[config_idx].prefix[MCP_MAX_SNAPSHOT_PREFIX_LEN - 1] = '\0';
+    auto_snapshot_configs[config_idx].max_snapshots = max_snapshots;
+    auto_snapshot_configs[config_idx].include_disks = include_disks;
+    auto_snapshot_configs[config_idx].hit_count = 0;  /* Reset counter */
+    auto_snapshot_configs[config_idx].active = 1;
+
+    log_message(mcp_tools_log, "Auto-snapshot configured: checkpoint %d -> %s_xxx.vsf (max %d)",
+                checkpoint_id, prefix, max_snapshots);
+
+    /* Build success response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddBoolToObject(response, "enabled", 1);
+    cJSON_AddNumberToObject(response, "checkpoint_id", checkpoint_id);
+    cJSON_AddStringToObject(response, "snapshot_prefix", prefix);
+    cJSON_AddNumberToObject(response, "max_snapshots", max_snapshots);
+    cJSON_AddBoolToObject(response, "include_disks", include_disks);
+    cJSON_AddStringToObject(response, "note",
+        "Config stored. Actual snapshot-on-hit requires VICE checkpoint callback integration.");
+
+    return response;
+}
+
+/* vice.checkpoint.clear_auto_snapshot
+ *
+ * Remove auto-snapshot configuration from a checkpoint.
+ *
+ * Parameters:
+ *   - checkpoint_id (number, required): Checkpoint to clear configuration from
+ *
+ * Returns:
+ *   - cleared (boolean): true if configuration was removed, false if none existed
+ *   - checkpoint_id (number): The checkpoint ID that was cleared
+ */
+cJSON* mcp_tool_checkpoint_clear_auto_snapshot(cJSON *params)
+{
+    cJSON *response;
+    cJSON *cp_id_item;
+    int checkpoint_id;
+    int config_idx;
+    int was_active;
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.clear_auto_snapshot");
+
+    /* Validate params object */
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing parameters: checkpoint_id (number) required");
+    }
+
+    /* Get required checkpoint_id parameter */
+    cp_id_item = cJSON_GetObjectItem(params, "checkpoint_id");
+    if (cp_id_item == NULL || !cJSON_IsNumber(cp_id_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing required parameter: checkpoint_id (number)");
+    }
+    checkpoint_id = cp_id_item->valueint;
+
+    if (checkpoint_id < 1) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid checkpoint_id: must be a positive integer");
+    }
+
+    /* Find and clear the configuration */
+    config_idx = mcp_auto_snapshot_find(checkpoint_id);
+    was_active = (config_idx >= 0);
+
+    if (was_active) {
+        /* Clear the slot */
+        auto_snapshot_configs[config_idx].checkpoint_id = -1;
+        auto_snapshot_configs[config_idx].prefix[0] = '\0';
+        auto_snapshot_configs[config_idx].max_snapshots = 10;
+        auto_snapshot_configs[config_idx].include_disks = 0;
+        auto_snapshot_configs[config_idx].hit_count = 0;
+        auto_snapshot_configs[config_idx].active = 0;
+
+        log_message(mcp_tools_log, "Auto-snapshot cleared for checkpoint %d", checkpoint_id);
+    } else {
+        log_message(mcp_tools_log, "No auto-snapshot config found for checkpoint %d", checkpoint_id);
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddBoolToObject(response, "cleared", was_active);
+    cJSON_AddNumberToObject(response, "checkpoint_id", checkpoint_id);
+
+    return response;
 }
