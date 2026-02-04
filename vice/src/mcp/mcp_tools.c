@@ -999,6 +999,21 @@ static const mcp_tool_t tool_registry[] = {
       "Returns instructions recorded, output file path, and cycles elapsed.",
       mcp_tool_trace_stop },
 
+    /* Phase 5.4: Interrupt Logging */
+    { "vice.interrupt.log.start",
+      "Start logging interrupt events (IRQ, NMI, BRK). "
+      "Returns log_id for later reference. Filter by interrupt types and set max entries. "
+      "NOTE: Actual logging requires VICE interrupt hook integration (config stored MCP-side).",
+      mcp_tool_interrupt_log_start },
+    { "vice.interrupt.log.stop",
+      "Stop an active interrupt log and retrieve all recorded entries. "
+      "Returns entries with type, cycle, pc, vector_address, and handler_address.",
+      mcp_tool_interrupt_log_stop },
+    { "vice.interrupt.log.read",
+      "Read entries from an active interrupt log without stopping it. "
+      "Supports incremental reads via since_index parameter.",
+      mcp_tool_interrupt_log_read },
+
     { NULL, NULL, NULL } /* Sentinel */
 };
 
@@ -1820,6 +1835,33 @@ cJSON* mcp_tool_tools_list(cJSON *params)
                 "The trace ID returned from trace.start"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("trace_id"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.interrupt.log.start") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "types", mcp_prop_array("string",
+                "Interrupt types to log ('irq', 'nmi', 'brk'). Default: all types"));
+            cJSON_AddItemToObject(props, "max_entries", mcp_prop_number(
+                "Maximum entries to store (default: 1000, max: 10000)"));
+            /* No required params - all optional */
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.interrupt.log.stop") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "log_id", mcp_prop_string(
+                "The log ID returned from interrupt.log.start"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("log_id"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.interrupt.log.read") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "log_id", mcp_prop_string(
+                "The log ID returned from interrupt.log.start"));
+            cJSON_AddItemToObject(props, "since_index", mcp_prop_number(
+                "Return only entries from this index onwards (for incremental reads)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("log_id"));
             schema = mcp_schema_object(props, required);
 
         } else {
@@ -7432,6 +7474,484 @@ cJSON* mcp_tool_trace_stop(cJSON *params)
         cJSON_AddStringToObject(response, "output_file", output_file);
         cJSON_AddNumberToObject(response, "cycles_elapsed", (double)cycles_elapsed);
     }
+
+    return response;
+}
+
+/* =========================================================================
+ * Phase 5.4: Interrupt Logging Tools
+ *
+ * These tools configure interrupt event logging. The actual logging
+ * requires interrupt dispatch hooks in VICE - these tools manage the config
+ * and store logged entries.
+ *
+ * Entry format:
+ *   {type: "irq"|"nmi"|"brk", cycle: <number>, pc: <number>,
+ *    vector_address: <number>, handler_address: <number>}
+ *
+ * Vector addresses:
+ *   - IRQ: $FFFE/$FFFF
+ *   - NMI: $FFFA/$FFFB
+ *   - BRK: $FFFE/$FFFF (same as IRQ but can be distinguished by processor)
+ * ========================================================================= */
+
+#define MCP_MAX_INTERRUPT_LOGS 16
+#define MCP_MAX_INTERRUPT_ENTRIES 10000
+#define MCP_INTERRUPT_TYPE_IRQ 0x01
+#define MCP_INTERRUPT_TYPE_NMI 0x02
+#define MCP_INTERRUPT_TYPE_BRK 0x04
+#define MCP_INTERRUPT_TYPE_ALL (MCP_INTERRUPT_TYPE_IRQ | MCP_INTERRUPT_TYPE_NMI | MCP_INTERRUPT_TYPE_BRK)
+
+/* Single interrupt log entry */
+typedef struct {
+    uint8_t type;              /* MCP_INTERRUPT_TYPE_* */
+    unsigned long cycle;       /* CPU cycle when interrupt occurred */
+    uint16_t pc;               /* Program counter when interrupted */
+    uint16_t vector_address;   /* Vector address ($FFFE, $FFFA) */
+    uint16_t handler_address;  /* What the vector pointed to */
+} mcp_interrupt_entry_t;
+
+/* Interrupt log configuration */
+typedef struct {
+    char log_id[32];                                    /* Unique log identifier */
+    uint8_t type_filter;                                /* Bitmask of types to log */
+    int max_entries;                                    /* Maximum entries (default 1000) */
+    int entry_count;                                    /* Current entry count */
+    mcp_interrupt_entry_t *entries;                     /* Dynamic array of entries */
+    unsigned long start_cycles;                         /* Cycle count at log start */
+    int active;                                         /* 1 if log is active */
+} mcp_interrupt_log_config_t;
+
+static mcp_interrupt_log_config_t interrupt_log_configs[MCP_MAX_INTERRUPT_LOGS];
+static int interrupt_log_configs_initialized = 0;
+static int interrupt_log_id_counter = 0;
+
+/* Initialize interrupt log configs (called on first use) */
+static void mcp_interrupt_log_configs_init(void)
+{
+    int i;
+    if (!interrupt_log_configs_initialized) {
+        for (i = 0; i < MCP_MAX_INTERRUPT_LOGS; i++) {
+            interrupt_log_configs[i].log_id[0] = '\0';
+            interrupt_log_configs[i].type_filter = MCP_INTERRUPT_TYPE_ALL;
+            interrupt_log_configs[i].max_entries = 1000;
+            interrupt_log_configs[i].entry_count = 0;
+            interrupt_log_configs[i].entries = NULL;
+            interrupt_log_configs[i].start_cycles = 0;
+            interrupt_log_configs[i].active = 0;
+        }
+        interrupt_log_configs_initialized = 1;
+    }
+}
+
+/* Reset all interrupt log configs (for testing) */
+extern void mcp_interrupt_log_configs_reset(void);
+void mcp_interrupt_log_configs_reset(void)
+{
+    int i;
+    for (i = 0; i < MCP_MAX_INTERRUPT_LOGS; i++) {
+        if (interrupt_log_configs[i].entries != NULL) {
+            lib_free(interrupt_log_configs[i].entries);
+            interrupt_log_configs[i].entries = NULL;
+        }
+        interrupt_log_configs[i].log_id[0] = '\0';
+        interrupt_log_configs[i].type_filter = MCP_INTERRUPT_TYPE_ALL;
+        interrupt_log_configs[i].max_entries = 1000;
+        interrupt_log_configs[i].entry_count = 0;
+        interrupt_log_configs[i].start_cycles = 0;
+        interrupt_log_configs[i].active = 0;
+    }
+    interrupt_log_configs_initialized = 1;
+    interrupt_log_id_counter = 0;
+}
+
+/* Find an interrupt log config by log_id. Returns index or -1 if not found */
+static int mcp_interrupt_log_find(const char *log_id)
+{
+    int i;
+    mcp_interrupt_log_configs_init();
+    for (i = 0; i < MCP_MAX_INTERRUPT_LOGS; i++) {
+        if (interrupt_log_configs[i].active &&
+            strcmp(interrupt_log_configs[i].log_id, log_id) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Find a free interrupt log config slot. Returns index or -1 if full */
+static int mcp_interrupt_log_find_free(void)
+{
+    int i;
+    mcp_interrupt_log_configs_init();
+    for (i = 0; i < MCP_MAX_INTERRUPT_LOGS; i++) {
+        if (!interrupt_log_configs[i].active) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Parse interrupt type string. Returns bitmask or 0 on error */
+static uint8_t mcp_interrupt_type_from_string(const char *type_str)
+{
+    if (strcmp(type_str, "irq") == 0) {
+        return MCP_INTERRUPT_TYPE_IRQ;
+    } else if (strcmp(type_str, "nmi") == 0) {
+        return MCP_INTERRUPT_TYPE_NMI;
+    } else if (strcmp(type_str, "brk") == 0) {
+        return MCP_INTERRUPT_TYPE_BRK;
+    }
+    return 0;
+}
+
+/* Convert interrupt type bitmask to string */
+static const char* mcp_interrupt_type_to_string(uint8_t type)
+{
+    switch (type) {
+        case MCP_INTERRUPT_TYPE_IRQ: return "irq";
+        case MCP_INTERRUPT_TYPE_NMI: return "nmi";
+        case MCP_INTERRUPT_TYPE_BRK: return "brk";
+        default: return "unknown";
+    }
+}
+
+/* vice.interrupt.log.start
+ *
+ * Start logging interrupt events.
+ *
+ * Parameters:
+ *   - types (array of strings, optional): Interrupt types to log ("irq", "nmi", "brk")
+ *                                          Default: all types
+ *   - max_entries (number, optional): Maximum entries to store (default 1000, max 10000)
+ *
+ * Returns:
+ *   - log_id (string): Unique identifier for this log session
+ *   - types (array): Interrupt types being logged
+ *   - max_entries (number): Maximum entries configured
+ *   - note (string): Integration status note
+ */
+cJSON* mcp_tool_interrupt_log_start(cJSON *params)
+{
+    cJSON *response, *types_array, *type_item;
+    cJSON *types_param, *max_param;
+    uint8_t type_filter = MCP_INTERRUPT_TYPE_ALL;
+    int max_entries = 1000;
+    int config_idx;
+    char log_id[32];
+    int i, arr_size;
+
+    log_message(mcp_tools_log, "Handling vice.interrupt.log.start");
+
+    mcp_interrupt_log_configs_init();
+
+    /* Get optional types parameter */
+    if (params != NULL) {
+        types_param = cJSON_GetObjectItem(params, "types");
+        if (types_param != NULL && cJSON_IsArray(types_param)) {
+            type_filter = 0;  /* Start with no types */
+            arr_size = cJSON_GetArraySize(types_param);
+            for (i = 0; i < arr_size; i++) {
+                type_item = cJSON_GetArrayItem(types_param, i);
+                if (cJSON_IsString(type_item)) {
+                    uint8_t t = mcp_interrupt_type_from_string(type_item->valuestring);
+                    if (t == 0) {
+                        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                            "Invalid interrupt type: must be 'irq', 'nmi', or 'brk'");
+                    }
+                    type_filter |= t;
+                }
+            }
+            if (type_filter == 0) {
+                return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                    "Invalid types array: must contain at least one valid type");
+            }
+        }
+
+        /* Get optional max_entries parameter */
+        max_param = cJSON_GetObjectItem(params, "max_entries");
+        if (max_param != NULL && cJSON_IsNumber(max_param)) {
+            max_entries = max_param->valueint;
+            if (max_entries < 1) {
+                max_entries = 1;
+            }
+            if (max_entries > MCP_MAX_INTERRUPT_ENTRIES) {
+                max_entries = MCP_MAX_INTERRUPT_ENTRIES;
+            }
+        }
+    }
+
+    /* Find a free slot */
+    config_idx = mcp_interrupt_log_find_free();
+    if (config_idx < 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR,
+            "Maximum interrupt log configurations reached");
+    }
+
+    /* Allocate entries array */
+    interrupt_log_configs[config_idx].entries =
+        (mcp_interrupt_entry_t *)lib_malloc(max_entries * sizeof(mcp_interrupt_entry_t));
+    if (interrupt_log_configs[config_idx].entries == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Generate unique log ID */
+    snprintf(log_id, sizeof(log_id), "intlog_%d", ++interrupt_log_id_counter);
+
+    /* Store the configuration */
+    strncpy(interrupt_log_configs[config_idx].log_id, log_id,
+            sizeof(interrupt_log_configs[config_idx].log_id) - 1);
+    interrupt_log_configs[config_idx].log_id[sizeof(interrupt_log_configs[config_idx].log_id) - 1] = '\0';
+    interrupt_log_configs[config_idx].type_filter = type_filter;
+    interrupt_log_configs[config_idx].max_entries = max_entries;
+    interrupt_log_configs[config_idx].entry_count = 0;
+    interrupt_log_configs[config_idx].start_cycles = maincpu_clk;
+    interrupt_log_configs[config_idx].active = 1;
+
+    log_message(mcp_tools_log, "Interrupt log started: %s (types=%02X, max=%d)",
+                log_id, type_filter, max_entries);
+
+    /* Build success response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "log_id", log_id);
+
+    /* Build types array for response */
+    types_array = cJSON_CreateArray();
+    if (types_array != NULL) {
+        if (type_filter & MCP_INTERRUPT_TYPE_IRQ) {
+            cJSON_AddItemToArray(types_array, cJSON_CreateString("irq"));
+        }
+        if (type_filter & MCP_INTERRUPT_TYPE_NMI) {
+            cJSON_AddItemToArray(types_array, cJSON_CreateString("nmi"));
+        }
+        if (type_filter & MCP_INTERRUPT_TYPE_BRK) {
+            cJSON_AddItemToArray(types_array, cJSON_CreateString("brk"));
+        }
+        cJSON_AddItemToObject(response, "types", types_array);
+    }
+
+    cJSON_AddNumberToObject(response, "max_entries", max_entries);
+    cJSON_AddStringToObject(response, "note",
+        "Config stored. Actual logging requires VICE interrupt hook integration.");
+
+    return response;
+}
+
+/* vice.interrupt.log.stop
+ *
+ * Stop an active interrupt log and get all recorded entries.
+ *
+ * Parameters:
+ *   - log_id (string, required): The log ID returned from interrupt.log.start
+ *
+ * Returns:
+ *   - log_id (string): The log that was stopped
+ *   - entries (array): Array of interrupt entries
+ *   - total_interrupts (number): Total interrupts logged
+ *   - stopped (boolean): true if log was stopped
+ */
+cJSON* mcp_tool_interrupt_log_stop(cJSON *params)
+{
+    cJSON *response, *entries_array, *entry_obj;
+    cJSON *id_item;
+    const char *log_id;
+    int config_idx;
+    int was_active;
+    int entry_count = 0;
+    int i;
+
+    log_message(mcp_tools_log, "Handling vice.interrupt.log.stop");
+
+    /* Validate params object */
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing parameters: log_id (string) required");
+    }
+
+    /* Get required log_id parameter */
+    id_item = cJSON_GetObjectItem(params, "log_id");
+    if (id_item == NULL || !cJSON_IsString(id_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing required parameter: log_id (string)");
+    }
+    log_id = id_item->valuestring;
+
+    if (log_id[0] == '\0') {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid log_id: cannot be empty");
+    }
+
+    /* Find the log config */
+    config_idx = mcp_interrupt_log_find(log_id);
+    was_active = (config_idx >= 0);
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "log_id", log_id);
+
+    if (was_active) {
+        entry_count = interrupt_log_configs[config_idx].entry_count;
+
+        /* Build entries array */
+        entries_array = cJSON_CreateArray();
+        if (entries_array != NULL) {
+            for (i = 0; i < entry_count; i++) {
+                mcp_interrupt_entry_t *e = &interrupt_log_configs[config_idx].entries[i];
+                entry_obj = cJSON_CreateObject();
+                if (entry_obj != NULL) {
+                    cJSON_AddStringToObject(entry_obj, "type",
+                        mcp_interrupt_type_to_string(e->type));
+                    cJSON_AddNumberToObject(entry_obj, "cycle", (double)e->cycle);
+                    cJSON_AddNumberToObject(entry_obj, "pc", e->pc);
+                    cJSON_AddNumberToObject(entry_obj, "vector_address", e->vector_address);
+                    cJSON_AddNumberToObject(entry_obj, "handler_address", e->handler_address);
+                    cJSON_AddItemToArray(entries_array, entry_obj);
+                }
+            }
+            cJSON_AddItemToObject(response, "entries", entries_array);
+        }
+
+        cJSON_AddNumberToObject(response, "total_interrupts", entry_count);
+
+        /* Free the entries array */
+        if (interrupt_log_configs[config_idx].entries != NULL) {
+            lib_free(interrupt_log_configs[config_idx].entries);
+            interrupt_log_configs[config_idx].entries = NULL;
+        }
+
+        /* Clear the slot */
+        interrupt_log_configs[config_idx].log_id[0] = '\0';
+        interrupt_log_configs[config_idx].type_filter = MCP_INTERRUPT_TYPE_ALL;
+        interrupt_log_configs[config_idx].max_entries = 1000;
+        interrupt_log_configs[config_idx].entry_count = 0;
+        interrupt_log_configs[config_idx].start_cycles = 0;
+        interrupt_log_configs[config_idx].active = 0;
+
+        log_message(mcp_tools_log, "Interrupt log stopped: %s (logged %d entries)",
+                    log_id, entry_count);
+    } else {
+        /* Return empty entries for non-existent log */
+        entries_array = cJSON_CreateArray();
+        if (entries_array != NULL) {
+            cJSON_AddItemToObject(response, "entries", entries_array);
+        }
+        cJSON_AddNumberToObject(response, "total_interrupts", 0);
+        log_message(mcp_tools_log, "Interrupt log not found: %s", log_id);
+    }
+
+    cJSON_AddBoolToObject(response, "stopped", was_active);
+
+    return response;
+}
+
+/* vice.interrupt.log.read
+ *
+ * Read entries from an active interrupt log without stopping it.
+ *
+ * Parameters:
+ *   - log_id (string, required): The log ID returned from interrupt.log.start
+ *   - since_index (number, optional): Return only entries from this index onwards (for incremental reads)
+ *
+ * Returns:
+ *   - log_id (string): The log being read
+ *   - entries (array): Array of interrupt entries
+ *   - next_index (number): Index to use for next incremental read
+ *   - total_entries (number): Total entries in the log so far
+ */
+cJSON* mcp_tool_interrupt_log_read(cJSON *params)
+{
+    cJSON *response, *entries_array, *entry_obj;
+    cJSON *id_item, *since_item;
+    const char *log_id;
+    int config_idx;
+    int since_index = 0;
+    int entry_count;
+    int i;
+
+    log_message(mcp_tools_log, "Handling vice.interrupt.log.read");
+
+    /* Validate params object */
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing parameters: log_id (string) required");
+    }
+
+    /* Get required log_id parameter */
+    id_item = cJSON_GetObjectItem(params, "log_id");
+    if (id_item == NULL || !cJSON_IsString(id_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing required parameter: log_id (string)");
+    }
+    log_id = id_item->valuestring;
+
+    if (log_id[0] == '\0') {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid log_id: cannot be empty");
+    }
+
+    /* Get optional since_index parameter */
+    since_item = cJSON_GetObjectItem(params, "since_index");
+    if (since_item != NULL && cJSON_IsNumber(since_item)) {
+        since_index = since_item->valueint;
+        if (since_index < 0) {
+            since_index = 0;
+        }
+    }
+
+    /* Find the log config */
+    config_idx = mcp_interrupt_log_find(log_id);
+    if (config_idx < 0) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid log_id: log not found or not active");
+    }
+
+    entry_count = interrupt_log_configs[config_idx].entry_count;
+
+    /* Clamp since_index to entry_count */
+    if (since_index > entry_count) {
+        since_index = entry_count;
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "log_id", log_id);
+
+    /* Build entries array (from since_index to end) */
+    entries_array = cJSON_CreateArray();
+    if (entries_array != NULL) {
+        for (i = since_index; i < entry_count; i++) {
+            mcp_interrupt_entry_t *e = &interrupt_log_configs[config_idx].entries[i];
+            entry_obj = cJSON_CreateObject();
+            if (entry_obj != NULL) {
+                cJSON_AddStringToObject(entry_obj, "type",
+                    mcp_interrupt_type_to_string(e->type));
+                cJSON_AddNumberToObject(entry_obj, "cycle", (double)e->cycle);
+                cJSON_AddNumberToObject(entry_obj, "pc", e->pc);
+                cJSON_AddNumberToObject(entry_obj, "vector_address", e->vector_address);
+                cJSON_AddNumberToObject(entry_obj, "handler_address", e->handler_address);
+                cJSON_AddItemToArray(entries_array, entry_obj);
+            }
+        }
+        cJSON_AddItemToObject(response, "entries", entries_array);
+    }
+
+    cJSON_AddNumberToObject(response, "next_index", entry_count);
+    cJSON_AddNumberToObject(response, "total_entries", entry_count);
+
+    log_message(mcp_tools_log, "Interrupt log read: %s (returned %d entries from index %d)",
+                log_id, entry_count - since_index, since_index);
 
     return response;
 }

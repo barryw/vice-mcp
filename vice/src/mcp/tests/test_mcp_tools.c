@@ -5351,6 +5351,578 @@ TEST(trace_multiple_traces_run_simultaneously)
     cJSON_Delete(response2);
 }
 
+/* =================================================================
+ * Phase 5.4: Interrupt Log Tools Tests
+ * ================================================================= */
+
+/* Interrupt log tool declarations */
+extern cJSON* mcp_tool_interrupt_log_start(cJSON *params);
+extern cJSON* mcp_tool_interrupt_log_stop(cJSON *params);
+extern cJSON* mcp_tool_interrupt_log_read(cJSON *params);
+
+/* Interrupt log config reset function - from libmcp.a */
+extern void mcp_interrupt_log_configs_reset(void);
+
+static void test_interrupt_log_configs_reset(void)
+{
+    mcp_interrupt_log_configs_reset();
+}
+
+/* Test: interrupt.log.start with null params works (uses defaults) */
+TEST(interrupt_log_start_null_params_works)
+{
+    cJSON *response;
+    cJSON *log_id_item, *types_item, *max_item;
+
+    test_interrupt_log_configs_reset();
+
+    response = mcp_tool_interrupt_log_start(NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    log_id_item = cJSON_GetObjectItem(response, "log_id");
+    ASSERT_NOT_NULL(log_id_item);
+    ASSERT_TRUE(cJSON_IsString(log_id_item));
+    ASSERT_TRUE(strncmp(log_id_item->valuestring, "intlog_", 7) == 0);
+
+    types_item = cJSON_GetObjectItem(response, "types");
+    ASSERT_NOT_NULL(types_item);
+    ASSERT_TRUE(cJSON_IsArray(types_item));
+    ASSERT_TRUE(cJSON_GetArraySize(types_item) == 3);  /* irq, nmi, brk */
+
+    max_item = cJSON_GetObjectItem(response, "max_entries");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 1000);  /* Default */
+
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.start with empty params works */
+TEST(interrupt_log_start_empty_params_works)
+{
+    cJSON *response, *params;
+    cJSON *log_id_item;
+
+    test_interrupt_log_configs_reset();
+
+    params = cJSON_CreateObject();
+    response = mcp_tool_interrupt_log_start(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    log_id_item = cJSON_GetObjectItem(response, "log_id");
+    ASSERT_NOT_NULL(log_id_item);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.start with specific types */
+TEST(interrupt_log_start_with_specific_types)
+{
+    cJSON *response, *params, *types_array;
+    cJSON *types_item;
+    int found_irq = 0, found_nmi = 0, found_brk = 0;
+    int i, arr_size;
+
+    test_interrupt_log_configs_reset();
+
+    params = cJSON_CreateObject();
+    types_array = cJSON_CreateArray();
+    cJSON_AddItemToArray(types_array, cJSON_CreateString("irq"));
+    cJSON_AddItemToArray(types_array, cJSON_CreateString("nmi"));
+    cJSON_AddItemToObject(params, "types", types_array);
+
+    response = mcp_tool_interrupt_log_start(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    types_item = cJSON_GetObjectItem(response, "types");
+    ASSERT_NOT_NULL(types_item);
+    ASSERT_TRUE(cJSON_IsArray(types_item));
+
+    arr_size = cJSON_GetArraySize(types_item);
+    for (i = 0; i < arr_size; i++) {
+        cJSON *t = cJSON_GetArrayItem(types_item, i);
+        if (strcmp(t->valuestring, "irq") == 0) found_irq = 1;
+        if (strcmp(t->valuestring, "nmi") == 0) found_nmi = 1;
+        if (strcmp(t->valuestring, "brk") == 0) found_brk = 1;
+    }
+    ASSERT_TRUE(found_irq == 1);
+    ASSERT_TRUE(found_nmi == 1);
+    ASSERT_TRUE(found_brk == 0);  /* brk was not requested */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.start rejects invalid type */
+TEST(interrupt_log_start_rejects_invalid_type)
+{
+    cJSON *response, *params, *types_array, *code_item;
+
+    test_interrupt_log_configs_reset();
+
+    params = cJSON_CreateObject();
+    types_array = cJSON_CreateArray();
+    cJSON_AddItemToArray(types_array, cJSON_CreateString("invalid"));
+    cJSON_AddItemToObject(params, "types", types_array);
+
+    response = mcp_tool_interrupt_log_start(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);  /* INVALID_PARAMS */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.start with max_entries */
+TEST(interrupt_log_start_with_max_entries)
+{
+    cJSON *response, *params;
+    cJSON *max_item;
+
+    test_interrupt_log_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "max_entries", 500);
+
+    response = mcp_tool_interrupt_log_start(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    max_item = cJSON_GetObjectItem(response, "max_entries");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 500);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.start clamps max_entries */
+TEST(interrupt_log_start_clamps_max_entries)
+{
+    cJSON *response, *params;
+    cJSON *max_item;
+
+    test_interrupt_log_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "max_entries", 99999);  /* Over limit */
+
+    response = mcp_tool_interrupt_log_start(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    max_item = cJSON_GetObjectItem(response, "max_entries");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 10000);  /* Clamped to max */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.stop requires log_id */
+TEST(interrupt_log_stop_requires_log_id)
+{
+    cJSON *response, *params, *code_item;
+
+    test_interrupt_log_configs_reset();
+
+    params = cJSON_CreateObject();
+    /* Missing log_id */
+
+    response = mcp_tool_interrupt_log_stop(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.stop null params returns error */
+TEST(interrupt_log_stop_null_params_returns_error)
+{
+    cJSON *response, *code_item;
+
+    test_interrupt_log_configs_reset();
+
+    response = mcp_tool_interrupt_log_stop(NULL);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.stop rejects empty log_id */
+TEST(interrupt_log_stop_rejects_empty_log_id)
+{
+    cJSON *response, *params, *code_item;
+
+    test_interrupt_log_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "log_id", "");
+
+    response = mcp_tool_interrupt_log_stop(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.stop nonexistent returns stopped=false */
+TEST(interrupt_log_stop_nonexistent_returns_false)
+{
+    cJSON *response, *params;
+    cJSON *stopped_item, *entries_item, *total_item;
+
+    test_interrupt_log_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "log_id", "nonexistent_log");
+
+    response = mcp_tool_interrupt_log_stop(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    stopped_item = cJSON_GetObjectItem(response, "stopped");
+    ASSERT_NOT_NULL(stopped_item);
+    ASSERT_TRUE(cJSON_IsFalse(stopped_item));
+
+    entries_item = cJSON_GetObjectItem(response, "entries");
+    ASSERT_NOT_NULL(entries_item);
+    ASSERT_TRUE(cJSON_IsArray(entries_item));
+    ASSERT_TRUE(cJSON_GetArraySize(entries_item) == 0);
+
+    total_item = cJSON_GetObjectItem(response, "total_interrupts");
+    ASSERT_NOT_NULL(total_item);
+    ASSERT_TRUE(total_item->valueint == 0);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.stop stops existing log */
+TEST(interrupt_log_stop_stops_existing_log)
+{
+    cJSON *start_response, *stop_response, *start_params, *stop_params;
+    cJSON *log_id_item, *stopped_item;
+    const char *log_id;
+
+    test_interrupt_log_configs_reset();
+
+    /* Start a log */
+    start_params = cJSON_CreateObject();
+    start_response = mcp_tool_interrupt_log_start(start_params);
+    ASSERT_NOT_NULL(start_response);
+    log_id_item = cJSON_GetObjectItem(start_response, "log_id");
+    ASSERT_NOT_NULL(log_id_item);
+    log_id = log_id_item->valuestring;
+
+    /* Stop the log */
+    stop_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(stop_params, "log_id", log_id);
+    stop_response = mcp_tool_interrupt_log_stop(stop_params);
+    ASSERT_NOT_NULL(stop_response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(stop_response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    stopped_item = cJSON_GetObjectItem(stop_response, "stopped");
+    ASSERT_NOT_NULL(stopped_item);
+    ASSERT_TRUE(cJSON_IsTrue(stopped_item));
+
+    cJSON_Delete(start_params);
+    cJSON_Delete(start_response);
+    cJSON_Delete(stop_params);
+    cJSON_Delete(stop_response);
+}
+
+/* Test: interrupt.log.read requires log_id */
+TEST(interrupt_log_read_requires_log_id)
+{
+    cJSON *response, *params, *code_item;
+
+    test_interrupt_log_configs_reset();
+
+    params = cJSON_CreateObject();
+    /* Missing log_id */
+
+    response = mcp_tool_interrupt_log_read(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.read null params returns error */
+TEST(interrupt_log_read_null_params_returns_error)
+{
+    cJSON *response, *code_item;
+
+    test_interrupt_log_configs_reset();
+
+    response = mcp_tool_interrupt_log_read(NULL);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.read rejects nonexistent log */
+TEST(interrupt_log_read_nonexistent_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    test_interrupt_log_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "log_id", "nonexistent_log");
+
+    response = mcp_tool_interrupt_log_read(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.read returns empty entries for active log */
+TEST(interrupt_log_read_returns_empty_for_new_log)
+{
+    cJSON *start_response, *read_response, *start_params, *read_params;
+    cJSON *log_id_item, *entries_item, *next_idx_item, *total_item;
+    const char *log_id;
+
+    test_interrupt_log_configs_reset();
+
+    /* Start a log */
+    start_params = cJSON_CreateObject();
+    start_response = mcp_tool_interrupt_log_start(start_params);
+    ASSERT_NOT_NULL(start_response);
+    log_id_item = cJSON_GetObjectItem(start_response, "log_id");
+    ASSERT_NOT_NULL(log_id_item);
+    log_id = log_id_item->valuestring;
+
+    /* Read the log */
+    read_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(read_params, "log_id", log_id);
+    read_response = mcp_tool_interrupt_log_read(read_params);
+    ASSERT_NOT_NULL(read_response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(read_response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    entries_item = cJSON_GetObjectItem(read_response, "entries");
+    ASSERT_NOT_NULL(entries_item);
+    ASSERT_TRUE(cJSON_IsArray(entries_item));
+    ASSERT_TRUE(cJSON_GetArraySize(entries_item) == 0);
+
+    next_idx_item = cJSON_GetObjectItem(read_response, "next_index");
+    ASSERT_NOT_NULL(next_idx_item);
+    ASSERT_TRUE(next_idx_item->valueint == 0);
+
+    total_item = cJSON_GetObjectItem(read_response, "total_entries");
+    ASSERT_NOT_NULL(total_item);
+    ASSERT_TRUE(total_item->valueint == 0);
+
+    cJSON_Delete(start_params);
+    cJSON_Delete(start_response);
+    cJSON_Delete(read_params);
+    cJSON_Delete(read_response);
+}
+
+/* Test: interrupt.log.read with since_index */
+TEST(interrupt_log_read_with_since_index)
+{
+    cJSON *start_response, *read_response, *start_params, *read_params;
+    cJSON *log_id_item, *next_idx_item;
+    const char *log_id;
+
+    test_interrupt_log_configs_reset();
+
+    /* Start a log */
+    start_params = cJSON_CreateObject();
+    start_response = mcp_tool_interrupt_log_start(start_params);
+    ASSERT_NOT_NULL(start_response);
+    log_id_item = cJSON_GetObjectItem(start_response, "log_id");
+    ASSERT_NOT_NULL(log_id_item);
+    log_id = log_id_item->valuestring;
+
+    /* Read with since_index (should work even if empty) */
+    read_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(read_params, "log_id", log_id);
+    cJSON_AddNumberToObject(read_params, "since_index", 5);
+    read_response = mcp_tool_interrupt_log_read(read_params);
+    ASSERT_NOT_NULL(read_response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(read_response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    next_idx_item = cJSON_GetObjectItem(read_response, "next_index");
+    ASSERT_NOT_NULL(next_idx_item);
+    /* since_index clamped to entry_count (0) */
+    ASSERT_TRUE(next_idx_item->valueint == 0);
+
+    cJSON_Delete(start_params);
+    cJSON_Delete(start_response);
+    cJSON_Delete(read_params);
+    cJSON_Delete(read_response);
+}
+
+/* Test: multiple interrupt logs can run simultaneously */
+TEST(interrupt_log_multiple_logs_run_simultaneously)
+{
+    cJSON *response1, *response2, *params1, *params2;
+    cJSON *log_id1_item, *log_id2_item;
+    const char *log_id1, *log_id2;
+
+    test_interrupt_log_configs_reset();
+
+    /* Start first log */
+    params1 = cJSON_CreateObject();
+    response1 = mcp_tool_interrupt_log_start(params1);
+    ASSERT_NOT_NULL(response1);
+    log_id1_item = cJSON_GetObjectItem(response1, "log_id");
+    ASSERT_NOT_NULL(log_id1_item);
+    log_id1 = log_id1_item->valuestring;
+
+    /* Start second log */
+    params2 = cJSON_CreateObject();
+    response2 = mcp_tool_interrupt_log_start(params2);
+    ASSERT_NOT_NULL(response2);
+    log_id2_item = cJSON_GetObjectItem(response2, "log_id");
+    ASSERT_NOT_NULL(log_id2_item);
+    log_id2 = log_id2_item->valuestring;
+
+    /* Verify they have different IDs */
+    ASSERT_TRUE(strcmp(log_id1, log_id2) != 0);
+
+    cJSON_Delete(params1);
+    cJSON_Delete(response1);
+    cJSON_Delete(params2);
+    cJSON_Delete(response2);
+}
+
+/* Test: interrupt.log.start dispatch works */
+TEST(interrupt_log_start_dispatch_works)
+{
+    cJSON *response;
+
+    test_interrupt_log_configs_reset();
+
+    response = mcp_tools_dispatch("vice.interrupt.log.start", NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    cJSON *log_id_item = cJSON_GetObjectItem(response, "log_id");
+    ASSERT_NOT_NULL(log_id_item);
+
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.stop dispatch works */
+TEST(interrupt_log_stop_dispatch_works)
+{
+    cJSON *response, *params;
+
+    test_interrupt_log_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "log_id", "intlog_1");
+
+    response = mcp_tools_dispatch("vice.interrupt.log.stop", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error (even for nonexistent log) */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    cJSON *stopped_item = cJSON_GetObjectItem(response, "stopped");
+    ASSERT_NOT_NULL(stopped_item);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: interrupt.log.read dispatch works */
+TEST(interrupt_log_read_dispatch_works)
+{
+    cJSON *start_response, *read_response, *read_params;
+    cJSON *log_id_item;
+
+    test_interrupt_log_configs_reset();
+
+    /* Start a log first */
+    start_response = mcp_tools_dispatch("vice.interrupt.log.start", NULL);
+    ASSERT_NOT_NULL(start_response);
+    log_id_item = cJSON_GetObjectItem(start_response, "log_id");
+    ASSERT_NOT_NULL(log_id_item);
+
+    /* Read the log via dispatch */
+    read_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(read_params, "log_id", log_id_item->valuestring);
+
+    read_response = mcp_tools_dispatch("vice.interrupt.log.read", read_params);
+    ASSERT_NOT_NULL(read_response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(read_response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    cJSON_Delete(start_response);
+    cJSON_Delete(read_params);
+    cJSON_Delete(read_response);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -5598,6 +6170,28 @@ int main(void)
     RUN_TEST(trace_start_dispatch_works);
     RUN_TEST(trace_stop_dispatch_works);
     RUN_TEST(trace_multiple_traces_run_simultaneously);
+
+    /* Interrupt log tools tests */
+    RUN_TEST(interrupt_log_start_null_params_works);
+    RUN_TEST(interrupt_log_start_empty_params_works);
+    RUN_TEST(interrupt_log_start_with_specific_types);
+    RUN_TEST(interrupt_log_start_rejects_invalid_type);
+    RUN_TEST(interrupt_log_start_with_max_entries);
+    RUN_TEST(interrupt_log_start_clamps_max_entries);
+    RUN_TEST(interrupt_log_stop_requires_log_id);
+    RUN_TEST(interrupt_log_stop_null_params_returns_error);
+    RUN_TEST(interrupt_log_stop_rejects_empty_log_id);
+    RUN_TEST(interrupt_log_stop_nonexistent_returns_false);
+    RUN_TEST(interrupt_log_stop_stops_existing_log);
+    RUN_TEST(interrupt_log_read_requires_log_id);
+    RUN_TEST(interrupt_log_read_null_params_returns_error);
+    RUN_TEST(interrupt_log_read_nonexistent_returns_error);
+    RUN_TEST(interrupt_log_read_returns_empty_for_new_log);
+    RUN_TEST(interrupt_log_read_with_since_index);
+    RUN_TEST(interrupt_log_multiple_logs_run_simultaneously);
+    RUN_TEST(interrupt_log_start_dispatch_works);
+    RUN_TEST(interrupt_log_stop_dispatch_works);
+    RUN_TEST(interrupt_log_read_dispatch_works);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);

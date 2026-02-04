@@ -178,6 +178,11 @@ extern cJSON* mcp_tool_checkpoint_clear_auto_snapshot(cJSON *params);
 extern cJSON* mcp_tool_trace_start(cJSON *params);
 extern cJSON* mcp_tool_trace_stop(cJSON *params);
 
+/* Tool handlers - Phase 5.4: Interrupt Logging */
+extern cJSON* mcp_tool_interrupt_log_start(cJSON *params);
+extern cJSON* mcp_tool_interrupt_log_stop(cJSON *params);
+extern cJSON* mcp_tool_interrupt_log_read(cJSON *params);
+
 /** @brief Send a breakpoint hit notification to SSE clients.
  *
  *  Called when a breakpoint is hit during execution. Sends an SSE event
