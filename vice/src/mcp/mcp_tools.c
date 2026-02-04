@@ -265,6 +265,183 @@ static char* mcp_get_snapshots_dir(void)
     return snapshots_dir;
 }
 
+/* -------------------------------------------------------------------------
+ * VSF (VICE Snapshot File) Parser for Memory Extraction
+ *
+ * Parses .vsf files to extract memory contents from the C64MEM module
+ * without loading the full snapshot into the emulator. This allows
+ * comparing current memory against a saved snapshot state.
+ *
+ * VSF Format (relevant parts):
+ *   Header:
+ *     - Magic: "VICE Snapshot File\032" (19 bytes)
+ *     - Version: major (1), minor (1)
+ *     - Machine name: 16 bytes padded string
+ *     - VICE version magic: "VICE Version\032" (13 bytes)
+ *     - VICE version: 4 bytes + revision 4 bytes
+ *   Modules (repeated):
+ *     - Name: 16 bytes padded string
+ *     - Major/minor version: 2 bytes
+ *     - Size: 4 bytes little-endian (includes header = 22 + data)
+ *     - Data: (size - 22) bytes
+ *
+ * C64MEM module data format (version 0.1):
+ *     - pport.data: 1 byte
+ *     - pport.dir: 1 byte
+ *     - export.exrom: 1 byte
+ *     - export.game: 1 byte
+ *     - RAM: 65536 bytes <-- This is what we extract
+ *     - Additional port state: 14 bytes
+ *
+ * Returns: Allocated buffer with 64KB of RAM, or NULL on error.
+ *          Caller must free the returned buffer with lib_free().
+ * ------------------------------------------------------------------------- */
+
+/* Magic strings for VSF format validation */
+#define VSF_MAGIC_STRING     "VICE Snapshot File\032"
+#define VSF_MAGIC_LEN        19
+#define VSF_MODULE_NAME_LEN  16
+#define VSF_MACHINE_NAME_LEN 16
+#define VSF_VERSION_MAGIC    "VICE Version\032"
+#define VSF_VERSION_MAGIC_LEN 13
+
+/* C64 memory size */
+#define C64_RAM_SIZE 65536
+
+/* Read a little-endian 32-bit value from a byte array */
+static uint32_t vsf_read_dword(const uint8_t *bytes)
+{
+    return (uint32_t)bytes[0] |
+           ((uint32_t)bytes[1] << 8) |
+           ((uint32_t)bytes[2] << 16) |
+           ((uint32_t)bytes[3] << 24);
+}
+
+/* Extract C64 RAM from a VSF snapshot file.
+ *
+ * Parameters:
+ *   vsf_path: Path to the .vsf file
+ *   ram_buffer: Pre-allocated buffer of at least 65536 bytes
+ *
+ * Returns: 0 on success, negative error code on failure
+ *   -1: Cannot open file
+ *   -2: Invalid magic string
+ *   -3: Machine mismatch (not C64)
+ *   -4: C64MEM module not found
+ *   -5: Module too small for RAM data
+ *   -6: Read error
+ */
+static int vsf_extract_c64_ram(const char *vsf_path, uint8_t *ram_buffer)
+{
+    FILE *f;
+    uint8_t header[64];
+    uint8_t module_header[22];
+    char module_name[VSF_MODULE_NAME_LEN + 1];
+    uint32_t module_size;
+    long module_offset;
+    size_t bytes_read;
+    int found_c64mem = 0;
+
+    /* Open the file */
+    f = fopen(vsf_path, "rb");
+    if (f == NULL) {
+        return -1;  /* Cannot open file */
+    }
+
+    /* Read and validate magic string */
+    bytes_read = fread(header, 1, VSF_MAGIC_LEN, f);
+    if (bytes_read < VSF_MAGIC_LEN ||
+        memcmp(header, VSF_MAGIC_STRING, VSF_MAGIC_LEN) != 0) {
+        fclose(f);
+        return -2;  /* Invalid magic string */
+    }
+
+    /* Skip version (2 bytes) */
+    fseek(f, 2, SEEK_CUR);
+
+    /* Read and check machine name (should be C64) */
+    bytes_read = fread(header, 1, VSF_MACHINE_NAME_LEN, f);
+    if (bytes_read < VSF_MACHINE_NAME_LEN) {
+        fclose(f);
+        return -6;  /* Read error */
+    }
+    /* Accept C64, C64SC, or similar */
+    if (strncmp((char*)header, "C64", 3) != 0) {
+        fclose(f);
+        return -3;  /* Machine mismatch */
+    }
+
+    /* Try to skip VICE version info (newer snapshots have this) */
+    bytes_read = fread(header, 1, VSF_VERSION_MAGIC_LEN, f);
+    if (bytes_read == VSF_VERSION_MAGIC_LEN &&
+        memcmp(header, VSF_VERSION_MAGIC, VSF_VERSION_MAGIC_LEN) == 0) {
+        /* Skip version bytes (4) + revision (4) */
+        fseek(f, 8, SEEK_CUR);
+    } else {
+        /* Old format - rewind to where modules start */
+        fseek(f, VSF_MAGIC_LEN + 2 + VSF_MACHINE_NAME_LEN, SEEK_SET);
+    }
+
+    /* Now we're at the start of modules - search for C64MEM */
+    while (!found_c64mem) {
+        module_offset = ftell(f);
+
+        /* Read module header */
+        bytes_read = fread(module_header, 1, 22, f);
+        if (bytes_read < 22) {
+            fclose(f);
+            return -4;  /* C64MEM module not found */
+        }
+
+        /* Extract module name (null-terminate) */
+        memcpy(module_name, module_header, VSF_MODULE_NAME_LEN);
+        module_name[VSF_MODULE_NAME_LEN] = '\0';
+
+        /* Extract module size (little-endian) */
+        module_size = vsf_read_dword(module_header + 18);
+
+        /* Validate module_size to prevent infinite loop on corrupted files */
+        if (module_size < 22) {
+            fclose(f);
+            return -5;  /* Module corrupted/invalid size */
+        }
+
+        /* Check if this is C64MEM */
+        if (strcmp(module_name, "C64MEM") == 0) {
+            found_c64mem = 1;
+
+            /* Module size includes header (22 bytes) + data
+             * We need: 4 bytes (pport stuff) + 65536 bytes (RAM) */
+            if (module_size < 22 + 4 + C64_RAM_SIZE) {
+                fclose(f);
+                return -5;  /* Module too small */
+            }
+
+            /* Skip pport.data, pport.dir, exrom, game (4 bytes) */
+            fseek(f, 4, SEEK_CUR);
+
+            /* Read the RAM */
+            bytes_read = fread(ram_buffer, 1, C64_RAM_SIZE, f);
+            if (bytes_read < C64_RAM_SIZE) {
+                fclose(f);
+                return -6;  /* Read error */
+            }
+
+            fclose(f);
+            return 0;  /* Success */
+        }
+
+        /* Skip to next module */
+        if (fseek(f, module_offset + module_size, SEEK_SET) != 0) {
+            fclose(f);
+            return -4;  /* C64MEM module not found */
+        }
+    }
+
+    fclose(f);
+    return -4;  /* C64MEM module not found */
+}
+
 /* Write JSON metadata sidecar file for snapshot */
 static int mcp_write_snapshot_metadata(const char *vsf_path, const char *name,
                                         const char *description, int include_roms,
@@ -1235,12 +1412,21 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "mode", mcp_prop_string(
                 "Comparison mode: 'ranges' to compare two memory ranges, 'snapshot' to compare against saved state"));
+            /* Parameters for ranges mode */
             cJSON_AddItemToObject(props, "range1_start", mcp_prop_string(
                 "Start address of first range (for mode='ranges'): number, hex string ($1000), or symbol"));
             cJSON_AddItemToObject(props, "range1_end", mcp_prop_string(
                 "End address of first range (for mode='ranges'): number, hex string ($1FFF), or symbol"));
             cJSON_AddItemToObject(props, "range2_start", mcp_prop_string(
                 "Start address of second range (for mode='ranges'): number, hex string ($2000), or symbol"));
+            /* Parameters for snapshot mode */
+            cJSON_AddItemToObject(props, "snapshot_name", mcp_prop_string(
+                "Name of snapshot to compare against (for mode='snapshot')"));
+            cJSON_AddItemToObject(props, "start", mcp_prop_string(
+                "Start address to compare (for mode='snapshot'): number, hex string ($A000), or symbol"));
+            cJSON_AddItemToObject(props, "end", mcp_prop_string(
+                "End address to compare (for mode='snapshot'): number, hex string ($BFFF), or symbol"));
+            /* Common parameters */
             cJSON_AddItemToObject(props, "max_differences", mcp_prop_number(
                 "Maximum differences to return (default: 100, max: 10000)"));
             required = cJSON_CreateArray();
@@ -5860,9 +6046,191 @@ cJSON* mcp_tool_memory_compare(cJSON *params)
 
     } else if (strcmp(mode_str, "snapshot") == 0) {
         /* --- Mode: snapshot - compare against saved snapshot --- */
-        /* This will be implemented in Phase 5.2 Task 5 */
-        return mcp_error(MCP_ERROR_NOT_IMPLEMENTED,
-            "snapshot mode not yet implemented (Phase 5.2 Task 5)");
+        cJSON *snapshot_name_item, *start_item, *end_item;
+        const char *snapshot_name;
+        char *snapshots_dir;
+        char *vsf_path;
+        uint8_t *snapshot_ram;
+        int start_addr, end_addr;
+        int vsf_result;
+
+        /* Get and validate snapshot_name */
+        snapshot_name_item = cJSON_GetObjectItem(params, "snapshot_name");
+        if (snapshot_name_item == NULL || !cJSON_IsString(snapshot_name_item)) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                "snapshot_name parameter required for snapshot mode");
+        }
+        snapshot_name = snapshot_name_item->valuestring;
+
+        /* Validate name format */
+        if (snapshot_name[0] == '\0') {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "snapshot_name cannot be empty");
+        }
+        {
+            const char *p;
+            for (p = snapshot_name; *p; p++) {
+                if (!isalnum((unsigned char)*p) && *p != '_' && *p != '-') {
+                    return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                        "Invalid snapshot name: use only alphanumeric characters, underscores, and hyphens");
+                }
+            }
+        }
+
+        /* Get and validate start address */
+        start_item = cJSON_GetObjectItem(params, "start");
+        if (start_item == NULL) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                "start address required for snapshot mode");
+        }
+        start_addr = mcp_resolve_address(start_item, &error_msg);
+        if (start_addr < 0) {
+            char err_buf[128];
+            snprintf(err_buf, sizeof(err_buf), "Cannot resolve start address: %s", error_msg);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+        }
+
+        /* Get and validate end address */
+        end_item = cJSON_GetObjectItem(params, "end");
+        if (end_item == NULL) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                "end address required for snapshot mode");
+        }
+        end_addr = mcp_resolve_address(end_item, &error_msg);
+        if (end_addr < 0) {
+            char err_buf[128];
+            snprintf(err_buf, sizeof(err_buf), "Cannot resolve end address: %s", error_msg);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+        }
+
+        /* Validate range order */
+        if (end_addr < start_addr) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                "end address must be >= start address");
+        }
+
+        /* Get optional max_differences */
+        max_diff_item = cJSON_GetObjectItem(params, "max_differences");
+        if (max_diff_item != NULL && cJSON_IsNumber(max_diff_item)) {
+            max_differences = max_diff_item->valueint;
+            if (max_differences < 1) {
+                max_differences = 1;
+            }
+            if (max_differences > 10000) {
+                max_differences = 10000;
+            }
+        }
+
+        /* Build path to snapshot file */
+        snapshots_dir = mcp_get_snapshots_dir();
+        if (snapshots_dir == NULL) {
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR,
+                "Failed to access snapshots directory");
+        }
+
+        vsf_path = util_join_paths(snapshots_dir, snapshot_name, NULL);
+        lib_free(snapshots_dir);
+        if (vsf_path == NULL) {
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to build snapshot path");
+        }
+
+        /* Add .vsf extension */
+        {
+            size_t len = strlen(vsf_path);
+            char *full_path = lib_malloc(len + 5);  /* +5 for ".vsf\0" */
+            if (full_path == NULL) {
+                lib_free(vsf_path);
+                return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+            }
+            sprintf(full_path, "%s.vsf", vsf_path);
+            lib_free(vsf_path);
+            vsf_path = full_path;
+        }
+
+        /* Allocate buffer for snapshot RAM */
+        snapshot_ram = lib_malloc(C64_RAM_SIZE);
+        if (snapshot_ram == NULL) {
+            lib_free(vsf_path);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        /* Extract RAM from snapshot file */
+        vsf_result = vsf_extract_c64_ram(vsf_path, snapshot_ram);
+        if (vsf_result != 0) {
+            lib_free(vsf_path);
+            lib_free(snapshot_ram);
+            switch (vsf_result) {
+                case -1:
+                    return mcp_error(MCP_ERROR_SNAPSHOT_FAILED,
+                        "Cannot open snapshot file - does it exist?");
+                case -2:
+                    return mcp_error(MCP_ERROR_SNAPSHOT_FAILED,
+                        "Invalid snapshot file format");
+                case -3:
+                    return mcp_error(MCP_ERROR_SNAPSHOT_FAILED,
+                        "Snapshot is not for C64 machine");
+                case -4:
+                    return mcp_error(MCP_ERROR_SNAPSHOT_FAILED,
+                        "C64MEM module not found in snapshot");
+                case -5:
+                    return mcp_error(MCP_ERROR_SNAPSHOT_FAILED,
+                        "Snapshot C64MEM module is corrupted");
+                default:
+                    return mcp_error(MCP_ERROR_SNAPSHOT_FAILED,
+                        "Failed to read snapshot file");
+            }
+        }
+
+        /* Create differences array */
+        differences_array = cJSON_CreateArray();
+        if (differences_array == NULL) {
+            lib_free(vsf_path);
+            lib_free(snapshot_ram);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        /* Calculate range size */
+        range_size = (long)(end_addr - start_addr) + 1;
+
+        /* Compare byte-by-byte: current memory vs snapshot */
+        for (offset = 0; offset < range_size; offset++) {
+            uint16_t addr = (uint16_t)(start_addr + offset);
+
+            byte1 = mem_read(addr);       /* Current memory */
+            byte2 = snapshot_ram[addr];   /* Snapshot memory */
+
+            if (byte1 != byte2) {
+                total_differences++;
+
+                /* Only add to array if under limit */
+                if (differences_returned < max_differences) {
+                    cJSON *diff_obj = cJSON_CreateObject();
+                    if (diff_obj != NULL) {
+                        snprintf(addr_str, sizeof(addr_str), "$%04X", addr);
+                        cJSON_AddStringToObject(diff_obj, "address", addr_str);
+                        cJSON_AddNumberToObject(diff_obj, "current", byte1);
+                        cJSON_AddNumberToObject(diff_obj, "reference", byte2);
+                        cJSON_AddItemToArray(differences_array, diff_obj);
+                        differences_returned++;
+                    }
+                }
+            }
+        }
+
+        lib_free(vsf_path);
+        lib_free(snapshot_ram);
+
+        /* Build response */
+        response = cJSON_CreateObject();
+        if (response == NULL) {
+            cJSON_Delete(differences_array);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        cJSON_AddItemToObject(response, "differences", differences_array);
+        cJSON_AddNumberToObject(response, "total_differences", total_differences);
+        cJSON_AddBoolToObject(response, "truncated", total_differences > differences_returned);
+
+        return response;
 
     } else {
         /* Unknown mode */

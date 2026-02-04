@@ -718,3 +718,125 @@ unsigned long mon_stopwatch_get_elapsed(void)
 {
     return test_stopwatch_current_clock - test_stopwatch_start;
 }
+
+/* =============================================================================
+ * Snapshot Memory Test Support
+ *
+ * Provides test support for the vice.memory.compare snapshot mode.
+ * Allows tests to create mock VSF (VICE Snapshot Format) files with
+ * specific memory contents for comparing against live memory.
+ * ============================================================================= */
+
+/* Storage for mock snapshot memory - 64KB for C64 memory */
+static uint8_t test_snapshot_memory[65536];
+static int test_snapshot_memory_valid = 0;
+
+/* Set snapshot memory contents for testing */
+void test_snapshot_memory_set(uint16_t addr, const uint8_t *data, size_t len)
+{
+    size_t i;
+    for (i = 0; i < len && (addr + i) < 65536; i++) {
+        test_snapshot_memory[addr + i] = data[i];
+    }
+    test_snapshot_memory_valid = 1;
+}
+
+/* Set a single byte in snapshot memory */
+void test_snapshot_memory_set_byte(uint16_t addr, uint8_t value)
+{
+    test_snapshot_memory[addr] = value;
+    test_snapshot_memory_valid = 1;
+}
+
+/* Clear snapshot memory to all zeros */
+void test_snapshot_memory_clear(void)
+{
+    memset(test_snapshot_memory, 0, sizeof(test_snapshot_memory));
+    test_snapshot_memory_valid = 1;
+}
+
+/* Get a single byte from snapshot memory */
+uint8_t test_snapshot_memory_get_byte(uint16_t addr)
+{
+    return test_snapshot_memory[addr];
+}
+
+/* Invalidate snapshot memory (simulate file not found) */
+void test_snapshot_memory_invalidate(void)
+{
+    test_snapshot_memory_valid = 0;
+}
+
+/* Check if snapshot memory is valid */
+int test_snapshot_memory_is_valid(void)
+{
+    return test_snapshot_memory_valid;
+}
+
+/* Create a mock VSF file at the given path with the current test_snapshot_memory contents.
+ * This creates a minimal valid VSF file structure that the real parser can read.
+ *
+ * VSF format:
+ *   - Magic: "VICE Snapshot File\032" (19 bytes)
+ *   - Version: major (1), minor (1)
+ *   - Machine name: "C64" padded to 16 bytes
+ *   - VICE version magic: "VICE Version\032" (13 bytes)
+ *   - VICE version: 4 bytes + revision 4 bytes
+ *   - C64MEM module:
+ *     - Name: "C64MEM" padded to 16 bytes
+ *     - Major/minor version: 2 bytes
+ *     - Size: 4 bytes (little-endian, includes header = 22 + data size)
+ *     - pport.data, pport.dir, exrom, game: 4 bytes
+ *     - RAM: 65536 bytes
+ *     - More port state data (14 bytes for version 0.1)
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+int test_create_mock_vsf(const char *path)
+{
+    FILE *f;
+    static const char magic[] = "VICE Snapshot File\032";
+    static const char version_magic[] = "VICE Version\032";
+    static const char machine_name[16] = "C64\0\0\0\0\0\0\0\0\0\0\0\0\0";
+    static const char module_name[16] = "C64MEM\0\0\0\0\0\0\0\0\0\0";
+    uint8_t header[4] = {0, 0, 0, 0};  /* pport.data, pport.dir, exrom, game */
+    uint8_t port_state[14] = {0};  /* Additional port state for v0.1 */
+    uint32_t module_size;
+    uint8_t size_bytes[4];
+
+    f = fopen(path, "wb");
+    if (f == NULL) {
+        return -1;
+    }
+
+    /* Write file header */
+    fwrite(magic, 1, 19, f);  /* Magic string */
+    fputc(1, f); fputc(0, f);  /* Version 1.0 */
+    fwrite(machine_name, 1, 16, f);  /* Machine name */
+
+    /* Write VICE version info */
+    fwrite(version_magic, 1, 13, f);
+    fputc(3, f); fputc(9, f); fputc(0, f); fputc(0, f);  /* VICE 3.9.0.0 */
+    fputc(0, f); fputc(0, f); fputc(0, f); fputc(0, f);  /* Revision 0 */
+
+    /* Write C64MEM module */
+    fwrite(module_name, 1, 16, f);  /* Module name */
+    fputc(0, f);  /* Major version 0 */
+    fputc(1, f);  /* Minor version 1 */
+
+    /* Module size: header(22) + pport(4) + RAM(65536) + port_state(14) */
+    module_size = 22 + 4 + 65536 + 14;
+    size_bytes[0] = module_size & 0xFF;
+    size_bytes[1] = (module_size >> 8) & 0xFF;
+    size_bytes[2] = (module_size >> 16) & 0xFF;
+    size_bytes[3] = (module_size >> 24) & 0xFF;
+    fwrite(size_bytes, 1, 4, f);
+
+    /* Module data */
+    fwrite(header, 1, 4, f);  /* pport.data, pport.dir, exrom, game */
+    fwrite(test_snapshot_memory, 1, 65536, f);  /* RAM */
+    fwrite(port_state, 1, 14, f);  /* Additional port state */
+
+    fclose(f);
+    return 0;
+}

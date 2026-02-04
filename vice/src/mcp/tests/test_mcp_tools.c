@@ -3373,6 +3373,343 @@ TEST(memory_compare_ranges_single_byte)
     cJSON_Delete(response);
 }
 
+/* =================================================================
+ * Memory Compare Tests (snapshot mode)
+ * ================================================================= */
+
+/* Test helper declarations for snapshot memory */
+extern void test_snapshot_memory_set_byte(uint16_t addr, uint8_t value);
+extern void test_snapshot_memory_clear(void);
+extern void test_snapshot_memory_invalidate(void);
+extern int test_create_mock_vsf(const char *path);
+
+/* Test: memory.compare snapshot mode requires snapshot_name */
+TEST(memory_compare_snapshot_requires_snapshot_name)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "snapshot");
+    cJSON_AddNumberToObject(params, "start", 0x1000);
+    cJSON_AddNumberToObject(params, "end", 0x1010);
+    /* Missing snapshot_name */
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare snapshot mode requires start address */
+TEST(memory_compare_snapshot_requires_start)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "snapshot");
+    cJSON_AddStringToObject(params, "snapshot_name", "test_snap");
+    cJSON_AddNumberToObject(params, "end", 0x1010);
+    /* Missing start */
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare snapshot mode requires end address */
+TEST(memory_compare_snapshot_requires_end)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "snapshot");
+    cJSON_AddStringToObject(params, "snapshot_name", "test_snap");
+    cJSON_AddNumberToObject(params, "start", 0x1000);
+    /* Missing end */
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare snapshot mode validates range order */
+TEST(memory_compare_snapshot_validates_range_order)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "snapshot");
+    cJSON_AddStringToObject(params, "snapshot_name", "test_snap");
+    cJSON_AddNumberToObject(params, "start", 0x2000);  /* end < start */
+    cJSON_AddNumberToObject(params, "end", 0x1000);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare snapshot mode fails gracefully with nonexistent snapshot */
+TEST(memory_compare_snapshot_nonexistent_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "snapshot");
+    cJSON_AddStringToObject(params, "snapshot_name", "nonexistent_snapshot_12345");
+    cJSON_AddNumberToObject(params, "start", 0x1000);
+    cJSON_AddNumberToObject(params, "end", 0x1010);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should fail because snapshot doesn't exist */
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    /* Could be INVALID_PARAMS or SNAPSHOT_FAILED depending on implementation */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare snapshot mode finds differences */
+TEST(memory_compare_snapshot_finds_differences)
+{
+    cJSON *response, *params;
+    cJSON *differences_item, *total_item, *diff0;
+    cJSON *addr_item, *current_item, *reference_item;
+    char vsf_path[256];
+
+    /* Set up current memory */
+    test_memory_clear();
+    test_memory_set_byte(0x1000, 0xAA);
+    test_memory_set_byte(0x1001, 0xBB);
+    test_memory_set_byte(0x1002, 0xCC);
+
+    /* Set up snapshot memory (different values) */
+    test_snapshot_memory_clear();
+    test_snapshot_memory_set_byte(0x1000, 0x11);  /* Different */
+    test_snapshot_memory_set_byte(0x1001, 0xBB);  /* Same */
+    test_snapshot_memory_set_byte(0x1002, 0x33);  /* Different */
+
+    /* Create mock VSF file */
+    snprintf(vsf_path, sizeof(vsf_path), "/tmp/vice-test-config/mcp_snapshots/test_compare.vsf");
+    /* Ensure directory exists - archdep_mkdir is stubbed */
+    test_create_mock_vsf(vsf_path);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "snapshot");
+    cJSON_AddStringToObject(params, "snapshot_name", "test_compare");
+    cJSON_AddNumberToObject(params, "start", 0x1000);
+    cJSON_AddNumberToObject(params, "end", 0x1002);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should find 2 differences (0x1000 and 0x1002) */
+    total_item = cJSON_GetObjectItem(response, "total_differences");
+    ASSERT_NOT_NULL(total_item);
+    ASSERT_INT_EQ(total_item->valueint, 2);
+
+    /* Check first difference */
+    differences_item = cJSON_GetObjectItem(response, "differences");
+    ASSERT_NOT_NULL(differences_item);
+    diff0 = cJSON_GetArrayItem(differences_item, 0);
+    ASSERT_NOT_NULL(diff0);
+
+    addr_item = cJSON_GetObjectItem(diff0, "address");
+    ASSERT_NOT_NULL(addr_item);
+    ASSERT_STR_EQ(addr_item->valuestring, "$1000");
+
+    current_item = cJSON_GetObjectItem(diff0, "current");
+    ASSERT_NOT_NULL(current_item);
+    ASSERT_INT_EQ(current_item->valueint, 0xAA);
+
+    reference_item = cJSON_GetObjectItem(diff0, "reference");
+    ASSERT_NOT_NULL(reference_item);
+    ASSERT_INT_EQ(reference_item->valueint, 0x11);
+
+    /* Clean up */
+    remove(vsf_path);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare snapshot mode identical memory returns no differences */
+TEST(memory_compare_snapshot_identical_returns_no_differences)
+{
+    cJSON *response, *params;
+    cJSON *total_item, *truncated_item;
+    char vsf_path[256];
+
+    /* Set up current memory */
+    test_memory_clear();
+    test_memory_set_byte(0x2000, 0x42);
+    test_memory_set_byte(0x2001, 0x43);
+    test_memory_set_byte(0x2002, 0x44);
+
+    /* Set up snapshot memory with same values */
+    test_snapshot_memory_clear();
+    test_snapshot_memory_set_byte(0x2000, 0x42);
+    test_snapshot_memory_set_byte(0x2001, 0x43);
+    test_snapshot_memory_set_byte(0x2002, 0x44);
+
+    /* Create mock VSF file */
+    snprintf(vsf_path, sizeof(vsf_path), "/tmp/vice-test-config/mcp_snapshots/test_identical.vsf");
+    test_create_mock_vsf(vsf_path);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "snapshot");
+    cJSON_AddStringToObject(params, "snapshot_name", "test_identical");
+    cJSON_AddNumberToObject(params, "start", 0x2000);
+    cJSON_AddNumberToObject(params, "end", 0x2002);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should find 0 differences */
+    total_item = cJSON_GetObjectItem(response, "total_differences");
+    ASSERT_NOT_NULL(total_item);
+    ASSERT_INT_EQ(total_item->valueint, 0);
+
+    truncated_item = cJSON_GetObjectItem(response, "truncated");
+    ASSERT_NOT_NULL(truncated_item);
+    ASSERT_TRUE(cJSON_IsFalse(truncated_item));
+
+    /* Clean up */
+    remove(vsf_path);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare snapshot mode respects max_differences */
+TEST(memory_compare_snapshot_respects_max_differences)
+{
+    cJSON *response, *params;
+    cJSON *differences_item, *total_item, *truncated_item;
+    char vsf_path[256];
+    int i;
+
+    /* Set up current memory with different values than snapshot */
+    test_memory_clear();
+    test_snapshot_memory_clear();
+    for (i = 0; i < 20; i++) {
+        test_memory_set_byte(0x3000 + i, (uint8_t)(0x10 + i));
+        test_snapshot_memory_set_byte(0x3000 + i, (uint8_t)(0x80 + i));  /* All different */
+    }
+
+    /* Create mock VSF file */
+    snprintf(vsf_path, sizeof(vsf_path), "/tmp/vice-test-config/mcp_snapshots/test_max_diff.vsf");
+    test_create_mock_vsf(vsf_path);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "snapshot");
+    cJSON_AddStringToObject(params, "snapshot_name", "test_max_diff");
+    cJSON_AddNumberToObject(params, "start", 0x3000);
+    cJSON_AddNumberToObject(params, "end", 0x3013);  /* 20 bytes */
+    cJSON_AddNumberToObject(params, "max_differences", 5);  /* Only return 5 */
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should find 20 total differences */
+    total_item = cJSON_GetObjectItem(response, "total_differences");
+    ASSERT_NOT_NULL(total_item);
+    ASSERT_INT_EQ(total_item->valueint, 20);
+
+    /* But only return 5 */
+    differences_item = cJSON_GetObjectItem(response, "differences");
+    ASSERT_NOT_NULL(differences_item);
+    ASSERT_INT_EQ(cJSON_GetArraySize(differences_item), 5);
+
+    /* Should be truncated */
+    truncated_item = cJSON_GetObjectItem(response, "truncated");
+    ASSERT_NOT_NULL(truncated_item);
+    ASSERT_TRUE(cJSON_IsTrue(truncated_item));
+
+    /* Clean up */
+    remove(vsf_path);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare snapshot mode supports hex string addresses */
+TEST(memory_compare_snapshot_hex_string_addresses)
+{
+    cJSON *response, *params;
+    cJSON *total_item;
+    char vsf_path[256];
+
+    /* Set up current memory */
+    test_memory_clear();
+    test_memory_set_byte(0x4000, 0xFF);
+
+    /* Set up snapshot memory (different) */
+    test_snapshot_memory_clear();
+    test_snapshot_memory_set_byte(0x4000, 0x00);
+
+    /* Create mock VSF file */
+    snprintf(vsf_path, sizeof(vsf_path), "/tmp/vice-test-config/mcp_snapshots/test_hex.vsf");
+    test_create_mock_vsf(vsf_path);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "snapshot");
+    cJSON_AddStringToObject(params, "snapshot_name", "test_hex");
+    cJSON_AddStringToObject(params, "start", "$4000");  /* Hex string */
+    cJSON_AddStringToObject(params, "end", "$4000");    /* Single byte */
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should find 1 difference */
+    total_item = cJSON_GetObjectItem(response, "total_differences");
+    ASSERT_NOT_NULL(total_item);
+    ASSERT_INT_EQ(total_item->valueint, 1);
+
+    /* Clean up */
+    remove(vsf_path);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -3550,6 +3887,17 @@ int main(void)
     RUN_TEST(memory_compare_ranges_hex_string_addresses);
     RUN_TEST(memory_compare_ranges_dispatch_works);
     RUN_TEST(memory_compare_ranges_single_byte);
+
+    /* Memory compare tests (snapshot mode) */
+    RUN_TEST(memory_compare_snapshot_requires_snapshot_name);
+    RUN_TEST(memory_compare_snapshot_requires_start);
+    RUN_TEST(memory_compare_snapshot_requires_end);
+    RUN_TEST(memory_compare_snapshot_validates_range_order);
+    RUN_TEST(memory_compare_snapshot_nonexistent_returns_error);
+    RUN_TEST(memory_compare_snapshot_finds_differences);
+    RUN_TEST(memory_compare_snapshot_identical_returns_no_differences);
+    RUN_TEST(memory_compare_snapshot_respects_max_differences);
+    RUN_TEST(memory_compare_snapshot_hex_string_addresses);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);
