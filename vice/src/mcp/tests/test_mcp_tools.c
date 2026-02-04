@@ -4881,6 +4881,476 @@ TEST(checkpoint_clear_auto_snapshot_dispatch_works)
     cJSON_Delete(response);
 }
 
+/* =================================================================
+ * Phase 5.4: Trace Tools Tests
+ * ================================================================= */
+
+/* Trace tool declarations */
+extern cJSON* mcp_tool_trace_start(cJSON *params);
+extern cJSON* mcp_tool_trace_stop(cJSON *params);
+
+/* Trace config reset function - from libmcp.a */
+extern void mcp_trace_configs_reset(void);
+
+static void test_trace_configs_reset(void)
+{
+    mcp_trace_configs_reset();
+}
+
+/* Test: trace.start requires output_file */
+TEST(trace_start_requires_output_file)
+{
+    cJSON *response, *params, *code_item;
+
+    test_trace_configs_reset();
+
+    params = cJSON_CreateObject();
+    /* Missing output_file */
+
+    response = mcp_tool_trace_start(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(cJSON_IsNumber(code_item));
+    ASSERT_TRUE(code_item->valueint == -32602);  /* INVALID_PARAMS */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: trace.start null params returns error */
+TEST(trace_start_null_params_returns_error)
+{
+    cJSON *response, *code_item;
+
+    test_trace_configs_reset();
+
+    response = mcp_tool_trace_start(NULL);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(cJSON_IsNumber(code_item));
+    ASSERT_TRUE(code_item->valueint == -32602);  /* INVALID_PARAMS */
+
+    cJSON_Delete(response);
+}
+
+/* Test: trace.start rejects empty output_file */
+TEST(trace_start_rejects_empty_output_file)
+{
+    cJSON *response, *params, *code_item;
+
+    test_trace_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "output_file", "");
+
+    response = mcp_tool_trace_start(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: trace.start with valid params succeeds */
+TEST(trace_start_with_valid_params_succeeds)
+{
+    cJSON *response, *params;
+    cJSON *trace_id_item, *file_item, *pc_filter, *max_item, *regs_item;
+
+    test_trace_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "output_file", "/tmp/trace.txt");
+
+    response = mcp_tool_trace_start(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    trace_id_item = cJSON_GetObjectItem(response, "trace_id");
+    ASSERT_NOT_NULL(trace_id_item);
+    ASSERT_TRUE(cJSON_IsString(trace_id_item));
+    ASSERT_TRUE(strncmp(trace_id_item->valuestring, "trace_", 6) == 0);
+
+    file_item = cJSON_GetObjectItem(response, "output_file");
+    ASSERT_NOT_NULL(file_item);
+    ASSERT_TRUE(strcmp(file_item->valuestring, "/tmp/trace.txt") == 0);
+
+    pc_filter = cJSON_GetObjectItem(response, "pc_filter");
+    ASSERT_NOT_NULL(pc_filter);
+    cJSON *start = cJSON_GetObjectItem(pc_filter, "start");
+    cJSON *end = cJSON_GetObjectItem(pc_filter, "end");
+    ASSERT_NOT_NULL(start);
+    ASSERT_NOT_NULL(end);
+    ASSERT_TRUE(start->valueint == 0);
+    ASSERT_TRUE(end->valueint == 65535);
+
+    max_item = cJSON_GetObjectItem(response, "max_instructions");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 10000);  /* Default */
+
+    regs_item = cJSON_GetObjectItem(response, "include_registers");
+    ASSERT_NOT_NULL(regs_item);
+    ASSERT_TRUE(cJSON_IsFalse(regs_item));  /* Default */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: trace.start with all options */
+TEST(trace_start_with_all_options)
+{
+    cJSON *response, *params;
+    cJSON *pc_filter, *max_item, *regs_item;
+
+    test_trace_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "output_file", "/tmp/full_trace.txt");
+    cJSON_AddNumberToObject(params, "pc_filter_start", 0xC000);
+    cJSON_AddNumberToObject(params, "pc_filter_end", 0xCFFF);
+    cJSON_AddNumberToObject(params, "max_instructions", 5000);
+    cJSON_AddBoolToObject(params, "include_registers", true);
+
+    response = mcp_tool_trace_start(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    pc_filter = cJSON_GetObjectItem(response, "pc_filter");
+    ASSERT_NOT_NULL(pc_filter);
+    cJSON *start = cJSON_GetObjectItem(pc_filter, "start");
+    cJSON *end = cJSON_GetObjectItem(pc_filter, "end");
+    ASSERT_TRUE(start->valueint == 0xC000);
+    ASSERT_TRUE(end->valueint == 0xCFFF);
+
+    max_item = cJSON_GetObjectItem(response, "max_instructions");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 5000);
+
+    regs_item = cJSON_GetObjectItem(response, "include_registers");
+    ASSERT_NOT_NULL(regs_item);
+    ASSERT_TRUE(cJSON_IsTrue(regs_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: trace.start rejects invalid PC filter range */
+TEST(trace_start_rejects_invalid_pc_filter_range)
+{
+    cJSON *response, *params, *code_item;
+
+    test_trace_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "output_file", "/tmp/trace.txt");
+    cJSON_AddNumberToObject(params, "pc_filter_start", 0xD000);
+    cJSON_AddNumberToObject(params, "pc_filter_end", 0xC000);  /* End < Start */
+
+    response = mcp_tool_trace_start(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: trace.start clamps max_instructions */
+TEST(trace_start_clamps_max_instructions)
+{
+    cJSON *response, *params;
+    cJSON *max_item;
+
+    test_trace_configs_reset();
+
+    /* Test lower bound clamp */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "output_file", "/tmp/trace1.txt");
+    cJSON_AddNumberToObject(params, "max_instructions", 0);
+
+    response = mcp_tool_trace_start(params);
+    ASSERT_NOT_NULL(response);
+
+    max_item = cJSON_GetObjectItem(response, "max_instructions");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 1);  /* Clamped to minimum */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    test_trace_configs_reset();
+
+    /* Test upper bound clamp */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "output_file", "/tmp/trace2.txt");
+    cJSON_AddNumberToObject(params, "max_instructions", 5000000);
+
+    response = mcp_tool_trace_start(params);
+    ASSERT_NOT_NULL(response);
+
+    max_item = cJSON_GetObjectItem(response, "max_instructions");
+    ASSERT_NOT_NULL(max_item);
+    ASSERT_TRUE(max_item->valueint == 1000000);  /* Clamped to maximum */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: trace.stop requires trace_id */
+TEST(trace_stop_requires_trace_id)
+{
+    cJSON *response, *params, *code_item;
+
+    test_trace_configs_reset();
+
+    params = cJSON_CreateObject();
+    /* Missing trace_id */
+
+    response = mcp_tool_trace_stop(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: trace.stop null params returns error */
+TEST(trace_stop_null_params_returns_error)
+{
+    cJSON *response, *code_item;
+
+    test_trace_configs_reset();
+
+    response = mcp_tool_trace_stop(NULL);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(response);
+}
+
+/* Test: trace.stop rejects empty trace_id */
+TEST(trace_stop_rejects_empty_trace_id)
+{
+    cJSON *response, *params, *code_item;
+
+    test_trace_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "trace_id", "");
+
+    response = mcp_tool_trace_stop(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint == -32602);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: trace.stop nonexistent returns stopped=false */
+TEST(trace_stop_nonexistent_returns_false)
+{
+    cJSON *response, *params;
+    cJSON *stopped_item;
+
+    test_trace_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "trace_id", "trace_nonexistent");
+
+    response = mcp_tool_trace_stop(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    stopped_item = cJSON_GetObjectItem(response, "stopped");
+    ASSERT_NOT_NULL(stopped_item);
+    ASSERT_TRUE(cJSON_IsFalse(stopped_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: trace.stop stops existing trace */
+TEST(trace_stop_stops_existing_trace)
+{
+    cJSON *start_response, *stop_response, *start_params, *stop_params;
+    cJSON *trace_id_item, *stopped_item, *instr_item, *file_item, *cycles_item;
+    const char *trace_id;
+
+    test_trace_configs_reset();
+
+    /* First start a trace */
+    start_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(start_params, "output_file", "/tmp/to_stop.txt");
+
+    start_response = mcp_tool_trace_start(start_params);
+    ASSERT_NOT_NULL(start_response);
+
+    trace_id_item = cJSON_GetObjectItem(start_response, "trace_id");
+    ASSERT_NOT_NULL(trace_id_item);
+    trace_id = trace_id_item->valuestring;
+
+    /* Now stop it */
+    stop_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(stop_params, "trace_id", trace_id);
+
+    stop_response = mcp_tool_trace_stop(stop_params);
+    ASSERT_NOT_NULL(stop_response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(stop_response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    stopped_item = cJSON_GetObjectItem(stop_response, "stopped");
+    ASSERT_NOT_NULL(stopped_item);
+    ASSERT_TRUE(cJSON_IsTrue(stopped_item));
+
+    instr_item = cJSON_GetObjectItem(stop_response, "instructions_recorded");
+    ASSERT_NOT_NULL(instr_item);
+    ASSERT_TRUE(instr_item->valueint == 0);  /* No actual tracing happened */
+
+    file_item = cJSON_GetObjectItem(stop_response, "output_file");
+    ASSERT_NOT_NULL(file_item);
+    ASSERT_TRUE(strcmp(file_item->valuestring, "/tmp/to_stop.txt") == 0);
+
+    cycles_item = cJSON_GetObjectItem(stop_response, "cycles_elapsed");
+    ASSERT_NOT_NULL(cycles_item);
+    /* cycles_elapsed depends on maincpu_clk stub value */
+
+    cJSON_Delete(start_params);
+    cJSON_Delete(start_response);
+    cJSON_Delete(stop_params);
+    cJSON_Delete(stop_response);
+
+    /* Verify it's actually stopped by trying to stop again */
+    stop_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(stop_params, "trace_id", trace_id);
+
+    stop_response = mcp_tool_trace_stop(stop_params);
+    ASSERT_NOT_NULL(stop_response);
+
+    stopped_item = cJSON_GetObjectItem(stop_response, "stopped");
+    ASSERT_NOT_NULL(stopped_item);
+    ASSERT_TRUE(cJSON_IsFalse(stopped_item));  /* Now returns false */
+
+    cJSON_Delete(stop_params);
+    cJSON_Delete(stop_response);
+}
+
+/* Test: trace.start dispatch works */
+TEST(trace_start_dispatch_works)
+{
+    cJSON *response, *params;
+    cJSON *trace_id_item;
+
+    test_trace_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "output_file", "/tmp/dispatch_test.txt");
+
+    response = mcp_tools_dispatch("vice.trace.start", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    trace_id_item = cJSON_GetObjectItem(response, "trace_id");
+    ASSERT_NOT_NULL(trace_id_item);
+    ASSERT_TRUE(cJSON_IsString(trace_id_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: trace.stop dispatch works */
+TEST(trace_stop_dispatch_works)
+{
+    cJSON *response, *params;
+    cJSON *stopped_item;
+
+    test_trace_configs_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "trace_id", "trace_1");
+
+    response = mcp_tools_dispatch("vice.trace.stop", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    stopped_item = cJSON_GetObjectItem(response, "stopped");
+    ASSERT_NOT_NULL(stopped_item);
+    /* Note: stopped may be true or false depending on previous state */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: multiple traces can run simultaneously */
+TEST(trace_multiple_traces_run_simultaneously)
+{
+    cJSON *response1, *response2, *params1, *params2;
+    cJSON *trace_id1_item, *trace_id2_item;
+    const char *trace_id1, *trace_id2;
+
+    test_trace_configs_reset();
+
+    /* Start first trace */
+    params1 = cJSON_CreateObject();
+    cJSON_AddStringToObject(params1, "output_file", "/tmp/trace1.txt");
+    response1 = mcp_tool_trace_start(params1);
+    ASSERT_NOT_NULL(response1);
+    trace_id1_item = cJSON_GetObjectItem(response1, "trace_id");
+    ASSERT_NOT_NULL(trace_id1_item);
+    trace_id1 = trace_id1_item->valuestring;
+
+    /* Start second trace */
+    params2 = cJSON_CreateObject();
+    cJSON_AddStringToObject(params2, "output_file", "/tmp/trace2.txt");
+    response2 = mcp_tool_trace_start(params2);
+    ASSERT_NOT_NULL(response2);
+    trace_id2_item = cJSON_GetObjectItem(response2, "trace_id");
+    ASSERT_NOT_NULL(trace_id2_item);
+    trace_id2 = trace_id2_item->valuestring;
+
+    /* Verify they have different IDs */
+    ASSERT_TRUE(strcmp(trace_id1, trace_id2) != 0);
+
+    cJSON_Delete(params1);
+    cJSON_Delete(response1);
+    cJSON_Delete(params2);
+    cJSON_Delete(response2);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -5111,6 +5581,23 @@ int main(void)
     RUN_TEST(checkpoint_clear_auto_snapshot_clears_existing_config);
     RUN_TEST(checkpoint_set_auto_snapshot_dispatch_works);
     RUN_TEST(checkpoint_clear_auto_snapshot_dispatch_works);
+
+    /* Trace tools tests */
+    RUN_TEST(trace_start_requires_output_file);
+    RUN_TEST(trace_start_null_params_returns_error);
+    RUN_TEST(trace_start_rejects_empty_output_file);
+    RUN_TEST(trace_start_with_valid_params_succeeds);
+    RUN_TEST(trace_start_with_all_options);
+    RUN_TEST(trace_start_rejects_invalid_pc_filter_range);
+    RUN_TEST(trace_start_clamps_max_instructions);
+    RUN_TEST(trace_stop_requires_trace_id);
+    RUN_TEST(trace_stop_null_params_returns_error);
+    RUN_TEST(trace_stop_rejects_empty_trace_id);
+    RUN_TEST(trace_stop_nonexistent_returns_false);
+    RUN_TEST(trace_stop_stops_existing_trace);
+    RUN_TEST(trace_start_dispatch_works);
+    RUN_TEST(trace_stop_dispatch_works);
+    RUN_TEST(trace_multiple_traces_run_simultaneously);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);

@@ -233,6 +233,110 @@ static int mcp_auto_snapshot_find_free(void)
     return -1;
 }
 
+/* -------------------------------------------------------------------------
+ * Execution Trace Configuration (MCP-side bookkeeping)
+ *
+ * Tracing records CPU instruction execution to a file for analysis.
+ * This is MCP-side config storage - the actual CPU hook integration
+ * with VICE is a separate task (requires hooking VICE's CPU execution loop).
+ *
+ * MCP stores: trace config (what to trace, where to output, filters)
+ * VICE provides: actual instruction logging via CPU hook
+ *
+ * Output format (plain text):
+ *   $C000: LDA #$00
+ *   $C002: STA $D020
+ *
+ * With registers:
+ *   $C000: LDA #$00    [A=00 X=FF Y=00 SP=FF P=32]
+ * ------------------------------------------------------------------------- */
+#define MCP_MAX_TRACE_CONFIGS 16
+#define MCP_MAX_TRACE_FILE_LEN 256
+
+typedef struct {
+    char trace_id[32];              /* Unique trace identifier */
+    char output_file[MCP_MAX_TRACE_FILE_LEN]; /* Output file path */
+    uint16_t pc_filter_start;       /* Start address for PC filter (0 = no filter) */
+    uint16_t pc_filter_end;         /* End address for PC filter (0xFFFF = no filter) */
+    int max_instructions;           /* Maximum instructions to record (default 10000) */
+    int include_registers;          /* Include register state in output */
+    int instructions_recorded;      /* Number of instructions recorded so far */
+    unsigned long start_cycles;     /* Cycle count at trace start */
+    int active;                     /* 1 if trace is active, 0 if slot is free */
+} mcp_trace_config_t;
+
+static mcp_trace_config_t trace_configs[MCP_MAX_TRACE_CONFIGS];
+static int trace_configs_initialized = 0;
+static int trace_id_counter = 0;  /* For generating unique trace IDs */
+
+/* Initialize trace configs (called on first use) */
+static void mcp_trace_configs_init(void)
+{
+    int i;
+    if (!trace_configs_initialized) {
+        for (i = 0; i < MCP_MAX_TRACE_CONFIGS; i++) {
+            trace_configs[i].trace_id[0] = '\0';
+            trace_configs[i].output_file[0] = '\0';
+            trace_configs[i].pc_filter_start = 0;
+            trace_configs[i].pc_filter_end = 0xFFFF;
+            trace_configs[i].max_instructions = 10000;
+            trace_configs[i].include_registers = 0;
+            trace_configs[i].instructions_recorded = 0;
+            trace_configs[i].start_cycles = 0;
+            trace_configs[i].active = 0;
+        }
+        trace_configs_initialized = 1;
+    }
+}
+
+/* Reset all trace configs (for testing)
+ * Note: Exposed for test harness, not for general use */
+extern void mcp_trace_configs_reset(void);  /* Forward declaration for prototype */
+void mcp_trace_configs_reset(void)
+{
+    int i;
+    for (i = 0; i < MCP_MAX_TRACE_CONFIGS; i++) {
+        trace_configs[i].trace_id[0] = '\0';
+        trace_configs[i].output_file[0] = '\0';
+        trace_configs[i].pc_filter_start = 0;
+        trace_configs[i].pc_filter_end = 0xFFFF;
+        trace_configs[i].max_instructions = 10000;
+        trace_configs[i].include_registers = 0;
+        trace_configs[i].instructions_recorded = 0;
+        trace_configs[i].start_cycles = 0;
+        trace_configs[i].active = 0;
+    }
+    trace_configs_initialized = 1;
+    trace_id_counter = 0;
+}
+
+/* Find a trace config by trace_id. Returns index or -1 if not found */
+static int mcp_trace_find(const char *trace_id)
+{
+    int i;
+    mcp_trace_configs_init();
+    for (i = 0; i < MCP_MAX_TRACE_CONFIGS; i++) {
+        if (trace_configs[i].active &&
+            strcmp(trace_configs[i].trace_id, trace_id) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Find a free trace config slot. Returns index or -1 if full */
+static int mcp_trace_find_free(void)
+{
+    int i;
+    mcp_trace_configs_init();
+    for (i = 0; i < MCP_MAX_TRACE_CONFIGS; i++) {
+        if (!trace_configs[i].active) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 /* Catastrophic error response when we can't allocate memory */
 const char *CATASTROPHIC_ERROR_JSON =
     "{\"code\":-32603,\"message\":\"Internal error: out of memory\"}";
@@ -883,6 +987,17 @@ static const mcp_tool_t tool_registry[] = {
       "Remove auto-snapshot configuration from a checkpoint. "
       "Stops automatic snapshot-on-hit behavior for this checkpoint.",
       mcp_tool_checkpoint_clear_auto_snapshot },
+
+    /* Phase 5.4: Execution Tracing */
+    { "vice.trace.start",
+      "Start execution trace recording to a file. "
+      "Records disassembled instructions as they execute, optionally filtered by PC range. "
+      "NOTE: Actual tracing requires VICE CPU hook integration (config stored MCP-side).",
+      mcp_tool_trace_start },
+    { "vice.trace.stop",
+      "Stop an active execution trace and get recording statistics. "
+      "Returns instructions recorded, output file path, and cycles elapsed.",
+      mcp_tool_trace_stop },
 
     { NULL, NULL, NULL } /* Sentinel */
 };
@@ -1681,6 +1796,30 @@ cJSON* mcp_tool_tools_list(cJSON *params)
                 "Checkpoint ID to clear auto-snapshot configuration from"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("checkpoint_id"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.trace.start") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "output_file", mcp_prop_string(
+                "Path to output file for trace data"));
+            cJSON_AddItemToObject(props, "pc_filter_start", mcp_prop_number(
+                "Start address for PC filter (default: 0)"));
+            cJSON_AddItemToObject(props, "pc_filter_end", mcp_prop_number(
+                "End address for PC filter (default: 65535)"));
+            cJSON_AddItemToObject(props, "max_instructions", mcp_prop_number(
+                "Maximum instructions to record (default: 10000)"));
+            cJSON_AddItemToObject(props, "include_registers", mcp_prop_boolean(
+                "Include register state in output (default: false)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("output_file"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.trace.stop") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "trace_id", mcp_prop_string(
+                "The trace ID returned from trace.start"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("trace_id"));
             schema = mcp_schema_object(props, required);
 
         } else {
@@ -7031,6 +7170,268 @@ cJSON* mcp_tool_checkpoint_clear_auto_snapshot(cJSON *params)
 
     cJSON_AddBoolToObject(response, "cleared", was_active);
     cJSON_AddNumberToObject(response, "checkpoint_id", checkpoint_id);
+
+    return response;
+}
+
+/* =========================================================================
+ * Phase 5.4: Execution Tracing Tools
+ *
+ * These tools configure execution trace recording. The actual tracing
+ * requires CPU hook integration with VICE - these tools manage the config.
+ *
+ * Output format (plain text):
+ *   $C000: LDA #$00
+ *   $C002: STA $D020
+ *
+ * With registers:
+ *   $C000: LDA #$00    [A=00 X=FF Y=00 SP=FF P=32]
+ * ========================================================================= */
+
+/* vice.trace.start
+ *
+ * Start execution trace recording to a file.
+ *
+ * Parameters:
+ *   - output_file (string, required): Path to output file for trace data
+ *   - pc_filter_start (number, optional): Start address for PC filter (default 0)
+ *   - pc_filter_end (number, optional): End address for PC filter (default 0xFFFF)
+ *   - max_instructions (number, optional): Max instructions to record (default 10000)
+ *   - include_registers (boolean, optional): Include register state (default false)
+ *
+ * Returns:
+ *   - trace_id (string): Unique identifier for this trace session
+ *   - output_file (string): Path to output file
+ *   - pc_filter (object): {start, end} for PC filter range
+ *   - max_instructions (number): Maximum instructions to record
+ *   - include_registers (boolean): Whether register state is included
+ *   - note (string): Integration status note
+ */
+cJSON* mcp_tool_trace_start(cJSON *params)
+{
+    cJSON *response, *pc_filter;
+    cJSON *file_item, *start_item, *end_item, *max_item, *regs_item;
+    const char *output_file;
+    uint16_t pc_filter_start = 0;
+    uint16_t pc_filter_end = 0xFFFF;
+    int max_instructions = 10000;
+    int include_registers = 0;
+    int config_idx;
+    char trace_id[32];
+
+    log_message(mcp_tools_log, "Handling vice.trace.start");
+
+    mcp_trace_configs_init();
+
+    /* Validate params object */
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing parameters: output_file (string) required");
+    }
+
+    /* Get required output_file parameter */
+    file_item = cJSON_GetObjectItem(params, "output_file");
+    if (file_item == NULL || !cJSON_IsString(file_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing required parameter: output_file (string)");
+    }
+    output_file = file_item->valuestring;
+
+    /* Validate output_file - not empty */
+    if (output_file[0] == '\0') {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid output_file: cannot be empty");
+    }
+    if (strlen(output_file) >= MCP_MAX_TRACE_FILE_LEN) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid output_file: path too long (max 255 characters)");
+    }
+
+    /* Get optional pc_filter_start parameter */
+    start_item = cJSON_GetObjectItem(params, "pc_filter_start");
+    if (start_item != NULL && cJSON_IsNumber(start_item)) {
+        int val = start_item->valueint;
+        if (val < 0 || val > 0xFFFF) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                "Invalid pc_filter_start: must be 0-65535");
+        }
+        pc_filter_start = (uint16_t)val;
+    }
+
+    /* Get optional pc_filter_end parameter */
+    end_item = cJSON_GetObjectItem(params, "pc_filter_end");
+    if (end_item != NULL && cJSON_IsNumber(end_item)) {
+        int val = end_item->valueint;
+        if (val < 0 || val > 0xFFFF) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                "Invalid pc_filter_end: must be 0-65535");
+        }
+        pc_filter_end = (uint16_t)val;
+    }
+
+    /* Validate filter range */
+    if (pc_filter_start > pc_filter_end) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid PC filter: start must be <= end");
+    }
+
+    /* Get optional max_instructions parameter */
+    max_item = cJSON_GetObjectItem(params, "max_instructions");
+    if (max_item != NULL && cJSON_IsNumber(max_item)) {
+        max_instructions = max_item->valueint;
+        if (max_instructions < 1) {
+            max_instructions = 1;
+        }
+        if (max_instructions > 1000000) {
+            max_instructions = 1000000;  /* Safety limit */
+        }
+    }
+
+    /* Get optional include_registers parameter */
+    regs_item = cJSON_GetObjectItem(params, "include_registers");
+    if (regs_item != NULL && cJSON_IsBool(regs_item)) {
+        include_registers = cJSON_IsTrue(regs_item) ? 1 : 0;
+    }
+
+    /* Find a free slot */
+    config_idx = mcp_trace_find_free();
+    if (config_idx < 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR,
+            "Maximum trace configurations reached");
+    }
+
+    /* Generate unique trace ID */
+    snprintf(trace_id, sizeof(trace_id), "trace_%d", ++trace_id_counter);
+
+    /* Store the configuration */
+    strncpy(trace_configs[config_idx].trace_id, trace_id, sizeof(trace_configs[config_idx].trace_id) - 1);
+    trace_configs[config_idx].trace_id[sizeof(trace_configs[config_idx].trace_id) - 1] = '\0';
+    strncpy(trace_configs[config_idx].output_file, output_file, MCP_MAX_TRACE_FILE_LEN - 1);
+    trace_configs[config_idx].output_file[MCP_MAX_TRACE_FILE_LEN - 1] = '\0';
+    trace_configs[config_idx].pc_filter_start = pc_filter_start;
+    trace_configs[config_idx].pc_filter_end = pc_filter_end;
+    trace_configs[config_idx].max_instructions = max_instructions;
+    trace_configs[config_idx].include_registers = include_registers;
+    trace_configs[config_idx].instructions_recorded = 0;
+    trace_configs[config_idx].start_cycles = maincpu_clk;  /* Capture current cycle count */
+    trace_configs[config_idx].active = 1;
+
+    log_message(mcp_tools_log, "Trace started: %s -> %s (PC filter $%04X-$%04X, max %d, regs=%d)",
+                trace_id, output_file, pc_filter_start, pc_filter_end,
+                max_instructions, include_registers);
+
+    /* Build success response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "trace_id", trace_id);
+    cJSON_AddStringToObject(response, "output_file", output_file);
+
+    pc_filter = cJSON_CreateObject();
+    if (pc_filter != NULL) {
+        cJSON_AddNumberToObject(pc_filter, "start", pc_filter_start);
+        cJSON_AddNumberToObject(pc_filter, "end", pc_filter_end);
+        cJSON_AddItemToObject(response, "pc_filter", pc_filter);
+    }
+
+    cJSON_AddNumberToObject(response, "max_instructions", max_instructions);
+    cJSON_AddBoolToObject(response, "include_registers", include_registers);
+    cJSON_AddStringToObject(response, "note",
+        "Config stored. Actual tracing requires VICE CPU hook integration.");
+
+    return response;
+}
+
+/* vice.trace.stop
+ *
+ * Stop an active execution trace and get recording statistics.
+ *
+ * Parameters:
+ *   - trace_id (string, required): The trace ID returned from trace.start
+ *
+ * Returns:
+ *   - trace_id (string): The trace that was stopped
+ *   - instructions_recorded (number): Number of instructions captured
+ *   - output_file (string): Path to the trace output file
+ *   - cycles_elapsed (number): CPU cycles elapsed during trace
+ *   - stopped (boolean): true if trace was stopped, false if not found
+ */
+cJSON* mcp_tool_trace_stop(cJSON *params)
+{
+    cJSON *response;
+    cJSON *id_item;
+    const char *trace_id;
+    int config_idx;
+    int instructions_recorded = 0;
+    unsigned long cycles_elapsed = 0;
+    char output_file[MCP_MAX_TRACE_FILE_LEN] = "";
+    int was_active;
+
+    log_message(mcp_tools_log, "Handling vice.trace.stop");
+
+    /* Validate params object */
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing parameters: trace_id (string) required");
+    }
+
+    /* Get required trace_id parameter */
+    id_item = cJSON_GetObjectItem(params, "trace_id");
+    if (id_item == NULL || !cJSON_IsString(id_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Missing required parameter: trace_id (string)");
+    }
+    trace_id = id_item->valuestring;
+
+    if (trace_id[0] == '\0') {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS,
+            "Invalid trace_id: cannot be empty");
+    }
+
+    /* Find the trace config */
+    config_idx = mcp_trace_find(trace_id);
+    was_active = (config_idx >= 0);
+
+    if (was_active) {
+        /* Capture statistics before clearing */
+        instructions_recorded = trace_configs[config_idx].instructions_recorded;
+        cycles_elapsed = maincpu_clk - trace_configs[config_idx].start_cycles;
+        strncpy(output_file, trace_configs[config_idx].output_file, MCP_MAX_TRACE_FILE_LEN - 1);
+        output_file[MCP_MAX_TRACE_FILE_LEN - 1] = '\0';
+
+        /* Clear the slot */
+        trace_configs[config_idx].trace_id[0] = '\0';
+        trace_configs[config_idx].output_file[0] = '\0';
+        trace_configs[config_idx].pc_filter_start = 0;
+        trace_configs[config_idx].pc_filter_end = 0xFFFF;
+        trace_configs[config_idx].max_instructions = 10000;
+        trace_configs[config_idx].include_registers = 0;
+        trace_configs[config_idx].instructions_recorded = 0;
+        trace_configs[config_idx].start_cycles = 0;
+        trace_configs[config_idx].active = 0;
+
+        log_message(mcp_tools_log, "Trace stopped: %s (recorded %d instructions, %lu cycles)",
+                    trace_id, instructions_recorded, cycles_elapsed);
+    } else {
+        log_message(mcp_tools_log, "Trace not found: %s", trace_id);
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "trace_id", trace_id);
+    cJSON_AddBoolToObject(response, "stopped", was_active);
+
+    if (was_active) {
+        cJSON_AddNumberToObject(response, "instructions_recorded", instructions_recorded);
+        cJSON_AddStringToObject(response, "output_file", output_file);
+        cJSON_AddNumberToObject(response, "cycles_elapsed", (double)cycles_elapsed);
+    }
 
     return response;
 }

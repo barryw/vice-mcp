@@ -174,6 +174,10 @@ extern cJSON* mcp_tool_checkpoint_group_list(cJSON *params);
 extern cJSON* mcp_tool_checkpoint_set_auto_snapshot(cJSON *params);
 extern cJSON* mcp_tool_checkpoint_clear_auto_snapshot(cJSON *params);
 
+/* Tool handlers - Phase 5.4: Execution Tracing */
+extern cJSON* mcp_tool_trace_start(cJSON *params);
+extern cJSON* mcp_tool_trace_stop(cJSON *params);
+
 /** @brief Send a breakpoint hit notification to SSE clients.
  *
  *  Called when a breakpoint is hit during execution. Sends an SSE event
