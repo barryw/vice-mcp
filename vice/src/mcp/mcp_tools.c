@@ -651,7 +651,7 @@ static const mcp_tool_t tool_registry[] = {
     { "vice.disassemble", "Disassemble memory to 6502 instructions", mcp_tool_disassemble },
     { "vice.symbols.load", "Load symbol/label file (VICE, KickAssembler, simple formats)", mcp_tool_symbols_load },
     { "vice.symbols.lookup", "Lookup symbol by name or address", mcp_tool_symbols_lookup },
-    { "vice.watch.add", "Add memory watchpoint (shorthand for checkpoint with store/load)", mcp_tool_watch_add },
+    { "vice.watch.add", "Add memory watchpoint with optional condition (shorthand for checkpoint with store/load)", mcp_tool_watch_add },
     { "vice.backtrace", "Show call stack (JSR return addresses)", mcp_tool_backtrace },
     { "vice.run_until", "Run until address or for N cycles (with timeout)", mcp_tool_run_until },
     { "vice.keyboard.matrix", "Direct keyboard matrix control (for games that scan keyboard directly)", mcp_tool_keyboard_matrix },
@@ -1322,6 +1322,10 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "address", mcp_prop_string("Address: number, hex string ($1000), or symbol name"));
             cJSON_AddItemToObject(props, "size", mcp_prop_number("Number of bytes to watch (default: 1)"));
             cJSON_AddItemToObject(props, "type", mcp_prop_string("Watch type: 'read', 'write', or 'both' (default: 'write')"));
+            cJSON_AddItemToObject(props, "condition", mcp_prop_string(
+                "Condition expression for conditional watchpoint. "
+                "Supported: 'A == $xx', 'X == $xx', 'Y == $xx', 'PC == $xxxx', 'SP == $xx'. "
+                "For store watches, condition is evaluated after the store completes."));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("address"));
             schema = mcp_schema_object(props, required);
@@ -4867,14 +4871,27 @@ static cJSON* mcp_tool_symbols_lookup(cJSON *params)
     return mcp_error(MCP_ERROR_INVALID_PARAMS, "Either 'name' or 'address' required");
 }
 
-/* Add memory watchpoint (convenience wrapper for checkpoint with store/load) */
+/* Add memory watchpoint (convenience wrapper for checkpoint with store/load)
+ *
+ * Parameters:
+ *   - address (required): Address to watch (number, hex string, or symbol)
+ *   - size (optional): Number of bytes to watch (default: 1)
+ *   - type (optional): "read", "write", or "both" (default: "write")
+ *   - condition (optional): Condition expression, e.g., "A == $02", "PC == $1000"
+ *
+ * When a condition is provided, the watchpoint only triggers when the condition
+ * is true. For store watches, the condition is evaluated *after* the store
+ * completes. To check "stop when $D020 becomes $02", use:
+ *   {"address": "$D020", "type": "write", "condition": "A == $02"}
+ */
 static cJSON* mcp_tool_watch_add(cJSON *params)
 {
-    cJSON *response, *addr_item, *type_item, *size_item;
+    cJSON *response, *addr_item, *type_item, *size_item, *condition_item;
     uint16_t address, end_address;
     int size = 1;
     MEMORY_OP op = 0;
     const char *watch_type = "write";
+    const char *condition_str = NULL;
     int checkpoint_num;
     const char *error_msg;
     int resolved;
@@ -4922,6 +4939,12 @@ static cJSON* mcp_tool_watch_add(cJSON *params)
         return mcp_error(MCP_ERROR_INVALID_PARAMS, "type must be 'read', 'write', or 'both'");
     }
 
+    /* Get condition (optional) */
+    condition_item = cJSON_GetObjectItem(params, "condition");
+    if (condition_item != NULL && cJSON_IsString(condition_item)) {
+        condition_str = condition_item->valuestring;
+    }
+
     /* Create checkpoint with the appropriate operation type */
     checkpoint_num = mon_breakpoint_add_checkpoint(
         (MON_ADDR)address,
@@ -4936,6 +4959,27 @@ static cJSON* mcp_tool_watch_add(cJSON *params)
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to create watchpoint");
     }
 
+    /* If condition provided, parse and set it on the checkpoint */
+    if (condition_str != NULL && condition_str[0] != '\0') {
+        cond_node_t *cond_node;
+
+        /* Parse condition string using the same parser as checkpoint.set_condition */
+        cond_node = parse_simple_condition(condition_str);
+        if (cond_node == NULL) {
+            /* Delete the checkpoint we just created since condition is invalid */
+            mon_breakpoint_delete_checkpoint(checkpoint_num);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                "Invalid condition. Supported: 'A == $xx', 'X == $xx', 'Y == $xx', "
+                "'PC == $xxxx', 'SP == $xx' (hex with $, 0x, or decimal)");
+        }
+
+        /* Set the condition on the checkpoint */
+        mon_breakpoint_set_checkpoint_condition(checkpoint_num, cond_node);
+
+        log_message(mcp_tools_log, "Watchpoint %d created with condition: %s",
+                    checkpoint_num, condition_str);
+    }
+
     response = cJSON_CreateObject();
     if (response == NULL) {
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
@@ -4946,6 +4990,11 @@ static cJSON* mcp_tool_watch_add(cJSON *params)
     cJSON_AddNumberToObject(response, "address", address);
     cJSON_AddNumberToObject(response, "size", size);
     cJSON_AddStringToObject(response, "type", watch_type);
+
+    /* Include condition in response if one was provided */
+    if (condition_str != NULL) {
+        cJSON_AddStringToObject(response, "condition", condition_str);
+    }
 
     return response;
 }

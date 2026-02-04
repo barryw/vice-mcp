@@ -294,16 +294,51 @@ int screenshot_save(const char *drvname, const char *filename, void *canvas)
     return 0;
 }
 
+/* =============================================================================
+ * Checkpoint/Breakpoint Test Support
+ *
+ * Provides simulated checkpoint functionality for testing watch_add
+ * and other checkpoint-related tools.
+ * ============================================================================= */
+
+/* Track checkpoint state for testing */
+static int test_checkpoint_counter = 0;
+static int test_checkpoint_last_num = -1;
+static int test_checkpoint_last_has_condition = 0;
+
+/* Reset checkpoint test state */
+void test_checkpoint_reset(void)
+{
+    test_checkpoint_counter = 0;
+    test_checkpoint_last_num = -1;
+    test_checkpoint_last_has_condition = 0;
+}
+
+/* Get the last checkpoint number created */
+int test_checkpoint_get_last_num(void)
+{
+    return test_checkpoint_last_num;
+}
+
+/* Check if last checkpoint has a condition set */
+int test_checkpoint_has_condition(void)
+{
+    return test_checkpoint_last_has_condition;
+}
+
 /* Phase 2.1: Checkpoint/Breakpoint stubs */
-void *mon_breakpoint_add_checkpoint(unsigned int start, unsigned int end, int stop, int enabled, int operation, int temporary)
+int mon_breakpoint_add_checkpoint(unsigned int start, unsigned int end, int stop, int operation, int temporary, int do_print)
 {
     (void)start;
     (void)end;
     (void)stop;
-    (void)enabled;
     (void)operation;
     (void)temporary;
-    return NULL;
+    (void)do_print;
+    /* Return incrementing checkpoint number for testing */
+    test_checkpoint_last_num = ++test_checkpoint_counter;
+    test_checkpoint_last_has_condition = 0;  /* Reset condition flag for new checkpoint */
+    return test_checkpoint_last_num;
 }
 
 void mon_breakpoint_delete_checkpoint(unsigned int id)
@@ -313,7 +348,11 @@ void mon_breakpoint_delete_checkpoint(unsigned int id)
 
 void *mon_breakpoint_find_checkpoint(unsigned int id)
 {
-    (void)id;
+    /* Return non-NULL for valid checkpoint IDs (1 to counter) */
+    if (id > 0 && id <= (unsigned int)test_checkpoint_counter) {
+        /* Return a non-NULL dummy pointer to indicate checkpoint exists */
+        return (void*)(uintptr_t)id;
+    }
     return NULL;
 }
 
@@ -338,6 +377,10 @@ void mon_breakpoint_set_checkpoint_condition(int brk_num, void *cnode)
 {
     (void)brk_num;
     (void)cnode;
+    /* Track that a condition was set */
+    if (cnode != NULL) {
+        test_checkpoint_last_has_condition = 1;
+    }
 }
 
 /* Autostart stubs */

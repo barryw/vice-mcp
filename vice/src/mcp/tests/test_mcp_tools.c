@@ -74,6 +74,11 @@ extern void test_memory_set_byte(uint16_t addr, uint8_t value);
 extern void test_memory_clear(void);
 extern uint8_t test_memory_get_byte(uint16_t addr);
 
+/* Test checkpoint helpers from vice_stubs.c */
+extern void test_checkpoint_reset(void);
+extern int test_checkpoint_get_last_num(void);
+extern int test_checkpoint_has_condition(void);
+
 static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -1847,6 +1852,141 @@ TEST(watch_add_with_symbol)
     cJSON_Delete(params);
     cJSON_Delete(response);
     remove(test_file);
+}
+
+/* Test: watch_add with condition parameter */
+TEST(watch_add_with_condition)
+{
+    cJSON *response, *params, *status_item, *condition_item, *checkpoint_num_item;
+
+    /* Reset checkpoint tracking */
+    test_checkpoint_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "address", "$D020");
+    cJSON_AddStringToObject(params, "type", "write");
+    cJSON_AddStringToObject(params, "condition", "A == $02");
+
+    response = mcp_tools_dispatch("vice.watch.add", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should succeed */
+    status_item = cJSON_GetObjectItem(response, "status");
+    ASSERT_NOT_NULL(status_item);
+    ASSERT_STR_EQ(status_item->valuestring, "ok");
+
+    /* Should include the condition in response */
+    condition_item = cJSON_GetObjectItem(response, "condition");
+    ASSERT_NOT_NULL(condition_item);
+    ASSERT_TRUE(cJSON_IsString(condition_item));
+    ASSERT_STR_EQ(condition_item->valuestring, "A == $02");
+
+    /* Should have created a checkpoint */
+    checkpoint_num_item = cJSON_GetObjectItem(response, "checkpoint_num");
+    ASSERT_NOT_NULL(checkpoint_num_item);
+    ASSERT_TRUE(cJSON_IsNumber(checkpoint_num_item));
+    ASSERT_TRUE(checkpoint_num_item->valueint > 0);
+
+    /* Verify condition was set on the checkpoint */
+    ASSERT_TRUE(test_checkpoint_has_condition());
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: watch_add with invalid condition returns error */
+TEST(watch_add_with_invalid_condition)
+{
+    cJSON *response, *params, *code_item;
+
+    /* Reset checkpoint tracking */
+    test_checkpoint_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "address", "$D020");
+    cJSON_AddStringToObject(params, "type", "write");
+    cJSON_AddStringToObject(params, "condition", "invalid_condition_syntax");
+
+    response = mcp_tools_dispatch("vice.watch.add", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should return error for invalid condition (code field present = error response) */
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(cJSON_IsNumber(code_item));
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    /* Verify no checkpoint was created (the broken one should have been deleted) */
+    /* Note: checkpoint_counter still incremented, but the checkpoint was deleted */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: watch_add without condition still works (backward compatible) */
+TEST(watch_add_without_condition)
+{
+    cJSON *response, *params, *status_item, *condition_item;
+
+    /* Reset checkpoint tracking */
+    test_checkpoint_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "address", "$D020");
+    cJSON_AddStringToObject(params, "type", "write");
+    /* No condition parameter */
+
+    response = mcp_tools_dispatch("vice.watch.add", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should succeed */
+    status_item = cJSON_GetObjectItem(response, "status");
+    ASSERT_NOT_NULL(status_item);
+    ASSERT_STR_EQ(status_item->valuestring, "ok");
+
+    /* Should NOT have condition in response when not provided */
+    condition_item = cJSON_GetObjectItem(response, "condition");
+    ASSERT_TRUE(condition_item == NULL);
+
+    /* Verify no condition was set */
+    ASSERT_TRUE(!test_checkpoint_has_condition());
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: watch_add with hex PC condition */
+TEST(watch_add_with_pc_condition)
+{
+    cJSON *response, *params, *status_item, *condition_item;
+
+    /* Reset checkpoint tracking */
+    test_checkpoint_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "address", "$0400");
+    cJSON_AddNumberToObject(params, "size", 1000);
+    cJSON_AddStringToObject(params, "type", "write");
+    cJSON_AddStringToObject(params, "condition", "PC == $1000");
+
+    response = mcp_tools_dispatch("vice.watch.add", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should succeed */
+    status_item = cJSON_GetObjectItem(response, "status");
+    ASSERT_NOT_NULL(status_item);
+    ASSERT_STR_EQ(status_item->valuestring, "ok");
+
+    /* Should include the condition in response */
+    condition_item = cJSON_GetObjectItem(response, "condition");
+    ASSERT_NOT_NULL(condition_item);
+    ASSERT_STR_EQ(condition_item->valuestring, "PC == $1000");
+
+    /* Verify condition was set */
+    ASSERT_TRUE(test_checkpoint_has_condition());
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
 }
 
 /* Test: disassemble with hex string address */
@@ -3821,6 +3961,10 @@ int main(void)
     RUN_TEST(keyboard_matrix_hold_ms_invalid);
     RUN_TEST(keyboard_matrix_key_release);
     RUN_TEST(watch_add_with_symbol);
+    RUN_TEST(watch_add_with_condition);
+    RUN_TEST(watch_add_with_invalid_condition);
+    RUN_TEST(watch_add_without_condition);
+    RUN_TEST(watch_add_with_pc_condition);
     RUN_TEST(disassemble_with_hex_address);
 
     /* Snapshot tests */
