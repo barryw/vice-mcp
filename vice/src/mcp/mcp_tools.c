@@ -508,6 +508,13 @@ static const mcp_tool_t tool_registry[] = {
       "The pattern repeats to fill the entire range from start to end (inclusive).",
       mcp_tool_memory_fill },
 
+    /* Phase 5.2: Memory Compare */
+    { "vice.memory.compare",
+      "Compare two memory ranges or compare current memory against a snapshot. "
+      "Use mode='ranges' to compare two live memory ranges, or mode='snapshot' to compare "
+      "against a previously saved state. Returns list of differences with addresses and values.",
+      mcp_tool_memory_compare },
+
     { NULL, NULL, NULL } /* Sentinel */
 };
 
@@ -1222,6 +1229,22 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToArray(required, cJSON_CreateString("start"));
             cJSON_AddItemToArray(required, cJSON_CreateString("end"));
             cJSON_AddItemToArray(required, cJSON_CreateString("pattern"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.memory.compare") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "mode", mcp_prop_string(
+                "Comparison mode: 'ranges' to compare two memory ranges, 'snapshot' to compare against saved state"));
+            cJSON_AddItemToObject(props, "range1_start", mcp_prop_string(
+                "Start address of first range (for mode='ranges'): number, hex string ($1000), or symbol"));
+            cJSON_AddItemToObject(props, "range1_end", mcp_prop_string(
+                "End address of first range (for mode='ranges'): number, hex string ($1FFF), or symbol"));
+            cJSON_AddItemToObject(props, "range2_start", mcp_prop_string(
+                "Start address of second range (for mode='ranges'): number, hex string ($2000), or symbol"));
+            cJSON_AddItemToObject(props, "max_differences", mcp_prop_number(
+                "Maximum differences to return (default: 100, max: 10000)"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("mode"));
             schema = mcp_schema_object(props, required);
 
         } else {
@@ -5679,4 +5702,172 @@ cJSON* mcp_tool_memory_fill(cJSON *params)
     cJSON_AddNumberToObject(response, "pattern_repetitions", (double)pattern_reps);
 
     return response;
+}
+
+/* -------------------------------------------------------------------------
+ * vice.memory.compare - Compare memory ranges or against snapshot
+ * -------------------------------------------------------------------------
+ *
+ * Modes:
+ *   "ranges"   - Compare two memory ranges byte-by-byte
+ *   "snapshot" - Compare current memory against saved snapshot (Phase 5.2 Task 5)
+ *
+ * Parameters for mode="ranges":
+ *   mode: "ranges" (required)
+ *   range1_start: Start address of first range (required)
+ *   range1_end: End address of first range (required)
+ *   range2_start: Start address of second range (required)
+ *   max_differences: Maximum differences to return (optional, default 100)
+ *
+ * Returns:
+ *   differences: Array of {address, current, reference} for each difference
+ *   total_differences: Total count of differences found
+ *   truncated: True if differences array was limited by max_differences
+ */
+cJSON* mcp_tool_memory_compare(cJSON *params)
+{
+    cJSON *response, *differences_array;
+    cJSON *mode_item, *range1_start_item, *range1_end_item, *range2_start_item;
+    cJSON *max_diff_item;
+    const char *mode_str;
+    int range1_start, range1_end, range2_start;
+    int max_differences = 100;  /* Default max differences to return */
+    int total_differences = 0;
+    int differences_returned = 0;
+    long range_size;
+    long offset;
+    const char *error_msg;
+    char addr_str[8];
+    uint8_t byte1, byte2;
+
+    log_message(mcp_tools_log, "Handling vice.memory.compare");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    /* Get and validate mode */
+    mode_item = cJSON_GetObjectItem(params, "mode");
+    if (mode_item == NULL || !cJSON_IsString(mode_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "mode parameter required (string: 'ranges' or 'snapshot')");
+    }
+    mode_str = mode_item->valuestring;
+
+    if (strcmp(mode_str, "ranges") == 0) {
+        /* --- Mode: ranges - compare two memory ranges --- */
+
+        /* Get and validate range1_start */
+        range1_start_item = cJSON_GetObjectItem(params, "range1_start");
+        if (range1_start_item == NULL) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "range1_start address required for ranges mode");
+        }
+        range1_start = mcp_resolve_address(range1_start_item, &error_msg);
+        if (range1_start < 0) {
+            char err_buf[128];
+            snprintf(err_buf, sizeof(err_buf), "Cannot resolve range1_start: %s", error_msg);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+        }
+
+        /* Get and validate range1_end */
+        range1_end_item = cJSON_GetObjectItem(params, "range1_end");
+        if (range1_end_item == NULL) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "range1_end address required for ranges mode");
+        }
+        range1_end = mcp_resolve_address(range1_end_item, &error_msg);
+        if (range1_end < 0) {
+            char err_buf[128];
+            snprintf(err_buf, sizeof(err_buf), "Cannot resolve range1_end: %s", error_msg);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+        }
+
+        /* Validate range1 order */
+        if (range1_end < range1_start) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "range1_end must be >= range1_start");
+        }
+
+        /* Get and validate range2_start */
+        range2_start_item = cJSON_GetObjectItem(params, "range2_start");
+        if (range2_start_item == NULL) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "range2_start address required for ranges mode");
+        }
+        range2_start = mcp_resolve_address(range2_start_item, &error_msg);
+        if (range2_start < 0) {
+            char err_buf[128];
+            snprintf(err_buf, sizeof(err_buf), "Cannot resolve range2_start: %s", error_msg);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+        }
+
+        /* Get optional max_differences */
+        max_diff_item = cJSON_GetObjectItem(params, "max_differences");
+        if (max_diff_item != NULL && cJSON_IsNumber(max_diff_item)) {
+            max_differences = max_diff_item->valueint;
+            if (max_differences < 1) {
+                max_differences = 1;
+            }
+            if (max_differences > 10000) {
+                max_differences = 10000;
+            }
+        }
+
+        /* Calculate range size */
+        range_size = (long)(range1_end - range1_start) + 1;
+
+        /* Create differences array */
+        differences_array = cJSON_CreateArray();
+        if (differences_array == NULL) {
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        /* Compare byte-by-byte */
+        for (offset = 0; offset < range_size; offset++) {
+            uint16_t addr1 = (uint16_t)(range1_start + offset);
+            uint16_t addr2 = (uint16_t)(range2_start + offset);
+
+            byte1 = mem_read(addr1);
+            byte2 = mem_read(addr2);
+
+            if (byte1 != byte2) {
+                total_differences++;
+
+                /* Only add to array if under limit */
+                if (differences_returned < max_differences) {
+                    cJSON *diff_obj = cJSON_CreateObject();
+                    if (diff_obj != NULL) {
+                        /* Format address as hex string relative to range1 */
+                        snprintf(addr_str, sizeof(addr_str), "$%04X", addr1);
+                        cJSON_AddStringToObject(diff_obj, "address", addr_str);
+                        cJSON_AddNumberToObject(diff_obj, "current", byte1);
+                        cJSON_AddNumberToObject(diff_obj, "reference", byte2);
+                        cJSON_AddItemToArray(differences_array, diff_obj);
+                        differences_returned++;
+                    }
+                }
+            }
+        }
+
+        /* Build response */
+        response = cJSON_CreateObject();
+        if (response == NULL) {
+            cJSON_Delete(differences_array);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        cJSON_AddItemToObject(response, "differences", differences_array);
+        cJSON_AddNumberToObject(response, "total_differences", total_differences);
+        cJSON_AddBoolToObject(response, "truncated", total_differences > differences_returned);
+
+        return response;
+
+    } else if (strcmp(mode_str, "snapshot") == 0) {
+        /* --- Mode: snapshot - compare against saved snapshot --- */
+        /* This will be implemented in Phase 5.2 Task 5 */
+        return mcp_error(MCP_ERROR_NOT_IMPLEMENTED,
+            "snapshot mode not yet implemented (Phase 5.2 Task 5)");
+
+    } else {
+        /* Unknown mode */
+        char err_buf[128];
+        snprintf(err_buf, sizeof(err_buf), "Unknown mode '%s' (valid: 'ranges', 'snapshot')", mode_str);
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, err_buf);
+    }
 }

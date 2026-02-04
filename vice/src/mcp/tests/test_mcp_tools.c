@@ -2966,6 +2966,413 @@ TEST(memory_fill_dispatch_works)
     cJSON_Delete(response);
 }
 
+/* =================================================================
+ * Memory Compare Tests (ranges mode)
+ * ================================================================= */
+
+/* Memory compare tool declaration */
+extern cJSON* mcp_tool_memory_compare(cJSON *params);
+
+/* Test: memory.compare ranges mode requires mode parameter */
+TEST(memory_compare_ranges_requires_mode)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "range1_start", 0x1000);
+    cJSON_AddNumberToObject(params, "range1_end", 0x1010);
+    cJSON_AddNumberToObject(params, "range2_start", 0x2000);
+    /* No mode parameter */
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode requires range1_start */
+TEST(memory_compare_ranges_requires_range1_start)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "ranges");
+    cJSON_AddNumberToObject(params, "range1_end", 0x1010);
+    cJSON_AddNumberToObject(params, "range2_start", 0x2000);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode requires range1_end */
+TEST(memory_compare_ranges_requires_range1_end)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "ranges");
+    cJSON_AddNumberToObject(params, "range1_start", 0x1000);
+    cJSON_AddNumberToObject(params, "range2_start", 0x2000);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode requires range2_start */
+TEST(memory_compare_ranges_requires_range2_start)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "ranges");
+    cJSON_AddNumberToObject(params, "range1_start", 0x1000);
+    cJSON_AddNumberToObject(params, "range1_end", 0x1010);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode null params returns error */
+TEST(memory_compare_ranges_null_params_returns_error)
+{
+    cJSON *response, *code_item;
+
+    response = mcp_tool_memory_compare(NULL);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode invalid mode value */
+TEST(memory_compare_invalid_mode_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "invalid_mode");
+    cJSON_AddNumberToObject(params, "range1_start", 0x1000);
+    cJSON_AddNumberToObject(params, "range1_end", 0x1010);
+    cJSON_AddNumberToObject(params, "range2_start", 0x2000);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode range1_end < range1_start returns error */
+TEST(memory_compare_ranges_invalid_range1_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "ranges");
+    cJSON_AddNumberToObject(params, "range1_start", 0x2000);
+    cJSON_AddNumberToObject(params, "range1_end", 0x1000);  /* end < start */
+    cJSON_AddNumberToObject(params, "range2_start", 0x3000);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode identical regions returns no differences */
+TEST(memory_compare_ranges_identical_returns_no_differences)
+{
+    cJSON *response, *params;
+    cJSON *differences_item, *total_item, *truncated_item;
+
+    test_memory_clear();
+    /* Set same data in both ranges */
+    test_memory_set_byte(0x1000, 0x42);
+    test_memory_set_byte(0x1001, 0x43);
+    test_memory_set_byte(0x1002, 0x44);
+    test_memory_set_byte(0x2000, 0x42);
+    test_memory_set_byte(0x2001, 0x43);
+    test_memory_set_byte(0x2002, 0x44);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "ranges");
+    cJSON_AddNumberToObject(params, "range1_start", 0x1000);
+    cJSON_AddNumberToObject(params, "range1_end", 0x1002);
+    cJSON_AddNumberToObject(params, "range2_start", 0x2000);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return empty differences array */
+    differences_item = cJSON_GetObjectItem(response, "differences");
+    ASSERT_NOT_NULL(differences_item);
+    ASSERT_TRUE(cJSON_IsArray(differences_item));
+    ASSERT_INT_EQ(cJSON_GetArraySize(differences_item), 0);
+
+    /* Should return total_differences = 0 */
+    total_item = cJSON_GetObjectItem(response, "total_differences");
+    ASSERT_NOT_NULL(total_item);
+    ASSERT_INT_EQ(total_item->valueint, 0);
+
+    /* Should return truncated = false */
+    truncated_item = cJSON_GetObjectItem(response, "truncated");
+    ASSERT_NOT_NULL(truncated_item);
+    ASSERT_TRUE(cJSON_IsFalse(truncated_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode finds differences */
+TEST(memory_compare_ranges_finds_differences)
+{
+    cJSON *response, *params;
+    cJSON *differences_item, *total_item, *diff0, *addr_item, *cur_item, *ref_item;
+
+    test_memory_clear();
+    /* Set different data in ranges */
+    test_memory_set_byte(0x1000, 0x42);
+    test_memory_set_byte(0x1001, 0xAA);  /* Different */
+    test_memory_set_byte(0x1002, 0x44);
+    test_memory_set_byte(0x2000, 0x42);
+    test_memory_set_byte(0x2001, 0xBB);  /* Different */
+    test_memory_set_byte(0x2002, 0x44);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "ranges");
+    cJSON_AddNumberToObject(params, "range1_start", 0x1000);
+    cJSON_AddNumberToObject(params, "range1_end", 0x1002);
+    cJSON_AddNumberToObject(params, "range2_start", 0x2000);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return 1 difference */
+    total_item = cJSON_GetObjectItem(response, "total_differences");
+    ASSERT_NOT_NULL(total_item);
+    ASSERT_INT_EQ(total_item->valueint, 1);
+
+    /* Should have 1 item in differences array */
+    differences_item = cJSON_GetObjectItem(response, "differences");
+    ASSERT_NOT_NULL(differences_item);
+    ASSERT_TRUE(cJSON_IsArray(differences_item));
+    ASSERT_INT_EQ(cJSON_GetArraySize(differences_item), 1);
+
+    /* Check difference details */
+    diff0 = cJSON_GetArrayItem(differences_item, 0);
+    ASSERT_NOT_NULL(diff0);
+
+    addr_item = cJSON_GetObjectItem(diff0, "address");
+    ASSERT_NOT_NULL(addr_item);
+    ASSERT_STR_EQ(addr_item->valuestring, "$1001");
+
+    cur_item = cJSON_GetObjectItem(diff0, "current");
+    ASSERT_NOT_NULL(cur_item);
+    ASSERT_INT_EQ(cur_item->valueint, 0xAA);
+
+    ref_item = cJSON_GetObjectItem(diff0, "reference");
+    ASSERT_NOT_NULL(ref_item);
+    ASSERT_INT_EQ(ref_item->valueint, 0xBB);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode respects max_differences */
+TEST(memory_compare_ranges_respects_max_differences)
+{
+    cJSON *response, *params;
+    cJSON *differences_item, *total_item, *truncated_item;
+    int i;
+
+    test_memory_clear();
+    /* Set 10 different bytes in range 1 vs range 2 */
+    for (i = 0; i < 10; i++) {
+        test_memory_set_byte(0x1000 + i, 0x00);  /* zeros in range 1 */
+        test_memory_set_byte(0x2000 + i, 0xFF);  /* 0xFF in range 2 */
+    }
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "ranges");
+    cJSON_AddNumberToObject(params, "range1_start", 0x1000);
+    cJSON_AddNumberToObject(params, "range1_end", 0x1009);  /* 10 bytes */
+    cJSON_AddNumberToObject(params, "range2_start", 0x2000);
+    cJSON_AddNumberToObject(params, "max_differences", 5);  /* Limit to 5 */
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return 10 total differences */
+    total_item = cJSON_GetObjectItem(response, "total_differences");
+    ASSERT_NOT_NULL(total_item);
+    ASSERT_INT_EQ(total_item->valueint, 10);
+
+    /* But differences array should be limited to 5 */
+    differences_item = cJSON_GetObjectItem(response, "differences");
+    ASSERT_NOT_NULL(differences_item);
+    ASSERT_TRUE(cJSON_IsArray(differences_item));
+    ASSERT_INT_EQ(cJSON_GetArraySize(differences_item), 5);
+
+    /* Should return truncated = true */
+    truncated_item = cJSON_GetObjectItem(response, "truncated");
+    ASSERT_NOT_NULL(truncated_item);
+    ASSERT_TRUE(cJSON_IsTrue(truncated_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode with hex string addresses */
+TEST(memory_compare_ranges_hex_string_addresses)
+{
+    cJSON *response, *params;
+    cJSON *differences_item;
+
+    test_memory_clear();
+    /* Set same data */
+    test_memory_set_byte(0x1000, 0x42);
+    test_memory_set_byte(0x2000, 0x42);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "ranges");
+    cJSON_AddStringToObject(params, "range1_start", "$1000");
+    cJSON_AddStringToObject(params, "range1_end", "$1000");
+    cJSON_AddStringToObject(params, "range2_start", "$2000");
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return empty differences (same data) */
+    differences_item = cJSON_GetObjectItem(response, "differences");
+    ASSERT_NOT_NULL(differences_item);
+    ASSERT_TRUE(cJSON_IsArray(differences_item));
+    ASSERT_INT_EQ(cJSON_GetArraySize(differences_item), 0);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode dispatch works */
+TEST(memory_compare_ranges_dispatch_works)
+{
+    cJSON *response, *params;
+    cJSON *differences_item;
+
+    test_memory_clear();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "ranges");
+    cJSON_AddNumberToObject(params, "range1_start", 0x1000);
+    cJSON_AddNumberToObject(params, "range1_end", 0x1003);
+    cJSON_AddNumberToObject(params, "range2_start", 0x2000);
+
+    response = mcp_tools_dispatch("vice.memory.compare", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    differences_item = cJSON_GetObjectItem(response, "differences");
+    ASSERT_NOT_NULL(differences_item);
+    ASSERT_TRUE(cJSON_IsArray(differences_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory.compare ranges mode single byte compare */
+TEST(memory_compare_ranges_single_byte)
+{
+    cJSON *response, *params;
+    cJSON *differences_item, *total_item, *diff0, *addr_item;
+
+    test_memory_clear();
+    test_memory_set_byte(0x1000, 0xAA);
+    test_memory_set_byte(0x2000, 0xBB);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "ranges");
+    cJSON_AddNumberToObject(params, "range1_start", 0x1000);
+    cJSON_AddNumberToObject(params, "range1_end", 0x1000);  /* Single byte */
+    cJSON_AddNumberToObject(params, "range2_start", 0x2000);
+
+    response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should return 1 difference */
+    total_item = cJSON_GetObjectItem(response, "total_differences");
+    ASSERT_NOT_NULL(total_item);
+    ASSERT_INT_EQ(total_item->valueint, 1);
+
+    /* Check address format is $1000 */
+    differences_item = cJSON_GetObjectItem(response, "differences");
+    diff0 = cJSON_GetArrayItem(differences_item, 0);
+    addr_item = cJSON_GetObjectItem(diff0, "address");
+    ASSERT_STR_EQ(addr_item->valuestring, "$1000");
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -3128,6 +3535,21 @@ int main(void)
     RUN_TEST(memory_fill_invalid_range_returns_error);
     RUN_TEST(memory_fill_invalid_byte_value_returns_error);
     RUN_TEST(memory_fill_dispatch_works);
+
+    /* Memory compare tests (ranges mode) */
+    RUN_TEST(memory_compare_ranges_requires_mode);
+    RUN_TEST(memory_compare_ranges_requires_range1_start);
+    RUN_TEST(memory_compare_ranges_requires_range1_end);
+    RUN_TEST(memory_compare_ranges_requires_range2_start);
+    RUN_TEST(memory_compare_ranges_null_params_returns_error);
+    RUN_TEST(memory_compare_invalid_mode_returns_error);
+    RUN_TEST(memory_compare_ranges_invalid_range1_returns_error);
+    RUN_TEST(memory_compare_ranges_identical_returns_no_differences);
+    RUN_TEST(memory_compare_ranges_finds_differences);
+    RUN_TEST(memory_compare_ranges_respects_max_differences);
+    RUN_TEST(memory_compare_ranges_hex_string_addresses);
+    RUN_TEST(memory_compare_ranges_dispatch_works);
+    RUN_TEST(memory_compare_ranges_single_byte);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);

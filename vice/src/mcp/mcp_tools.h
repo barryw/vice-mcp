@@ -161,6 +161,9 @@ extern cJSON* mcp_tool_snapshot_list(cJSON *params);
 extern cJSON* mcp_tool_cycles_stopwatch(cJSON *params);
 extern cJSON* mcp_tool_memory_fill(cJSON *params);
 
+/* Tool handlers - Phase 5.2: Memory Compare */
+extern cJSON* mcp_tool_memory_compare(cJSON *params);
+
 /** @brief Send a breakpoint hit notification to SSE clients.
  *
  *  Called when a breakpoint is hit during execution. Sends an SSE event
