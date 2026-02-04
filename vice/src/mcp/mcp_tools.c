@@ -58,6 +58,7 @@
 #include "autostart.h"
 #include "kbdbuf.h"
 #include "keyboard.h"
+#include "alarm.h"
 #include "joyport/joystick.h"
 #include "arch/shared/hotkeys/vhkkeysyms.h"
 #include "archdep_user_config_path.h"
@@ -71,8 +72,8 @@ static log_t mcp_tools_log = LOG_DEFAULT;
 static int mcp_tools_initialized = 0;  /* Double-initialization guard */
 
 /* Forward declarations for keyboard auto-release (defined later with matrix code) */
-static void mcp_keyboard_vsync_callback(void *unused);
-static void mcp_keyboard_schedule_vsync_check(void);
+static void keyboard_matrix_init_alarm(void);
+static void keyboard_matrix_schedule_next_alarm(void);
 static int add_pending_vhk_key_release(signed long key_code, int modifiers, CLOCK release_at);
 
 /* -------------------------------------------------------------------------
@@ -5059,17 +5060,21 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
 
     log_message(mcp_tools_log, "Pressing key: code=%ld, modifiers=0x%04x", key_code, (unsigned int)modifiers);
 
+    /* Initialize alarm system if needed (for auto-release) */
+    keyboard_matrix_init_alarm();
+
     /* Press the key */
     keyboard_key_pressed(key_code, modifiers);
 
-    /* Schedule auto-release if hold duration specified */
+    /* If hold duration specified, schedule automatic release */
     if (hold_cycles > 0) {
         CLOCK release_at = maincpu_clk + hold_cycles;
-        if (add_pending_vhk_key_release(key_code, modifiers, release_at) < 0) {
-            log_warning(mcp_tools_log, "Failed to schedule auto-release (no slots)");
+        if (add_pending_vhk_key_release(key_code, modifiers, release_at) == 0) {
+            keyboard_matrix_schedule_next_alarm();
+            log_message(mcp_tools_log, "Scheduled auto-release in %lu cycles",
+                       (unsigned long)hold_cycles);
         } else {
-            log_message(mcp_tools_log, "Scheduled VHK auto-release at clk=%lu (in %lu cycles)",
-                       (unsigned long)release_at, (unsigned long)hold_cycles);
+            log_warning(mcp_tools_log, "No free slots for auto-release, key will stay pressed");
         }
     }
 
@@ -5081,16 +5086,13 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "key_code", key_code);
     cJSON_AddNumberToObject(response, "modifiers", modifiers);
-
-    /* Report scheduled auto-release if applicable */
-    if (hold_cycles > 0) {
-        if (hold_frames > 0) {
-            cJSON_AddNumberToObject(response, "hold_frames", hold_frames);
-        }
-        if (hold_ms > 0) {
-            cJSON_AddNumberToObject(response, "hold_ms", hold_ms);
-        }
-        cJSON_AddBoolToObject(response, "auto_release_scheduled", 1);
+    if (hold_frames > 0) {
+        cJSON_AddNumberToObject(response, "hold_frames", hold_frames);
+        cJSON_AddBoolToObject(response, "auto_release", cJSON_True);
+    }
+    if (hold_ms > 0) {
+        cJSON_AddNumberToObject(response, "hold_ms", hold_ms);
+        cJSON_AddBoolToObject(response, "auto_release", cJSON_True);
     }
 
     return response;
@@ -6005,96 +6007,93 @@ typedef struct {
 
 static pending_key_release_t pending_key_releases[MAX_PENDING_KEY_RELEASES];
 static pending_vhk_key_release_t pending_vhk_releases[MAX_PENDING_KEY_RELEASES];
-static int keyboard_pending_releases_initialized = 0;
-static int vsync_callback_registered = 0;
+static alarm_t *keyboard_matrix_alarm = NULL;
+static int keyboard_matrix_alarm_initialized = 0;
 
 /* Forward declarations */
-static void mcp_keyboard_vsync_callback(void *unused);
-static void mcp_keyboard_schedule_vsync_check(void);
+static void keyboard_matrix_schedule_next_alarm(void);
+static void keyboard_matrix_init_alarm(void);
 static int add_pending_vhk_key_release(signed long key_code, int modifiers, CLOCK release_at);
 
-/**
- * Vsync callback to check and release pending keys.
- *
- * This runs at frame boundaries (50/60 Hz), which is a safe context for
- * releasing keys. Unlike alarms, vsync callbacks don't conflict with
- * trap handlers.
- *
- * The callback:
- * 1. Checks all pending releases against current maincpu_clk
- * 2. Releases any keys whose time has come
- * 3. Re-registers itself if there are still pending releases
- */
-static void mcp_keyboard_vsync_callback(void *unused)
+/* Alarm callback to release keys */
+static void keyboard_matrix_alarm_callback(CLOCK offset, void *data)
 {
     int i;
-    CLOCK now = maincpu_clk;
-    int still_pending = 0;
+    CLOCK now = maincpu_clk - offset;  /* Adjust for any alarm overshoot */
 
-    (void)unused;
+    (void)data;
 
     /* Release all matrix keys whose time has come */
     for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
-        if (pending_key_releases[i].active) {
-            if (pending_key_releases[i].release_at <= now) {
-                keyboard_set_keyarr(pending_key_releases[i].row,
-                                   pending_key_releases[i].col, 0);
-                log_message(mcp_tools_log, "Auto-released matrix key: row=%d, col=%d",
-                           pending_key_releases[i].row, pending_key_releases[i].col);
-                pending_key_releases[i].active = 0;
-            } else {
-                still_pending = 1;
-            }
+        if (pending_key_releases[i].active && pending_key_releases[i].release_at <= now) {
+            keyboard_set_keyarr(pending_key_releases[i].row,
+                               pending_key_releases[i].col, 0);
+            log_message(mcp_tools_log, "Auto-released matrix key: row=%d, col=%d",
+                       pending_key_releases[i].row, pending_key_releases[i].col);
+            pending_key_releases[i].active = 0;
         }
     }
 
     /* Release all VHK keys whose time has come */
     for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
-        if (pending_vhk_releases[i].active) {
-            if (pending_vhk_releases[i].release_at <= now) {
-                keyboard_key_released(pending_vhk_releases[i].key_code,
-                                     pending_vhk_releases[i].modifiers);
-                log_message(mcp_tools_log, "Auto-released VHK key: code=%ld, modifiers=0x%04x",
-                           pending_vhk_releases[i].key_code,
-                           (unsigned int)pending_vhk_releases[i].modifiers);
-                pending_vhk_releases[i].active = 0;
-            } else {
-                still_pending = 1;
+        if (pending_vhk_releases[i].active && pending_vhk_releases[i].release_at <= now) {
+            keyboard_key_released(pending_vhk_releases[i].key_code,
+                                 pending_vhk_releases[i].modifiers);
+            log_message(mcp_tools_log, "Auto-released VHK key: code=%ld, modifiers=0x%04x",
+                       pending_vhk_releases[i].key_code,
+                       (unsigned int)pending_vhk_releases[i].modifiers);
+            pending_vhk_releases[i].active = 0;
+        }
+    }
+
+    /* Schedule next alarm if there are more pending releases */
+    keyboard_matrix_schedule_next_alarm();
+}
+
+/* Schedule alarm for the next pending key release (both matrix and VHK) */
+static void keyboard_matrix_schedule_next_alarm(void)
+{
+    int i;
+    CLOCK earliest = 0;
+    int found = 0;
+
+    /* Find the earliest pending matrix release */
+    for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
+        if (pending_key_releases[i].active) {
+            if (!found || pending_key_releases[i].release_at < earliest) {
+                earliest = pending_key_releases[i].release_at;
+                found = 1;
             }
         }
     }
 
-    /* Re-register if there are still pending releases */
-    if (still_pending) {
-        vsync_on_vsync_do(mcp_keyboard_vsync_callback, NULL);
-    } else {
-        vsync_callback_registered = 0;
+    /* Also check VHK pending releases */
+    for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
+        if (pending_vhk_releases[i].active) {
+            if (!found || pending_vhk_releases[i].release_at < earliest) {
+                earliest = pending_vhk_releases[i].release_at;
+                found = 1;
+            }
+        }
+    }
+
+    if (found && keyboard_matrix_alarm != NULL) {
+        alarm_set(keyboard_matrix_alarm, earliest);
     }
 }
 
-/**
- * Schedule a vsync callback to check pending key releases.
- *
- * This is called after adding a pending release. It ensures we have
- * a vsync callback registered that will eventually release the key.
- */
-static void mcp_keyboard_schedule_vsync_check(void)
+/* Initialize the keyboard alarm (lazy init) - handles both matrix and VHK keys */
+static void keyboard_matrix_init_alarm(void)
 {
-    if (!vsync_callback_registered) {
-        vsync_on_vsync_do(mcp_keyboard_vsync_callback, NULL);
-        vsync_callback_registered = 1;
-    }
-}
-
-/* Initialize the pending releases arrays (lazy init) */
-static void mcp_keyboard_init_pending_releases(void)
-{
-    if (!keyboard_pending_releases_initialized) {
+    if (!keyboard_matrix_alarm_initialized && maincpu_alarm_context != NULL) {
+        keyboard_matrix_alarm = alarm_new(maincpu_alarm_context,
+                                          "MCP-Keyboard",
+                                          keyboard_matrix_alarm_callback,
+                                          NULL);
         memset(pending_key_releases, 0, sizeof(pending_key_releases));
         memset(pending_vhk_releases, 0, sizeof(pending_vhk_releases));
-        vsync_callback_registered = 0;
-        keyboard_pending_releases_initialized = 1;
-        log_message(mcp_tools_log, "Keyboard pending releases initialized (vsync-based)");
+        keyboard_matrix_alarm_initialized = 1;
+        log_message(mcp_tools_log, "Keyboard alarm initialized");
     }
 }
 
@@ -6102,16 +6101,12 @@ static void mcp_keyboard_init_pending_releases(void)
 static int add_pending_key_release(int row, int col, CLOCK release_at)
 {
     int i;
-
-    mcp_keyboard_init_pending_releases();
-
     for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
         if (!pending_key_releases[i].active) {
             pending_key_releases[i].row = row;
             pending_key_releases[i].col = col;
             pending_key_releases[i].release_at = release_at;
             pending_key_releases[i].active = 1;
-            mcp_keyboard_schedule_vsync_check();
             return 0;
         }
     }
@@ -6122,16 +6117,12 @@ static int add_pending_key_release(int row, int col, CLOCK release_at)
 static int add_pending_vhk_key_release(signed long key_code, int modifiers, CLOCK release_at)
 {
     int i;
-
-    mcp_keyboard_init_pending_releases();
-
     for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
         if (!pending_vhk_releases[i].active) {
             pending_vhk_releases[i].key_code = key_code;
             pending_vhk_releases[i].modifiers = modifiers;
             pending_vhk_releases[i].release_at = release_at;
             pending_vhk_releases[i].active = 1;
-            mcp_keyboard_schedule_vsync_check();
             return 0;
         }
     }
@@ -6251,19 +6242,23 @@ static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
         hold_cycles = (CLOCK)hold_ms * 1000;
     }
 
+    /* Initialize alarm system if needed */
+    keyboard_matrix_init_alarm();
+
     /* Set or release the key in VICE's keyboard matrix */
     if (pressed) {
         keyboard_set_keyarr(row, col, 1);
         log_message(mcp_tools_log, "Key pressed: row=%d, col=%d", row, col);
 
-        /* Schedule auto-release if hold duration specified */
+        /* If hold duration specified, schedule automatic release */
         if (hold_cycles > 0) {
             CLOCK release_at = maincpu_clk + hold_cycles;
-            if (add_pending_key_release(row, col, release_at) < 0) {
-                log_warning(mcp_tools_log, "Failed to schedule auto-release (no slots)");
+            if (add_pending_key_release(row, col, release_at) == 0) {
+                keyboard_matrix_schedule_next_alarm();
+                log_message(mcp_tools_log, "Scheduled auto-release in %lu cycles",
+                           (unsigned long)hold_cycles);
             } else {
-                log_message(mcp_tools_log, "Scheduled auto-release at clk=%lu (in %lu cycles)",
-                           (unsigned long)release_at, (unsigned long)hold_cycles);
+                log_warning(mcp_tools_log, "No free slots for auto-release, key will stay pressed");
             }
         }
     } else {
@@ -6280,16 +6275,11 @@ static cJSON* mcp_tool_keyboard_matrix(cJSON *params)
     cJSON_AddNumberToObject(response, "row", row);
     cJSON_AddNumberToObject(response, "col", col);
     cJSON_AddBoolToObject(response, "pressed", pressed);
-
-    /* Report scheduled auto-release if applicable */
-    if (hold_cycles > 0 && pressed) {
-        if (hold_frames > 0) {
-            cJSON_AddNumberToObject(response, "hold_frames", hold_frames);
-        }
-        if (hold_ms > 0) {
-            cJSON_AddNumberToObject(response, "hold_ms", hold_ms);
-        }
-        cJSON_AddBoolToObject(response, "auto_release_scheduled", 1);
+    if (hold_frames > 0) {
+        cJSON_AddNumberToObject(response, "hold_frames", hold_frames);
+    }
+    if (hold_ms > 0) {
+        cJSON_AddNumberToObject(response, "hold_ms", hold_ms);
     }
 
     return response;
