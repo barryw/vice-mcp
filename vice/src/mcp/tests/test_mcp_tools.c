@@ -6215,6 +6215,359 @@ TEST(memory_map_with_granularity)
     cJSON_Delete(response2);
 }
 
+/* =================================================================
+ * Sprite Inspect Tests (Phase 5.5)
+ * ================================================================= */
+
+/* Tool declaration for sprite.inspect */
+extern cJSON* mcp_tool_sprite_inspect(cJSON *params);
+
+/* Test: sprite.inspect requires sprite_number parameter */
+TEST(sprite_inspect_requires_sprite_number)
+{
+    cJSON *response, *params, *code_item;
+
+    /* NULL params should return error */
+    response = mcp_tool_sprite_inspect(NULL);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    cJSON_Delete(response);
+
+    /* Empty params should return error */
+    params = cJSON_CreateObject();
+    response = mcp_tool_sprite_inspect(params);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+}
+
+/* Test: sprite.inspect validates sprite_number range (0-7) */
+TEST(sprite_inspect_validates_sprite_number_range)
+{
+    cJSON *response, *params, *code_item;
+
+    /* sprite_number = -1 should return error */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", -1);
+    response = mcp_tool_sprite_inspect(params);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+
+    /* sprite_number = 8 should return error */
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", 8);
+    response = mcp_tool_sprite_inspect(params);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+}
+
+/* Test: sprite.inspect returns valid response for hires sprite */
+TEST(sprite_inspect_hires_sprite_valid_response)
+{
+    cJSON *response, *params, *item, *dimensions, *colors;
+
+    /* Set up test memory:
+     * - Sprite pointer at $07F8 = $80 (data at $80 * 64 = $2000)
+     * - Multicolor register $D01C = 0 (hires)
+     * - Sprite 0 color at $D027 = 1 (white)
+     * - Put some data at $2000 (63 bytes)
+     */
+    test_memory_clear();
+
+    /* Sprite pointer: bank base is typically $0000 for default VIC bank */
+    test_memory_set_byte(0x07F8, 0x80);  /* Sprite 0 pointer = $80 -> $2000 */
+
+    /* VIC-II registers */
+    test_memory_set_byte(0xD01C, 0x00);  /* All sprites hires */
+    test_memory_set_byte(0xD027, 0x01);  /* Sprite 0 color = white */
+
+    /* Put some recognizable sprite data at $2000 */
+    /* Row 0: #..#..#..#..#..#..#..#.. (24 bits = 3 bytes) */
+    test_memory_set_byte(0x2000, 0xFF);  /* 11111111 = ######## */
+    test_memory_set_byte(0x2001, 0x00);  /* 00000000 = ........ */
+    test_memory_set_byte(0x2002, 0xFF);  /* 11111111 = ######## */
+    /* Clear rest */
+    /* Byte 63 at $203E is unused */
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", 0);
+
+    response = mcp_tool_sprite_inspect(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not have error code */
+    item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(item == NULL);
+
+    /* Check required fields */
+    item = cJSON_GetObjectItem(response, "pointer");
+    ASSERT_NOT_NULL(item);
+    ASSERT_TRUE(cJSON_IsString(item));
+    ASSERT_STR_EQ(item->valuestring, "$07F8");
+
+    item = cJSON_GetObjectItem(response, "data_address");
+    ASSERT_NOT_NULL(item);
+    ASSERT_TRUE(cJSON_IsString(item));
+    ASSERT_STR_EQ(item->valuestring, "$2000");
+
+    dimensions = cJSON_GetObjectItem(response, "dimensions");
+    ASSERT_NOT_NULL(dimensions);
+    item = cJSON_GetObjectItem(dimensions, "width");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 24);
+    item = cJSON_GetObjectItem(dimensions, "height");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 21);
+
+    item = cJSON_GetObjectItem(response, "multicolor");
+    ASSERT_NOT_NULL(item);
+    ASSERT_TRUE(cJSON_IsFalse(item));
+
+    colors = cJSON_GetObjectItem(response, "colors");
+    ASSERT_NOT_NULL(colors);
+    item = cJSON_GetObjectItem(colors, "main");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 1);
+
+    /* Bitmap should be present */
+    item = cJSON_GetObjectItem(response, "bitmap");
+    ASSERT_NOT_NULL(item);
+    ASSERT_TRUE(cJSON_IsString(item));
+    /* First row should contain # and . characters */
+    ASSERT_TRUE(strstr(item->valuestring, "#") != NULL);
+    ASSERT_TRUE(strstr(item->valuestring, ".") != NULL);
+
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+}
+
+/* Test: sprite.inspect returns valid response for multicolor sprite */
+TEST(sprite_inspect_multicolor_sprite_valid_response)
+{
+    cJSON *response, *params, *item, *colors;
+
+    test_memory_clear();
+
+    /* Sprite pointer */
+    test_memory_set_byte(0x07F9, 0x81);  /* Sprite 1 pointer = $81 -> $2040 */
+
+    /* VIC-II registers - sprite 1 is multicolor */
+    test_memory_set_byte(0xD01C, 0x02);  /* Sprite 1 multicolor (bit 1) */
+    test_memory_set_byte(0xD025, 0x02);  /* Multicolor 1 = red */
+    test_memory_set_byte(0xD026, 0x03);  /* Multicolor 2 = cyan */
+    test_memory_set_byte(0xD028, 0x01);  /* Sprite 1 color = white */
+
+    /* Multicolor sprite data at $2040 */
+    /* 00=transparent, 01=multi1, 10=sprite color, 11=multi2 */
+    test_memory_set_byte(0x2040, 0x55);  /* 01010101 = @@@@  (multi1) */
+    test_memory_set_byte(0x2041, 0xAA);  /* 10101010 = ####  (sprite color) */
+    test_memory_set_byte(0x2042, 0xFF);  /* 11111111 = %%%%  (multi2) */
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", 1);
+
+    response = mcp_tool_sprite_inspect(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not have error code */
+    item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(item == NULL);
+
+    item = cJSON_GetObjectItem(response, "multicolor");
+    ASSERT_NOT_NULL(item);
+    ASSERT_TRUE(cJSON_IsTrue(item));
+
+    colors = cJSON_GetObjectItem(response, "colors");
+    ASSERT_NOT_NULL(colors);
+    item = cJSON_GetObjectItem(colors, "main");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 1);
+    item = cJSON_GetObjectItem(colors, "multi1");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 2);
+    item = cJSON_GetObjectItem(colors, "multi2");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 3);
+
+    /* Bitmap should contain multicolor chars */
+    item = cJSON_GetObjectItem(response, "bitmap");
+    ASSERT_NOT_NULL(item);
+    /* Multi1 (@) and multi2 (%) should be present */
+    ASSERT_TRUE(strstr(item->valuestring, "@") != NULL);
+    ASSERT_TRUE(strstr(item->valuestring, "%") != NULL);
+
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+}
+
+/* Test: sprite.inspect with binary format */
+TEST(sprite_inspect_binary_format)
+{
+    cJSON *response, *params, *item;
+
+    test_memory_clear();
+    test_memory_set_byte(0x07F8, 0x80);
+    test_memory_set_byte(0xD01C, 0x00);
+    test_memory_set_byte(0xD027, 0x01);
+    test_memory_set_byte(0x2000, 0xAA);  /* 10101010 */
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", 0);
+    cJSON_AddStringToObject(params, "format", "binary");
+
+    response = mcp_tool_sprite_inspect(params);
+    ASSERT_NOT_NULL(response);
+
+    item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(item == NULL);
+
+    item = cJSON_GetObjectItem(response, "bitmap");
+    ASSERT_NOT_NULL(item);
+    ASSERT_TRUE(cJSON_IsString(item));
+    /* Binary format should contain 0 and 1 */
+    ASSERT_TRUE(strstr(item->valuestring, "0") != NULL);
+    ASSERT_TRUE(strstr(item->valuestring, "1") != NULL);
+
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+}
+
+/* Test: sprite.inspect invalid format returns error */
+TEST(sprite_inspect_invalid_format_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    test_memory_clear();
+    test_memory_set_byte(0x07F8, 0x80);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", 0);
+    cJSON_AddStringToObject(params, "format", "invalid_format");
+
+    response = mcp_tool_sprite_inspect(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+}
+
+/* Test: sprite.inspect returns raw_data as hex array */
+TEST(sprite_inspect_returns_raw_data)
+{
+    cJSON *response, *params, *item, *raw_data;
+
+    test_memory_clear();
+    test_memory_set_byte(0x07F8, 0x80);
+    test_memory_set_byte(0xD01C, 0x00);
+    /* Set first few bytes to known values */
+    test_memory_set_byte(0x2000, 0xAB);
+    test_memory_set_byte(0x2001, 0xCD);
+    test_memory_set_byte(0x2002, 0xEF);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", 0);
+
+    response = mcp_tool_sprite_inspect(params);
+    ASSERT_NOT_NULL(response);
+
+    item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(item == NULL);
+
+    raw_data = cJSON_GetObjectItem(response, "raw_data");
+    ASSERT_NOT_NULL(raw_data);
+    ASSERT_TRUE(cJSON_IsArray(raw_data));
+    ASSERT_INT_EQ(cJSON_GetArraySize(raw_data), 63);
+
+    /* Check first three values */
+    ASSERT_INT_EQ(cJSON_GetArrayItem(raw_data, 0)->valueint, 0xAB);
+    ASSERT_INT_EQ(cJSON_GetArrayItem(raw_data, 1)->valueint, 0xCD);
+    ASSERT_INT_EQ(cJSON_GetArrayItem(raw_data, 2)->valueint, 0xEF);
+
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+}
+
+/* Test: sprite.inspect works for all sprites 0-7 */
+TEST(sprite_inspect_all_sprites_valid)
+{
+    cJSON *response, *params, *item;
+    int i;
+
+    test_memory_clear();
+
+    /* Set up pointers for all 8 sprites */
+    for (i = 0; i < 8; i++) {
+        test_memory_set_byte(0x07F8 + i, 0x80 + i);
+        test_memory_set_byte(0xD027 + i, i + 1);  /* Colors 1-8 */
+    }
+    test_memory_set_byte(0xD01C, 0x00);  /* All hires */
+
+    /* Test each sprite */
+    for (i = 0; i < 8; i++) {
+        params = cJSON_CreateObject();
+        cJSON_AddNumberToObject(params, "sprite_number", i);
+
+        response = mcp_tool_sprite_inspect(params);
+        ASSERT_NOT_NULL(response);
+
+        item = cJSON_GetObjectItem(response, "code");
+        ASSERT_TRUE(item == NULL);
+
+        /* Check sprite-specific data */
+        item = cJSON_GetObjectItem(response, "colors");
+        ASSERT_NOT_NULL(item);
+        item = cJSON_GetObjectItem(item, "main");
+        ASSERT_NOT_NULL(item);
+        ASSERT_INT_EQ(item->valueint, i + 1);
+
+        cJSON_Delete(response);
+        cJSON_Delete(params);
+    }
+}
+
+/* Test: sprite.inspect dispatch works */
+TEST(sprite_inspect_dispatch_works)
+{
+    cJSON *response, *params, *item;
+
+    test_memory_clear();
+    test_memory_set_byte(0x07F8, 0x80);
+    test_memory_set_byte(0xD01C, 0x00);
+    test_memory_set_byte(0xD027, 0x01);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", 0);
+
+    response = mcp_tools_dispatch("vice.sprite.inspect", params);
+    ASSERT_NOT_NULL(response);
+
+    item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(item == NULL);
+
+    item = cJSON_GetObjectItem(response, "pointer");
+    ASSERT_NOT_NULL(item);
+
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -6497,6 +6850,17 @@ int main(void)
     RUN_TEST(memory_map_with_symbols_shows_content_hint);
     RUN_TEST(memory_map_dispatch_works);
     RUN_TEST(memory_map_with_granularity);
+
+    /* Sprite inspect tests (Phase 5.5) */
+    RUN_TEST(sprite_inspect_requires_sprite_number);
+    RUN_TEST(sprite_inspect_validates_sprite_number_range);
+    RUN_TEST(sprite_inspect_hires_sprite_valid_response);
+    RUN_TEST(sprite_inspect_multicolor_sprite_valid_response);
+    RUN_TEST(sprite_inspect_binary_format);
+    RUN_TEST(sprite_inspect_invalid_format_returns_error);
+    RUN_TEST(sprite_inspect_returns_raw_data);
+    RUN_TEST(sprite_inspect_all_sprites_valid);
+    RUN_TEST(sprite_inspect_dispatch_works);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);

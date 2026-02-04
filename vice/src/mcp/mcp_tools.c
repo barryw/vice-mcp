@@ -1021,6 +1021,13 @@ static const mcp_tool_t tool_registry[] = {
       "When symbols are loaded, adds content_hint showing symbols in each region.",
       mcp_tool_memory_map },
 
+    /* Phase 5.5: Sprite Inspect */
+    { "vice.sprite.inspect",
+      "Visual representation of sprite bitmap data. "
+      "Reads sprite pointer, data, and multicolor settings to render ASCII art. "
+      "ASCII Legend: '.'=transparent(00), '#'=sprite color(10), '@'=multi1(01), '%'=multi2(11).",
+      mcp_tool_sprite_inspect },
+
     { NULL, NULL, NULL } /* Sentinel */
 };
 
@@ -8224,6 +8231,248 @@ cJSON* mcp_tool_memory_map(cJSON *params)
 
     log_message(mcp_tools_log, "Memory map returned %d regions for range $%04X-$%04X",
                 cJSON_GetArraySize(regions_array), (unsigned int)start_addr, (unsigned int)end_addr);
+
+    return response;
+}
+
+/* ==========================================================================
+ * Phase 5.5: Sprite Inspect Tool
+ * ==========================================================================
+ * Provides visual representation of C64 sprite bitmap data.
+ *
+ * Sprite Layout on C64:
+ * - Sprite pointers at $07F8-$07FF (one byte per sprite in default screen memory)
+ * - Data address = pointer * 64 (within VIC bank)
+ * - Each sprite is 24x21 pixels = 63 bytes (3 bytes/row x 21 rows)
+ * - Multicolor flag from $D01C (one bit per sprite)
+ * - Sprite colors from $D027-$D02E (one per sprite)
+ * - Multicolor 1 from $D025, Multicolor 2 from $D026
+ *
+ * ASCII Legend:
+ * - '.' = transparent (00 in hires, or multicolor)
+ * - '#' = sprite color (1 in hires, 10 in multicolor)
+ * - '@' = multicolor 1 (01 in multicolor mode)
+ * - '%' = multicolor 2 (11 in multicolor mode)
+ */
+
+/* Sprite pointer base address (in default screen memory at $0400-$07FF) */
+#define SPRITE_POINTER_BASE 0x07F8
+
+/* Multicolor color registers */
+#define VICII_SPRITE_MULTI1 0xD025
+#define VICII_SPRITE_MULTI2 0xD026
+
+/* Sprite dimensions */
+#define SPRITE_WIDTH  24
+#define SPRITE_HEIGHT 21
+#define SPRITE_BYTES  63
+
+cJSON* mcp_tool_sprite_inspect(cJSON *params)
+{
+    cJSON *response, *dimensions, *colors, *raw_data, *sprite_num_item, *format_item;
+    int sprite_number;
+    const char *format_str = "ascii";  /* Default format */
+    uint8_t pointer_value;
+    uint16_t pointer_addr, data_addr;
+    uint8_t multicolor_reg, sprite_color, multi1_color, multi2_color;
+    int is_multicolor;
+    uint8_t sprite_data[SPRITE_BYTES];
+    char addr_str[8];
+    char *bitmap_str;
+    size_t bitmap_size;
+    int row, col, byte_idx, bit_idx;
+    int i;
+
+    log_message(mcp_tools_log, "Handling vice.sprite.inspect");
+
+    /* Validate required parameters */
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "sprite_number (0-7) is required");
+    }
+
+    sprite_num_item = cJSON_GetObjectItem(params, "sprite_number");
+    if (sprite_num_item == NULL || !cJSON_IsNumber(sprite_num_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "sprite_number (0-7) is required");
+    }
+
+    sprite_number = sprite_num_item->valueint;
+    if (sprite_number < 0 || sprite_number > 7) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "sprite_number must be 0-7");
+    }
+
+    /* Get optional format parameter */
+    format_item = cJSON_GetObjectItem(params, "format");
+    if (format_item != NULL && cJSON_IsString(format_item)) {
+        format_str = format_item->valuestring;
+        if (strcmp(format_str, "ascii") != 0 &&
+            strcmp(format_str, "binary") != 0 &&
+            strcmp(format_str, "png_base64") != 0) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                "format must be 'ascii', 'binary', or 'png_base64'");
+        }
+    }
+
+    /* Read sprite pointer address */
+    pointer_addr = SPRITE_POINTER_BASE + sprite_number;
+    pointer_value = mem_read(pointer_addr);
+
+    /* Calculate data address: pointer * 64
+     * Note: This assumes default VIC bank 0 ($0000-$3FFF).
+     * In a real implementation, we'd need to check the VIC bank setting
+     * from CIA2 port A ($DD00) bits 0-1. */
+    data_addr = pointer_value * 64;
+
+    /* Read multicolor register */
+    multicolor_reg = mem_read(VICII_SPRITE_MULTICOLOR);
+    is_multicolor = (multicolor_reg & (1 << sprite_number)) != 0;
+
+    /* Read sprite colors */
+    sprite_color = mem_read(VICII_SPRITE_COLOR_BASE + sprite_number);
+    multi1_color = mem_read(VICII_SPRITE_MULTI1);
+    multi2_color = mem_read(VICII_SPRITE_MULTI2);
+
+    /* Read sprite data (63 bytes) */
+    for (i = 0; i < SPRITE_BYTES; i++) {
+        sprite_data[i] = mem_read(data_addr + i);
+    }
+
+    /* Build response object */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    /* Pointer address */
+    snprintf(addr_str, sizeof(addr_str), "$%04X", pointer_addr);
+    cJSON_AddStringToObject(response, "pointer", addr_str);
+
+    /* Data address */
+    snprintf(addr_str, sizeof(addr_str), "$%04X", data_addr);
+    cJSON_AddStringToObject(response, "data_address", addr_str);
+
+    /* Dimensions */
+    dimensions = cJSON_CreateObject();
+    if (dimensions == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    cJSON_AddNumberToObject(dimensions, "width", SPRITE_WIDTH);
+    cJSON_AddNumberToObject(dimensions, "height", SPRITE_HEIGHT);
+    cJSON_AddItemToObject(response, "dimensions", dimensions);
+
+    /* Multicolor flag */
+    cJSON_AddBoolToObject(response, "multicolor", is_multicolor);
+
+    /* Colors */
+    colors = cJSON_CreateObject();
+    if (colors == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    cJSON_AddNumberToObject(colors, "main", sprite_color);
+    if (is_multicolor) {
+        cJSON_AddNumberToObject(colors, "multi1", multi1_color);
+        cJSON_AddNumberToObject(colors, "multi2", multi2_color);
+    }
+    cJSON_AddItemToObject(response, "colors", colors);
+
+    /* Raw data as array */
+    raw_data = cJSON_CreateArray();
+    if (raw_data == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    for (i = 0; i < SPRITE_BYTES; i++) {
+        cJSON_AddItemToArray(raw_data, cJSON_CreateNumber(sprite_data[i]));
+    }
+    cJSON_AddItemToObject(response, "raw_data", raw_data);
+
+    /* Generate bitmap string based on format */
+    if (strcmp(format_str, "png_base64") == 0) {
+        /* PNG encoding not implemented in this phase - return placeholder */
+        cJSON_AddStringToObject(response, "bitmap", "(png_base64 not implemented)");
+    } else {
+        /* ASCII or binary format */
+        /* Each row is 24 chars (hires) or 12 double-wide chars (multicolor)
+         * + newline, times 21 rows, plus null terminator.
+         * Allocate generously for both formats. */
+        bitmap_size = (SPRITE_WIDTH + 1) * SPRITE_HEIGHT + 1;
+        bitmap_str = lib_malloc(bitmap_size);
+        if (bitmap_str == NULL) {
+            cJSON_Delete(response);
+            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+
+        char *ptr = bitmap_str;
+
+        if (is_multicolor) {
+            /* Multicolor mode: 2 bits per pixel, 12 pixels per row */
+            /* Bit pairs: 00=transparent, 01=multi1, 10=sprite, 11=multi2 */
+            for (row = 0; row < SPRITE_HEIGHT; row++) {
+                byte_idx = row * 3;  /* 3 bytes per row */
+
+                for (col = 0; col < 12; col++) {
+                    /* Each byte has 4 pixel pairs (2 bits each) */
+                    int byte_offset = col / 4;
+                    int pair_in_byte = 3 - (col % 4);  /* Pairs are high to low */
+                    uint8_t byte_val = sprite_data[byte_idx + byte_offset];
+                    int pixel_pair = (byte_val >> (pair_in_byte * 2)) & 0x03;
+
+                    char c1, c2;
+                    if (strcmp(format_str, "binary") == 0) {
+                        /* Binary format: show as 00, 01, 10, 11 */
+                        c1 = (pixel_pair & 0x02) ? '1' : '0';
+                        c2 = (pixel_pair & 0x01) ? '1' : '0';
+                    } else {
+                        /* ASCII format: use legend characters */
+                        switch (pixel_pair) {
+                            case 0: c1 = '.'; c2 = '.'; break;  /* Transparent */
+                            case 1: c1 = '@'; c2 = '@'; break;  /* Multi1 */
+                            case 2: c1 = '#'; c2 = '#'; break;  /* Sprite color */
+                            case 3: c1 = '%'; c2 = '%'; break;  /* Multi2 */
+                            default: c1 = '?'; c2 = '?'; break;
+                        }
+                    }
+                    *ptr++ = c1;
+                    *ptr++ = c2;
+                }
+                *ptr++ = '\n';
+            }
+        } else {
+            /* Hires mode: 1 bit per pixel, 24 pixels per row */
+            for (row = 0; row < SPRITE_HEIGHT; row++) {
+                byte_idx = row * 3;  /* 3 bytes per row */
+
+                for (col = 0; col < SPRITE_WIDTH; col++) {
+                    int byte_offset = col / 8;
+                    bit_idx = 7 - (col % 8);  /* Bits are MSB first */
+                    uint8_t byte_val = sprite_data[byte_idx + byte_offset];
+                    int pixel = (byte_val >> bit_idx) & 0x01;
+
+                    char c;
+                    if (strcmp(format_str, "binary") == 0) {
+                        c = pixel ? '1' : '0';
+                    } else {
+                        c = pixel ? '#' : '.';
+                    }
+                    *ptr++ = c;
+                }
+                *ptr++ = '\n';
+            }
+        }
+        /* Remove trailing newline for cleaner output */
+        if (ptr > bitmap_str && *(ptr - 1) == '\n') {
+            ptr--;
+        }
+        *ptr = '\0';
+
+        cJSON_AddStringToObject(response, "bitmap", bitmap_str);
+        lib_free(bitmap_str);
+    }
+
+    log_message(mcp_tools_log, "Sprite %d inspect complete: %s mode, data at $%04X",
+                sprite_number, is_multicolor ? "multicolor" : "hires",
+                (unsigned int)data_addr);
 
     return response;
 }
