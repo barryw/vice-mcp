@@ -71,6 +71,81 @@
 static log_t mcp_tools_log = LOG_DEFAULT;
 static int mcp_tools_initialized = 0;  /* Double-initialization guard */
 
+/* -------------------------------------------------------------------------
+ * Checkpoint Group Management (MCP-side bookkeeping)
+ *
+ * Groups are purely MCP-side - VICE checkpoints don't have native groups.
+ * We track membership here and iterate when toggling.
+ * ------------------------------------------------------------------------- */
+#define MCP_MAX_GROUPS 32
+#define MCP_MAX_CHECKPOINTS_PER_GROUP 64
+#define MCP_MAX_GROUP_NAME_LEN 64
+
+typedef struct {
+    char name[MCP_MAX_GROUP_NAME_LEN];
+    int checkpoint_ids[MCP_MAX_CHECKPOINTS_PER_GROUP];
+    int checkpoint_count;
+    int active;  /* 1 if in use, 0 if slot is free */
+} mcp_checkpoint_group_t;
+
+static mcp_checkpoint_group_t checkpoint_groups[MCP_MAX_GROUPS];
+static int checkpoint_groups_initialized = 0;
+
+/* Initialize checkpoint groups (called on first use) */
+static void mcp_checkpoint_groups_init(void)
+{
+    int i;
+    if (!checkpoint_groups_initialized) {
+        for (i = 0; i < MCP_MAX_GROUPS; i++) {
+            checkpoint_groups[i].name[0] = '\0';
+            checkpoint_groups[i].checkpoint_count = 0;
+            checkpoint_groups[i].active = 0;
+        }
+        checkpoint_groups_initialized = 1;
+    }
+}
+
+/* Reset all checkpoint groups (for testing)
+ * Note: Exposed for test harness, not for general use */
+extern void mcp_checkpoint_groups_reset(void);  /* Forward declaration for prototype */
+void mcp_checkpoint_groups_reset(void)
+{
+    int i;
+    for (i = 0; i < MCP_MAX_GROUPS; i++) {
+        checkpoint_groups[i].name[0] = '\0';
+        checkpoint_groups[i].checkpoint_count = 0;
+        checkpoint_groups[i].active = 0;
+    }
+    checkpoint_groups_initialized = 1;
+}
+
+/* Find a group by name. Returns index or -1 if not found */
+static int mcp_checkpoint_group_find(const char *name)
+{
+    int i;
+    mcp_checkpoint_groups_init();
+    for (i = 0; i < MCP_MAX_GROUPS; i++) {
+        if (checkpoint_groups[i].active &&
+            strcmp(checkpoint_groups[i].name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Find a free group slot. Returns index or -1 if full */
+static int mcp_checkpoint_group_find_free(void)
+{
+    int i;
+    mcp_checkpoint_groups_init();
+    for (i = 0; i < MCP_MAX_GROUPS; i++) {
+        if (!checkpoint_groups[i].active) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 /* Catastrophic error response when we can't allocate memory */
 const char *CATASTROPHIC_ERROR_JSON =
     "{\"code\":-32603,\"message\":\"Internal error: out of memory\"}";
@@ -691,6 +766,25 @@ static const mcp_tool_t tool_registry[] = {
       "Use mode='ranges' to compare two live memory ranges, or mode='snapshot' to compare "
       "against a previously saved state. Returns list of differences with addresses and values.",
       mcp_tool_memory_compare },
+
+    /* Phase 5.3: Checkpoint Groups */
+    { "vice.checkpoint.group.create",
+      "Create a named checkpoint group for batch operations. "
+      "Groups allow you to enable/disable multiple breakpoints at once. "
+      "Optionally include initial checkpoint_ids array.",
+      mcp_tool_checkpoint_group_create },
+    { "vice.checkpoint.group.add",
+      "Add checkpoints to an existing group. "
+      "Use this to grow a group after creation.",
+      mcp_tool_checkpoint_group_add },
+    { "vice.checkpoint.group.toggle",
+      "Enable or disable all checkpoints in a group. "
+      "Use enabled=true to enable, enabled=false to disable.",
+      mcp_tool_checkpoint_group_toggle },
+    { "vice.checkpoint.group.list",
+      "List all checkpoint groups with their member counts. "
+      "Returns group names, checkpoint IDs, and enabled/disabled counts.",
+      mcp_tool_checkpoint_group_list },
 
     { NULL, NULL, NULL } /* Sentinel */
 };
@@ -1436,6 +1530,37 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("mode"));
             schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.checkpoint.group.create") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "name", mcp_prop_string("Group name (unique identifier)"));
+            cJSON_AddItemToObject(props, "checkpoint_ids", mcp_prop_array("number",
+                "Optional array of checkpoint IDs to include in the group"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("name"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.checkpoint.group.add") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "group", mcp_prop_string("Group name to add checkpoints to"));
+            cJSON_AddItemToObject(props, "checkpoint_ids", mcp_prop_array("number",
+                "Array of checkpoint IDs to add to the group"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("group"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("checkpoint_ids"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.checkpoint.group.toggle") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "group", mcp_prop_string("Group name"));
+            cJSON_AddItemToObject(props, "enabled", mcp_prop_boolean("Enable (true) or disable (false) all checkpoints in the group"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("group"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("enabled"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.checkpoint.group.list") == 0) {
+            schema = mcp_schema_empty();
 
         } else {
             /* Default: empty schema for unknown tools */
@@ -2640,6 +2765,286 @@ cJSON* mcp_tool_checkpoint_set_ignore_count(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "checkpoint_num", checkpoint_num);
     cJSON_AddNumberToObject(response, "ignore_count", ignore_count);
+
+    return response;
+}
+
+/* ========================================================================= */
+/* Phase 5.3: Checkpoint Group Tools (MCP-side bookkeeping)                  */
+/* ========================================================================= */
+
+/* vice.checkpoint.group.create - Create a named checkpoint group
+ *
+ * Parameters:
+ *   - name (string, required): Group name
+ *   - checkpoint_ids (array of numbers, optional): Initial checkpoint IDs
+ *
+ * Returns:
+ *   - created (bool): true if created
+ *   - name (string): Group name
+ */
+cJSON* mcp_tool_checkpoint_group_create(cJSON *params)
+{
+    cJSON *response, *name_item, *ids_item;
+    const char *name;
+    int group_idx, i;
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.group.create");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    name_item = cJSON_GetObjectItem(params, "name");
+    if (!cJSON_IsString(name_item) || name_item->valuestring == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "name (string) required");
+    }
+    name = name_item->valuestring;
+
+    /* Check name length */
+    if (strlen(name) >= MCP_MAX_GROUP_NAME_LEN) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Group name too long");
+    }
+
+    /* Check if group already exists */
+    if (mcp_checkpoint_group_find(name) >= 0) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Group already exists");
+    }
+
+    /* Find a free slot */
+    group_idx = mcp_checkpoint_group_find_free();
+    if (group_idx < 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Maximum groups reached");
+    }
+
+    /* Initialize the group */
+    strncpy(checkpoint_groups[group_idx].name, name, MCP_MAX_GROUP_NAME_LEN - 1);
+    checkpoint_groups[group_idx].name[MCP_MAX_GROUP_NAME_LEN - 1] = '\0';
+    checkpoint_groups[group_idx].checkpoint_count = 0;
+    checkpoint_groups[group_idx].active = 1;
+
+    /* Add initial checkpoint IDs if provided */
+    ids_item = cJSON_GetObjectItem(params, "checkpoint_ids");
+    if (cJSON_IsArray(ids_item)) {
+        int array_size = cJSON_GetArraySize(ids_item);
+        for (i = 0; i < array_size && checkpoint_groups[group_idx].checkpoint_count < MCP_MAX_CHECKPOINTS_PER_GROUP; i++) {
+            cJSON *id_item = cJSON_GetArrayItem(ids_item, i);
+            if (cJSON_IsNumber(id_item)) {
+                checkpoint_groups[group_idx].checkpoint_ids[checkpoint_groups[group_idx].checkpoint_count++] = id_item->valueint;
+            }
+        }
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddBoolToObject(response, "created", 1);
+    cJSON_AddStringToObject(response, "name", name);
+
+    return response;
+}
+
+/* vice.checkpoint.group.add - Add checkpoints to an existing group
+ *
+ * Parameters:
+ *   - group (string, required): Group name
+ *   - checkpoint_ids (array of numbers, required): Checkpoint IDs to add
+ *
+ * Returns:
+ *   - added (number): Count of checkpoints added
+ */
+cJSON* mcp_tool_checkpoint_group_add(cJSON *params)
+{
+    cJSON *response, *group_item, *ids_item;
+    const char *group_name;
+    int group_idx, i, added_count = 0;
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.group.add");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    group_item = cJSON_GetObjectItem(params, "group");
+    if (!cJSON_IsString(group_item) || group_item->valuestring == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "group (string) required");
+    }
+    group_name = group_item->valuestring;
+
+    ids_item = cJSON_GetObjectItem(params, "checkpoint_ids");
+    if (!cJSON_IsArray(ids_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "checkpoint_ids (array) required");
+    }
+
+    /* Find the group */
+    group_idx = mcp_checkpoint_group_find(group_name);
+    if (group_idx < 0) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Group not found");
+    }
+
+    /* Add checkpoint IDs */
+    int array_size = cJSON_GetArraySize(ids_item);
+    for (i = 0; i < array_size; i++) {
+        cJSON *id_item = cJSON_GetArrayItem(ids_item, i);
+        if (cJSON_IsNumber(id_item)) {
+            if (checkpoint_groups[group_idx].checkpoint_count < MCP_MAX_CHECKPOINTS_PER_GROUP) {
+                checkpoint_groups[group_idx].checkpoint_ids[checkpoint_groups[group_idx].checkpoint_count++] = id_item->valueint;
+                added_count++;
+            }
+        }
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddNumberToObject(response, "added", added_count);
+
+    return response;
+}
+
+/* vice.checkpoint.group.toggle - Enable/disable all checkpoints in a group
+ *
+ * Parameters:
+ *   - group (string, required): Group name
+ *   - enabled (boolean, required): Enable or disable
+ *
+ * Returns:
+ *   - affected_count (number): Number of checkpoints toggled
+ */
+cJSON* mcp_tool_checkpoint_group_toggle(cJSON *params)
+{
+    cJSON *response, *group_item, *enabled_item;
+    const char *group_name;
+    int group_idx, i, affected_count = 0;
+    bool enabled;
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.group.toggle");
+
+    if (params == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing parameters");
+    }
+
+    group_item = cJSON_GetObjectItem(params, "group");
+    if (!cJSON_IsString(group_item) || group_item->valuestring == NULL) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "group (string) required");
+    }
+    group_name = group_item->valuestring;
+
+    enabled_item = cJSON_GetObjectItem(params, "enabled");
+    if (!cJSON_IsBool(enabled_item)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "enabled (boolean) required");
+    }
+    enabled = cJSON_IsTrue(enabled_item);
+
+    /* Find the group */
+    group_idx = mcp_checkpoint_group_find(group_name);
+    if (group_idx < 0) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Group not found");
+    }
+
+    /* Toggle all checkpoints in the group */
+    for (i = 0; i < checkpoint_groups[group_idx].checkpoint_count; i++) {
+        int checkpoint_num = checkpoint_groups[group_idx].checkpoint_ids[i];
+
+        /* Verify checkpoint still exists before toggling */
+        if (mon_breakpoint_find_checkpoint(checkpoint_num) != NULL) {
+            /* Toggle it (op=1 for enable, op=2 for disable) */
+            mon_breakpoint_switch_checkpoint(enabled ? 1 : 2, checkpoint_num);
+            affected_count++;
+        }
+    }
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddNumberToObject(response, "affected_count", affected_count);
+
+    return response;
+}
+
+/* vice.checkpoint.group.list - List all checkpoint groups
+ *
+ * Returns:
+ *   - groups (array): Array of group objects with:
+ *     - name (string): Group name
+ *     - checkpoint_ids (array): Checkpoint IDs in the group
+ *     - enabled_count (number): Count of enabled checkpoints
+ *     - disabled_count (number): Count of disabled checkpoints
+ */
+cJSON* mcp_tool_checkpoint_group_list(cJSON *params)
+{
+    cJSON *response, *groups_array;
+    int i;
+
+    (void)params;  /* Unused */
+
+    log_message(mcp_tools_log, "Handling vice.checkpoint.group.list");
+
+    mcp_checkpoint_groups_init();
+
+    /* Build response */
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    groups_array = cJSON_CreateArray();
+    if (groups_array == NULL) {
+        cJSON_Delete(response);
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    for (i = 0; i < MCP_MAX_GROUPS; i++) {
+        if (checkpoint_groups[i].active) {
+            cJSON *group_obj = cJSON_CreateObject();
+            cJSON *ids_array;
+            int j, enabled_count = 0, disabled_count = 0;
+
+            if (group_obj == NULL) {
+                cJSON_Delete(groups_array);
+                cJSON_Delete(response);
+                return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+            }
+
+            cJSON_AddStringToObject(group_obj, "name", checkpoint_groups[i].name);
+
+            /* Create checkpoint_ids array */
+            ids_array = cJSON_CreateArray();
+            if (ids_array != NULL) {
+                for (j = 0; j < checkpoint_groups[i].checkpoint_count; j++) {
+                    int cp_num = checkpoint_groups[i].checkpoint_ids[j];
+                    cJSON_AddItemToArray(ids_array, cJSON_CreateNumber(cp_num));
+
+                    /* Check if checkpoint exists and is enabled */
+                    mon_checkpoint_t *cp = mon_breakpoint_find_checkpoint(cp_num);
+                    if (cp != NULL) {
+                        if (cp->enabled) {
+                            enabled_count++;
+                        } else {
+                            disabled_count++;
+                        }
+                    }
+                }
+                cJSON_AddItemToObject(group_obj, "checkpoint_ids", ids_array);
+            }
+
+            cJSON_AddNumberToObject(group_obj, "enabled_count", enabled_count);
+            cJSON_AddNumberToObject(group_obj, "disabled_count", disabled_count);
+
+            cJSON_AddItemToArray(groups_array, group_obj);
+        }
+    }
+
+    cJSON_AddItemToObject(response, "groups", groups_array);
 
     return response;
 }

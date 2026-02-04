@@ -79,6 +79,28 @@ extern void test_checkpoint_reset(void);
 extern int test_checkpoint_get_last_num(void);
 extern int test_checkpoint_has_condition(void);
 
+/* Checkpoint group tool declarations */
+extern cJSON* mcp_tool_checkpoint_group_create(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_group_add(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_group_toggle(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_group_list(cJSON *params);
+
+/* Checkpoint group reset function - implemented here because it needs libmcp.a */
+extern void mcp_checkpoint_groups_reset(void);  /* From libmcp.a */
+
+static void test_checkpoint_groups_reset(void)
+{
+    mcp_checkpoint_groups_reset();
+}
+
+/* Stub function for creating checkpoints in tests */
+extern int mon_breakpoint_add_checkpoint(unsigned int start, unsigned int end,
+                                         int stop, int operation,
+                                         int temporary, int do_print);
+
+/* Include stdbool for true/false */
+#include <stdbool.h>
+
 static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -3850,6 +3872,518 @@ TEST(memory_compare_snapshot_hex_string_addresses)
     cJSON_Delete(response);
 }
 
+/* =================================================================
+ * Checkpoint Group Tests
+ * ================================================================= */
+
+/* Test: checkpoint.group.create requires name */
+TEST(checkpoint_group_create_requires_name)
+{
+    cJSON *response, *params, *code_item;
+
+    test_checkpoint_groups_reset();
+
+    params = cJSON_CreateObject();  /* Missing name */
+
+    response = mcp_tool_checkpoint_group_create(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.create returns null params error */
+TEST(checkpoint_group_create_null_params_returns_error)
+{
+    cJSON *response, *code_item;
+
+    test_checkpoint_groups_reset();
+
+    response = mcp_tool_checkpoint_group_create(NULL);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.create with name succeeds */
+TEST(checkpoint_group_create_with_name_succeeds)
+{
+    cJSON *response, *params;
+    cJSON *created_item, *name_item;
+
+    test_checkpoint_groups_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "test_group");
+
+    response = mcp_tool_checkpoint_group_create(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should have created:true */
+    created_item = cJSON_GetObjectItem(response, "created");
+    ASSERT_NOT_NULL(created_item);
+    ASSERT_TRUE(cJSON_IsTrue(created_item));
+
+    /* Should have name */
+    name_item = cJSON_GetObjectItem(response, "name");
+    ASSERT_NOT_NULL(name_item);
+    ASSERT_STR_EQ(name_item->valuestring, "test_group");
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.create with checkpoint_ids */
+TEST(checkpoint_group_create_with_checkpoint_ids)
+{
+    cJSON *response, *params, *ids_array;
+    cJSON *created_item;
+
+    test_checkpoint_groups_reset();
+    test_checkpoint_reset();
+
+    /* Create some checkpoints first */
+    mon_breakpoint_add_checkpoint(0x1000, 0x1000, 1, 4, 0, 1);  /* Creates checkpoint 1 */
+    mon_breakpoint_add_checkpoint(0x2000, 0x2000, 1, 4, 0, 1);  /* Creates checkpoint 2 */
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "my_breakpoints");
+    ids_array = cJSON_CreateArray();
+    cJSON_AddItemToArray(ids_array, cJSON_CreateNumber(1));
+    cJSON_AddItemToArray(ids_array, cJSON_CreateNumber(2));
+    cJSON_AddItemToObject(params, "checkpoint_ids", ids_array);
+
+    response = mcp_tool_checkpoint_group_create(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should have created:true */
+    created_item = cJSON_GetObjectItem(response, "created");
+    ASSERT_NOT_NULL(created_item);
+    ASSERT_TRUE(cJSON_IsTrue(created_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.create with duplicate name returns error */
+TEST(checkpoint_group_create_duplicate_name_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    test_checkpoint_groups_reset();
+
+    /* Create first group */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "dup_group");
+    response = mcp_tool_checkpoint_group_create(params);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    /* Try to create second group with same name */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "dup_group");
+    response = mcp_tool_checkpoint_group_create(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.add requires group */
+TEST(checkpoint_group_add_requires_group)
+{
+    cJSON *response, *params, *code_item, *ids_array;
+
+    test_checkpoint_groups_reset();
+
+    params = cJSON_CreateObject();
+    ids_array = cJSON_CreateArray();
+    cJSON_AddItemToArray(ids_array, cJSON_CreateNumber(1));
+    cJSON_AddItemToObject(params, "checkpoint_ids", ids_array);
+    /* Missing group */
+
+    response = mcp_tool_checkpoint_group_add(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.add requires checkpoint_ids */
+TEST(checkpoint_group_add_requires_checkpoint_ids)
+{
+    cJSON *response, *params, *code_item;
+
+    test_checkpoint_groups_reset();
+
+    /* Create a group first */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "test_group");
+    response = mcp_tool_checkpoint_group_create(params);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    /* Try to add without checkpoint_ids */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "group", "test_group");
+    /* Missing checkpoint_ids */
+
+    response = mcp_tool_checkpoint_group_add(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.add with valid params succeeds */
+TEST(checkpoint_group_add_succeeds)
+{
+    cJSON *response, *params, *ids_array;
+    cJSON *added_item;
+
+    test_checkpoint_groups_reset();
+    test_checkpoint_reset();
+
+    /* Create some checkpoints */
+    mon_breakpoint_add_checkpoint(0x1000, 0x1000, 1, 4, 0, 1);  /* Creates checkpoint 1 */
+    mon_breakpoint_add_checkpoint(0x2000, 0x2000, 1, 4, 0, 1);  /* Creates checkpoint 2 */
+
+    /* Create a group first */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "test_group");
+    response = mcp_tool_checkpoint_group_create(params);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    /* Add checkpoints to the group */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "group", "test_group");
+    ids_array = cJSON_CreateArray();
+    cJSON_AddItemToArray(ids_array, cJSON_CreateNumber(1));
+    cJSON_AddItemToArray(ids_array, cJSON_CreateNumber(2));
+    cJSON_AddItemToObject(params, "checkpoint_ids", ids_array);
+
+    response = mcp_tool_checkpoint_group_add(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should have added:2 */
+    added_item = cJSON_GetObjectItem(response, "added");
+    ASSERT_NOT_NULL(added_item);
+    ASSERT_INT_EQ(added_item->valueint, 2);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.add nonexistent group returns error */
+TEST(checkpoint_group_add_nonexistent_group_returns_error)
+{
+    cJSON *response, *params, *code_item, *ids_array;
+
+    test_checkpoint_groups_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "group", "nonexistent_group");
+    ids_array = cJSON_CreateArray();
+    cJSON_AddItemToArray(ids_array, cJSON_CreateNumber(1));
+    cJSON_AddItemToObject(params, "checkpoint_ids", ids_array);
+
+    response = mcp_tool_checkpoint_group_add(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.toggle requires group */
+TEST(checkpoint_group_toggle_requires_group)
+{
+    cJSON *response, *params, *code_item;
+
+    test_checkpoint_groups_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddBoolToObject(params, "enabled", true);
+    /* Missing group */
+
+    response = mcp_tool_checkpoint_group_toggle(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.toggle requires enabled */
+TEST(checkpoint_group_toggle_requires_enabled)
+{
+    cJSON *response, *params, *code_item;
+
+    test_checkpoint_groups_reset();
+
+    /* Create a group first */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "test_group");
+    response = mcp_tool_checkpoint_group_create(params);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    /* Try to toggle without enabled */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "group", "test_group");
+    /* Missing enabled */
+
+    response = mcp_tool_checkpoint_group_toggle(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.toggle succeeds */
+TEST(checkpoint_group_toggle_succeeds)
+{
+    cJSON *response, *params, *ids_array;
+    cJSON *affected_item;
+
+    test_checkpoint_groups_reset();
+    test_checkpoint_reset();
+
+    /* Create some checkpoints */
+    mon_breakpoint_add_checkpoint(0x1000, 0x1000, 1, 4, 0, 1);  /* Creates checkpoint 1 */
+    mon_breakpoint_add_checkpoint(0x2000, 0x2000, 1, 4, 0, 1);  /* Creates checkpoint 2 */
+
+    /* Create group with checkpoints */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "test_group");
+    ids_array = cJSON_CreateArray();
+    cJSON_AddItemToArray(ids_array, cJSON_CreateNumber(1));
+    cJSON_AddItemToArray(ids_array, cJSON_CreateNumber(2));
+    cJSON_AddItemToObject(params, "checkpoint_ids", ids_array);
+    response = mcp_tool_checkpoint_group_create(params);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    /* Toggle the group off */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "group", "test_group");
+    cJSON_AddBoolToObject(params, "enabled", false);
+
+    response = mcp_tool_checkpoint_group_toggle(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should have affected_count:2 */
+    affected_item = cJSON_GetObjectItem(response, "affected_count");
+    ASSERT_NOT_NULL(affected_item);
+    ASSERT_INT_EQ(affected_item->valueint, 2);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.toggle nonexistent group returns error */
+TEST(checkpoint_group_toggle_nonexistent_group_returns_error)
+{
+    cJSON *response, *params, *code_item;
+
+    test_checkpoint_groups_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "group", "nonexistent");
+    cJSON_AddBoolToObject(params, "enabled", true);
+
+    response = mcp_tool_checkpoint_group_toggle(params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.list returns empty array when no groups */
+TEST(checkpoint_group_list_returns_empty_array)
+{
+    cJSON *response;
+    cJSON *groups_item;
+
+    test_checkpoint_groups_reset();
+
+    response = mcp_tool_checkpoint_group_list(NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should have groups array */
+    groups_item = cJSON_GetObjectItem(response, "groups");
+    ASSERT_NOT_NULL(groups_item);
+    ASSERT_TRUE(cJSON_IsArray(groups_item));
+    ASSERT_INT_EQ(cJSON_GetArraySize(groups_item), 0);
+
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.list returns groups with details */
+TEST(checkpoint_group_list_returns_groups_with_details)
+{
+    cJSON *response, *params, *ids_array;
+    cJSON *groups_item, *group_obj, *name_item, *ids_item, *enabled_item, *disabled_item;
+
+    test_checkpoint_groups_reset();
+    test_checkpoint_reset();
+
+    /* Create some checkpoints */
+    mon_breakpoint_add_checkpoint(0x1000, 0x1000, 1, 4, 0, 1);  /* Creates checkpoint 1 */
+    mon_breakpoint_add_checkpoint(0x2000, 0x2000, 1, 4, 0, 1);  /* Creates checkpoint 2 */
+
+    /* Create a group with checkpoints */
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "my_group");
+    ids_array = cJSON_CreateArray();
+    cJSON_AddItemToArray(ids_array, cJSON_CreateNumber(1));
+    cJSON_AddItemToArray(ids_array, cJSON_CreateNumber(2));
+    cJSON_AddItemToObject(params, "checkpoint_ids", ids_array);
+    response = mcp_tool_checkpoint_group_create(params);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    /* List groups */
+    response = mcp_tool_checkpoint_group_list(NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should have groups array with one group */
+    groups_item = cJSON_GetObjectItem(response, "groups");
+    ASSERT_NOT_NULL(groups_item);
+    ASSERT_TRUE(cJSON_IsArray(groups_item));
+    ASSERT_INT_EQ(cJSON_GetArraySize(groups_item), 1);
+
+    /* Check the group details */
+    group_obj = cJSON_GetArrayItem(groups_item, 0);
+    ASSERT_NOT_NULL(group_obj);
+
+    name_item = cJSON_GetObjectItem(group_obj, "name");
+    ASSERT_NOT_NULL(name_item);
+    ASSERT_STR_EQ(name_item->valuestring, "my_group");
+
+    ids_item = cJSON_GetObjectItem(group_obj, "checkpoint_ids");
+    ASSERT_NOT_NULL(ids_item);
+    ASSERT_TRUE(cJSON_IsArray(ids_item));
+    ASSERT_INT_EQ(cJSON_GetArraySize(ids_item), 2);
+
+    enabled_item = cJSON_GetObjectItem(group_obj, "enabled_count");
+    ASSERT_NOT_NULL(enabled_item);
+
+    disabled_item = cJSON_GetObjectItem(group_obj, "disabled_count");
+    ASSERT_NOT_NULL(disabled_item);
+
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.list dispatch works */
+TEST(checkpoint_group_list_dispatch_works)
+{
+    cJSON *response;
+    cJSON *groups_item;
+
+    test_checkpoint_groups_reset();
+
+    response = mcp_tools_dispatch("vice.checkpoint.group.list", NULL);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    /* Should have groups array */
+    groups_item = cJSON_GetObjectItem(response, "groups");
+    ASSERT_NOT_NULL(groups_item);
+    ASSERT_TRUE(cJSON_IsArray(groups_item));
+
+    cJSON_Delete(response);
+}
+
+/* Test: checkpoint.group.create dispatch works */
+TEST(checkpoint_group_create_dispatch_works)
+{
+    cJSON *response, *params;
+    cJSON *created_item;
+
+    test_checkpoint_groups_reset();
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "dispatch_test");
+
+    response = mcp_tools_dispatch("vice.checkpoint.group.create", params);
+    ASSERT_NOT_NULL(response);
+
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+
+    created_item = cJSON_GetObjectItem(response, "created");
+    ASSERT_NOT_NULL(created_item);
+    ASSERT_TRUE(cJSON_IsTrue(created_item));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -4042,6 +4576,25 @@ int main(void)
     RUN_TEST(memory_compare_snapshot_identical_returns_no_differences);
     RUN_TEST(memory_compare_snapshot_respects_max_differences);
     RUN_TEST(memory_compare_snapshot_hex_string_addresses);
+
+    /* Checkpoint group tests */
+    RUN_TEST(checkpoint_group_create_requires_name);
+    RUN_TEST(checkpoint_group_create_null_params_returns_error);
+    RUN_TEST(checkpoint_group_create_with_name_succeeds);
+    RUN_TEST(checkpoint_group_create_with_checkpoint_ids);
+    RUN_TEST(checkpoint_group_create_duplicate_name_returns_error);
+    RUN_TEST(checkpoint_group_add_requires_group);
+    RUN_TEST(checkpoint_group_add_requires_checkpoint_ids);
+    RUN_TEST(checkpoint_group_add_succeeds);
+    RUN_TEST(checkpoint_group_add_nonexistent_group_returns_error);
+    RUN_TEST(checkpoint_group_toggle_requires_group);
+    RUN_TEST(checkpoint_group_toggle_requires_enabled);
+    RUN_TEST(checkpoint_group_toggle_succeeds);
+    RUN_TEST(checkpoint_group_toggle_nonexistent_group_returns_error);
+    RUN_TEST(checkpoint_group_list_returns_empty_array);
+    RUN_TEST(checkpoint_group_list_returns_groups_with_details);
+    RUN_TEST(checkpoint_group_list_dispatch_works);
+    RUN_TEST(checkpoint_group_create_dispatch_works);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);

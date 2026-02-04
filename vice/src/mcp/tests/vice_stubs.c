@@ -306,13 +306,61 @@ static int test_checkpoint_counter = 0;
 static int test_checkpoint_last_num = -1;
 static int test_checkpoint_last_has_condition = 0;
 
+/* Simulated checkpoint structure for testing
+ * MUST match layout of mon_checkpoint_t from mon_breakpoint.h exactly!
+ *
+ * struct mon_checkpoint_s {
+ *     int checknum;           // offset 0
+ *     MON_ADDR start_addr;    // offset 4 (MON_ADDR = unsigned int)
+ *     MON_ADDR end_addr;      // offset 8
+ *     int hit_count;          // offset 12
+ *     int ignore_count;       // offset 16
+ *     cond_node_t *condition; // offset 20 (24 on 64-bit due to alignment)
+ *     char *command;          // offset 28 (32 on 64-bit)
+ *     bool stop;              // offset 36 (40 on 64-bit)
+ *     bool enabled;           // offset 37 (41 on 64-bit)
+ *     bool check_load;
+ *     bool check_store;
+ *     bool check_exec;
+ *     bool temporary;
+ * };
+ */
+typedef struct {
+    int checknum;
+    unsigned int start_addr;
+    unsigned int end_addr;
+    int hit_count;
+    int ignore_count;
+    void *condition;       /* cond_node_t* */
+    char *command;
+    unsigned char stop;    /* bool - 1 byte */
+    unsigned char enabled; /* bool - 1 byte */
+    unsigned char check_load;
+    unsigned char check_store;
+    unsigned char check_exec;
+    unsigned char temporary;
+} test_checkpoint_t;
+
+/* Storage for simulated checkpoints */
+#define MAX_TEST_CHECKPOINTS 64
+static test_checkpoint_t test_checkpoints[MAX_TEST_CHECKPOINTS];
+
 /* Reset checkpoint test state */
 void test_checkpoint_reset(void)
 {
+    int i;
     test_checkpoint_counter = 0;
     test_checkpoint_last_num = -1;
     test_checkpoint_last_has_condition = 0;
+    for (i = 0; i < MAX_TEST_CHECKPOINTS; i++) {
+        test_checkpoints[i].checknum = 0;
+        test_checkpoints[i].enabled = 1;  /* Default to enabled */
+    }
 }
+
+/* Note: test_checkpoint_groups_reset() is defined in test_mcp_tools.c
+ * because it needs to call mcp_checkpoint_groups_reset() from libmcp.a,
+ * and test_mcp_transport doesn't link libmcp.a. */
 
 /* Get the last checkpoint number created */
 int test_checkpoint_get_last_num(void)
@@ -329,29 +377,44 @@ int test_checkpoint_has_condition(void)
 /* Phase 2.1: Checkpoint/Breakpoint stubs */
 int mon_breakpoint_add_checkpoint(unsigned int start, unsigned int end, int stop, int operation, int temporary, int do_print)
 {
-    (void)start;
-    (void)end;
-    (void)stop;
-    (void)operation;
-    (void)temporary;
     (void)do_print;
     /* Return incrementing checkpoint number for testing */
     test_checkpoint_last_num = ++test_checkpoint_counter;
     test_checkpoint_last_has_condition = 0;  /* Reset condition flag for new checkpoint */
+
+    /* Store checkpoint in our test array */
+    if (test_checkpoint_last_num > 0 && test_checkpoint_last_num <= MAX_TEST_CHECKPOINTS) {
+        int idx = test_checkpoint_last_num - 1;
+        test_checkpoints[idx].checknum = test_checkpoint_last_num;
+        test_checkpoints[idx].start_addr = start;
+        test_checkpoints[idx].end_addr = end;
+        test_checkpoints[idx].stop = stop;
+        test_checkpoints[idx].check_exec = (operation & 4) != 0;  /* e_exec */
+        test_checkpoints[idx].check_load = (operation & 1) != 0;  /* e_load */
+        test_checkpoints[idx].check_store = (operation & 2) != 0; /* e_store */
+        test_checkpoints[idx].temporary = temporary;
+        test_checkpoints[idx].enabled = 1;  /* Default enabled */
+    }
+
     return test_checkpoint_last_num;
 }
 
 void mon_breakpoint_delete_checkpoint(unsigned int id)
 {
-    (void)id;
+    /* Mark checkpoint as deleted by setting checknum to 0 */
+    if (id > 0 && id <= MAX_TEST_CHECKPOINTS) {
+        test_checkpoints[id - 1].checknum = 0;
+    }
 }
 
 void *mon_breakpoint_find_checkpoint(unsigned int id)
 {
-    /* Return non-NULL for valid checkpoint IDs (1 to counter) */
+    /* Return pointer to our test checkpoint structure */
     if (id > 0 && id <= (unsigned int)test_checkpoint_counter) {
-        /* Return a non-NULL dummy pointer to indicate checkpoint exists */
-        return (void*)(uintptr_t)id;
+        int idx = id - 1;
+        if (test_checkpoints[idx].checknum == (int)id) {
+            return &test_checkpoints[idx];
+        }
     }
     return NULL;
 }
@@ -361,10 +424,15 @@ void *mon_breakpoint_checkpoint_list_get(void)
     return NULL;
 }
 
-void mon_breakpoint_switch_checkpoint(unsigned int id, int enabled)
+void mon_breakpoint_switch_checkpoint(int op, unsigned int id)
 {
-    (void)id;
-    (void)enabled;
+    /* op=1 for enable, op=2 for disable */
+    if (id > 0 && id <= MAX_TEST_CHECKPOINTS) {
+        int idx = id - 1;
+        if (test_checkpoints[idx].checknum == (int)id) {
+            test_checkpoints[idx].enabled = (op == 1) ? 1 : 0;
+        }
+    }
 }
 
 void mon_breakpoint_set_ignore_count(unsigned int id, unsigned int count)

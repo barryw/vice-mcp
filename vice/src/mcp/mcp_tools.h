@@ -164,6 +164,12 @@ extern cJSON* mcp_tool_memory_fill(cJSON *params);
 /* Tool handlers - Phase 5.2: Memory Compare */
 extern cJSON* mcp_tool_memory_compare(cJSON *params);
 
+/* Tool handlers - Phase 5.3: Checkpoint Groups */
+extern cJSON* mcp_tool_checkpoint_group_create(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_group_add(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_group_toggle(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_group_list(cJSON *params);
+
 /** @brief Send a breakpoint hit notification to SSE clients.
  *
  *  Called when a breakpoint is hit during execution. Sends an SSE event
