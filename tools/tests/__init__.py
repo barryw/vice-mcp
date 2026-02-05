@@ -1,0 +1,1 @@
+# VICE MCP test package

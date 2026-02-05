@@ -1449,16 +1449,40 @@ cJSON* mcp_tool_tools_list(cJSON *params)
                    strcmp(name, "vice.execution.run") == 0 ||
                    strcmp(name, "vice.execution.pause") == 0 ||
                    strcmp(name, "vice.checkpoint.list") == 0 ||
-                   strcmp(name, "vice.sprite.get") == 0 ||
                    strcmp(name, "vice.vicii.get_state") == 0 ||
-                   strcmp(name, "vice.vicii.set_state") == 0 ||
                    strcmp(name, "vice.sid.get_state") == 0 ||
-                   strcmp(name, "vice.sid.set_state") == 0 ||
-                   strcmp(name, "vice.cia.get_state") == 0 ||
-                   strcmp(name, "vice.cia.set_state") == 0 ||
                    strcmp(name, "vice.display.get_dimensions") == 0) {
-            /* Tools with no parameters */
+            /* Tools with truly no parameters */
             schema = mcp_schema_empty();
+
+        } else if (strcmp(name, "vice.sprite.get") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "sprite", mcp_prop_number("Sprite number 0-7 (omit to get all sprites)"));
+            /* No required params - sprite is optional */
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.vicii.set_state") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "registers", mcp_prop_array("object",
+                "Array of {offset, value} objects to set VIC-II registers (offset 0x00-0x2F)"));
+            /* No required params - all optional */
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.sid.set_state") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "registers", mcp_prop_array("object",
+                "Array of {offset, value} objects to set SID registers (offset 0x00-0x1C)"));
+            /* No required params - all optional */
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.cia.set_state") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "cia1_registers", mcp_prop_array("object",
+                "Array of {offset, value} objects to set CIA1 registers (offset 0x00-0x0F)"));
+            cJSON_AddItemToObject(props, "cia2_registers", mcp_prop_array("object",
+                "Array of {offset, value} objects to set CIA2 registers (offset 0x00-0x0F)"));
+            /* No required params - all optional */
+            schema = mcp_schema_object(props, NULL);
 
         } else if (strcmp(name, "vice.checkpoint.set_condition") == 0) {
             props = cJSON_CreateObject();
@@ -1916,6 +1940,34 @@ cJSON* mcp_tool_tools_list(cJSON *params)
                 "Return only entries from this index onwards (for incremental reads)"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("log_id"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.keyboard.restore") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "pressed", mcp_prop_boolean(
+                "Key pressed state: true to press (triggers NMI), false to release (default: true)"));
+            /* No required params - pressed is optional */
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.memory.map") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "start", mcp_prop_string(
+                "Start address: number, hex string ($0000), or symbol (default: $0000)"));
+            cJSON_AddItemToObject(props, "end", mcp_prop_string(
+                "End address: number, hex string ($FFFF), or symbol (default: $FFFF)"));
+            cJSON_AddItemToObject(props, "granularity", mcp_prop_number(
+                "Region granularity in bytes (default: 256)"));
+            /* No required params - all optional */
+            schema = mcp_schema_object(props, NULL);
+
+        } else if (strcmp(name, "vice.sprite.inspect") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "sprite_number", mcp_prop_number(
+                "Sprite number 0-7 to inspect"));
+            cJSON_AddItemToObject(props, "format", mcp_prop_string(
+                "Output format: 'ascii' (default), 'binary', or 'png_base64'"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("sprite_number"));
             schema = mcp_schema_object(props, required);
 
         } else {
