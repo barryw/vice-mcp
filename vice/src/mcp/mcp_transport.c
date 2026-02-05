@@ -38,6 +38,7 @@
  */
 #ifdef HAVE_PTHREAD_H
 #include <pthread.h>
+#include <errno.h>  /* For ETIMEDOUT */
 #else
 #error "MCP transport requires pthreads"
 #endif
@@ -103,7 +104,12 @@ static int server_running = 0;  /* 1 when HTTP server is active */
 typedef struct sse_connection_s {
     struct MHD_Connection *connection;  /* libmicrohttpd connection handle */
     int active;                          /* 1 if connection is open, 0 if free slot */
+    time_t registered_time;              /* When connection was registered (for staleness detection) */
 } sse_connection_t;
+
+/* SSE connection staleness timeout in seconds - connections older than this
+ * without activity may be considered stale. Used for cleanup on unclean disconnect. */
+#define SSE_STALE_TIMEOUT_SEC 300
 
 static sse_connection_t sse_connections[MAX_SSE_CONNECTIONS] = {{0}};
 
@@ -208,14 +214,26 @@ static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
     /* If UI pause is active, the emulator main loop is paused but not in
      * monitor mode. In this state, traps won't fire because the CPU loop
      * isn't running. We need to acquire the mainlock to safely access
-     * emulator state while the pause loop periodically yields it. */
+     * emulator state while the pause loop periodically yields it.
+     *
+     * Note: There's a potential TOCTOU race between checking ui_pause_active()
+     * and acquiring mainlock. We re-verify the state after obtaining the lock
+     * to handle the case where pause was disabled in between. */
     if (ui_pause_active()) {
         cJSON *response;
         log_message(mcp_transport_log, "UI paused - acquiring mainlock for dispatch: %s", tool_name);
         mainlock_obtain();
-        response = mcp_tools_dispatch(tool_name, params);
-        mainlock_release();
-        return response;
+
+        /* Re-verify pause is still active after obtaining lock */
+        if (!ui_pause_active()) {
+            mainlock_release();
+            log_message(mcp_transport_log, "Pause disabled during lock acquisition - falling through to trap dispatch");
+            /* Fall through to trap-based dispatch below */
+        } else {
+            response = mcp_tools_dispatch(tool_name, params);
+            mainlock_release();
+            return response;
+        }
     }
 
     /* Emulator is running - use trap for thread-safe dispatch.
@@ -230,7 +248,28 @@ static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
 
         req = (mcp_trap_request_t *)lib_malloc(sizeof(mcp_trap_request_t));
         req->tool_name = lib_strdup(tool_name);
-        req->params = params ? cJSON_Duplicate(params, 1) : NULL;
+
+        /* Duplicate params if provided, with OOM check */
+        if (params != NULL) {
+            req->params = cJSON_Duplicate(params, 1);
+            if (req->params == NULL) {
+                /* OOM during params duplication - cleanup and return error */
+                lib_free(req->tool_name);
+                lib_free(req);
+                log_error(mcp_transport_log, "OOM duplicating params for trap dispatch: %s", tool_name);
+                {
+                    cJSON *error = cJSON_CreateObject();
+                    if (error) {
+                        cJSON_AddNumberToObject(error, "code", -32603);
+                        cJSON_AddStringToObject(error, "message", "Internal error: out of memory");
+                    }
+                    return error;
+                }
+            }
+        } else {
+            req->params = NULL;
+        }
+
         req->response = NULL;
         req->complete = 0;
         req->abandoned = 0;
@@ -252,8 +291,8 @@ static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
         pthread_mutex_lock(&req->mutex);
         while (!req->complete) {
             wait_result = pthread_cond_timedwait(&req->cond, &req->mutex, &timeout);
-            if (wait_result != 0) {
-                /* Timeout or error - mark abandoned so trap handler frees req */
+            if (wait_result == ETIMEDOUT) {
+                /* Timeout - mark abandoned so trap handler frees req */
                 req->abandoned = 1;
                 pthread_mutex_unlock(&req->mutex);
                 log_error(mcp_transport_log, "Trap dispatch timeout for: %s (emulator may be paused)", tool_name);
@@ -264,6 +303,21 @@ static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
                     if (error) {
                         cJSON_AddNumberToObject(error, "code", -32000);
                         cJSON_AddStringToObject(error, "message", "Timeout: emulator may be paused or unresponsive");
+                    }
+                    return error;
+                }
+            } else if (wait_result != 0) {
+                /* Unexpected error (EINVAL, etc.) - log and abandon */
+                req->abandoned = 1;
+                pthread_mutex_unlock(&req->mutex);
+                log_error(mcp_transport_log, "pthread_cond_timedwait failed with error %d for: %s", wait_result, tool_name);
+
+                /* Return error response - req will be freed by trap handler */
+                {
+                    cJSON *error = cJSON_CreateObject();
+                    if (error) {
+                        cJSON_AddNumberToObject(error, "code", -32603);
+                        cJSON_AddStringToObject(error, "message", "Internal error: condition wait failed");
                     }
                     return error;
                 }
@@ -514,14 +568,18 @@ static char* process_jsonrpc_request(const char *request_body, size_t body_size)
 static int register_sse_connection(struct MHD_Connection *connection)
 {
     int i;
+    time_t now;
 
     pthread_mutex_lock(&transport_mutex);
+
+    now = time(NULL);
 
     /* Find free slot */
     for (i = 0; i < MAX_SSE_CONNECTIONS; i++) {
         if (!sse_connections[i].active) {
             sse_connections[i].connection = connection;
             sse_connections[i].active = 1;
+            sse_connections[i].registered_time = now;
             pthread_mutex_unlock(&transport_mutex);
             log_message(mcp_transport_log, "SSE connection registered in slot %d", i);
             return i;
@@ -531,6 +589,44 @@ static int register_sse_connection(struct MHD_Connection *connection)
     pthread_mutex_unlock(&transport_mutex);
     log_warning(mcp_transport_log, "SSE connection limit reached (%d)", MAX_SSE_CONNECTIONS);
     return -1;
+}
+
+/* Clean up stale SSE connections that may have disconnected without proper cleanup.
+ * This handles the case where a client disconnects uncleanly and request_completed
+ * callback doesn't fire. Called periodically or when registering new connections. */
+static void cleanup_stale_sse_connections(void)
+{
+    int i;
+    time_t now;
+    int cleaned = 0;
+
+    pthread_mutex_lock(&transport_mutex);
+
+    now = time(NULL);
+
+    for (i = 0; i < MAX_SSE_CONNECTIONS; i++) {
+        if (sse_connections[i].active) {
+            time_t age = now - sse_connections[i].registered_time;
+            if (age > SSE_STALE_TIMEOUT_SEC) {
+                /* Connection is stale - mark as inactive.
+                 * Note: We can't actually close the MHD connection here as that
+                 * requires MHD_Connection cleanup which happens in request_completed.
+                 * We just mark the slot as free so a new connection can use it. */
+                log_warning(mcp_transport_log, "Cleaning up stale SSE connection in slot %d (age: %ld sec)",
+                           i, (long)age);
+                sse_connections[i].connection = NULL;
+                sse_connections[i].active = 0;
+                sse_connections[i].registered_time = 0;
+                cleaned++;
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&transport_mutex);
+
+    if (cleaned > 0) {
+        log_message(mcp_transport_log, "Cleaned up %d stale SSE connections", cleaned);
+    }
 }
 
 /* Unregister SSE connection from tracking array */
@@ -544,6 +640,7 @@ static void unregister_sse_connection(struct MHD_Connection *connection)
         if (sse_connections[i].active && sse_connections[i].connection == connection) {
             sse_connections[i].connection = NULL;
             sse_connections[i].active = 0;
+            sse_connections[i].registered_time = 0;
             pthread_mutex_unlock(&transport_mutex);
             log_message(mcp_transport_log, "SSE connection unregistered from slot %d", i);
             return;
@@ -1080,6 +1177,9 @@ int mcp_transport_sse_send_event(const char *event_type, const char *data)
         log_warning(mcp_transport_log, "Cannot send SSE event - server not running");
         return -1;
     }
+
+    /* Clean up any stale connections before attempting to send */
+    cleanup_stale_sse_connections();
 
     /* Format SSE message: "event: <type>\ndata: <data>\n\n" */
     /* Message format overhead: "event: " (7) + "\n" (1) + "data: " (6) + "\n\n" (2) = 16 bytes
