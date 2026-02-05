@@ -279,6 +279,11 @@ char *lib_strdup(const char *str)
     return dup;
 }
 
+int util_strncasecmp(const char *s1, const char *s2, size_t n)
+{
+    return strncasecmp(s1, s2, n);
+}
+
 int vdrive_read_sector(void *vdrive, uint8_t *buf, unsigned int track, unsigned int sector)
 {
     (void)vdrive;

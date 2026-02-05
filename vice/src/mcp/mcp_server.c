@@ -51,9 +51,10 @@ static log_t mcp_log = LOG_DEFAULT;
 
 static int set_mcp_enabled(int val, void *param)
 {
+    int old_enabled = mcp_enabled;
+
     (void)param;
 
-    int old_enabled = mcp_enabled;
     mcp_enabled = val ? 1 : 0;
 
     /* Only start/stop if server is already initialized and running.
@@ -78,18 +79,26 @@ static int set_mcp_enabled(int val, void *param)
 
 static int set_mcp_port(int val, void *param)
 {
+    int old_port;
+
     (void)param;
 
     if (val < 1024 || val > 65535) {
         return -1;
     }
 
+    old_port = mcp_port;
     mcp_port = val;
 
     /* Restart server if running */
     if (mcp_running) {
         mcp_server_stop();
-        return mcp_server_start(mcp_host ? mcp_host : MCP_DEFAULT_HOST, mcp_port);
+        if (mcp_server_start(mcp_host ? mcp_host : MCP_DEFAULT_HOST, mcp_port) < 0) {
+            /* Restart failed - restore old port and try to recover */
+            mcp_port = old_port;
+            mcp_server_start(mcp_host ? mcp_host : MCP_DEFAULT_HOST, mcp_port);
+            return -1;
+        }
     }
 
     return 0;
@@ -97,18 +106,29 @@ static int set_mcp_port(int val, void *param)
 
 static int set_mcp_host(const char *val, void *param)
 {
+    char *old_host;
+
     (void)param;
 
-    if (mcp_host) {
-        lib_free(mcp_host);
-    }
-
-    mcp_host = lib_strdup(val);
+    old_host = mcp_host;
+    mcp_host = (val != NULL) ? lib_strdup(val) : NULL;
 
     /* Restart server if running */
     if (mcp_running) {
         mcp_server_stop();
-        return mcp_server_start(mcp_host, mcp_port);
+        if (mcp_server_start(mcp_host ? mcp_host : MCP_DEFAULT_HOST, mcp_port) < 0) {
+            /* Restart failed - restore old host and try to recover */
+            if (mcp_host) {
+                lib_free(mcp_host);
+            }
+            mcp_host = old_host;
+            mcp_server_start(mcp_host ? mcp_host : MCP_DEFAULT_HOST, mcp_port);
+            return -1;
+        }
+    }
+
+    if (old_host) {
+        lib_free(old_host);
     }
 
     return 0;
@@ -207,10 +227,10 @@ void mcp_server_shutdown(void)
     mcp_tools_shutdown();
     mcp_transport_shutdown();
 
-    if (mcp_host) {
-        lib_free(mcp_host);
-        mcp_host = NULL;
-    }
+    /* Note: mcp_host is owned by the resource system (resource_string_t
+     * stores &mcp_host). The resource system will free it during its own
+     * shutdown. Do NOT free it here to avoid a double-free. */
+    mcp_host = NULL;
 
     log_message(mcp_log, "MCP server shut down");
 }

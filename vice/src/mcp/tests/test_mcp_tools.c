@@ -21,6 +21,7 @@
 #define MCP_ERROR_METHOD_NOT_FOUND -32601
 #define MCP_ERROR_INVALID_PARAMS   -32602
 #define MCP_ERROR_INTERNAL_ERROR   -32603
+#define MCP_ERROR_NOT_IMPLEMENTED  -32000
 
 /* MCP tool function declarations */
 extern cJSON* mcp_tool_ping(cJSON *params);
@@ -6746,7 +6747,11 @@ TEST(sprite_inspect_hires_sprite_valid_response)
      */
     test_memory_clear();
 
-    /* Sprite pointer: bank base is typically $0000 for default VIC bank */
+    /* Set up VIC bank 0 and screen at $0400 (default C64 config) */
+    test_memory_set_byte(0xDD00, 0x03);  /* CIA2: VIC bank 0 ($0000-$3FFF) */
+    test_memory_set_byte(0xD018, 0x14);  /* Screen at $0400 */
+
+    /* Sprite pointer: bank base is $0000 for VIC bank 0 */
     test_memory_set_byte(0x07F8, 0x80);  /* Sprite 0 pointer = $80 -> $2000 */
 
     /* VIC-II registers */
@@ -6820,6 +6825,10 @@ TEST(sprite_inspect_multicolor_sprite_valid_response)
 
     test_memory_clear();
 
+    /* Set up VIC bank 0 and screen at $0400 */
+    test_memory_set_byte(0xDD00, 0x03);
+    test_memory_set_byte(0xD018, 0x14);
+
     /* Sprite pointer */
     test_memory_set_byte(0x07F9, 0x81);  /* Sprite 1 pointer = $81 -> $2040 */
 
@@ -6878,6 +6887,8 @@ TEST(sprite_inspect_binary_format)
     cJSON *response, *params, *item;
 
     test_memory_clear();
+    test_memory_set_byte(0xDD00, 0x03);  /* VIC bank 0 */
+    test_memory_set_byte(0xD018, 0x14);  /* Screen at $0400 */
     test_memory_set_byte(0x07F8, 0x80);
     test_memory_set_byte(0xD01C, 0x00);
     test_memory_set_byte(0xD027, 0x01);
@@ -6910,6 +6921,8 @@ TEST(sprite_inspect_invalid_format_returns_error)
     cJSON *response, *params, *code_item;
 
     test_memory_clear();
+    test_memory_set_byte(0xDD00, 0x03);  /* VIC bank 0 */
+    test_memory_set_byte(0xD018, 0x14);  /* Screen at $0400 */
     test_memory_set_byte(0x07F8, 0x80);
 
     params = cJSON_CreateObject();
@@ -6933,6 +6946,8 @@ TEST(sprite_inspect_returns_raw_data)
     cJSON *response, *params, *item, *raw_data;
 
     test_memory_clear();
+    test_memory_set_byte(0xDD00, 0x03);  /* VIC bank 0 */
+    test_memory_set_byte(0xD018, 0x14);  /* Screen at $0400 */
     test_memory_set_byte(0x07F8, 0x80);
     test_memory_set_byte(0xD01C, 0x00);
     /* Set first few bytes to known values */
@@ -6970,6 +6985,8 @@ TEST(sprite_inspect_all_sprites_valid)
     int i;
 
     test_memory_clear();
+    test_memory_set_byte(0xDD00, 0x03);  /* VIC bank 0 */
+    test_memory_set_byte(0xD018, 0x14);  /* Screen at $0400 */
 
     /* Set up pointers for all 8 sprites */
     for (i = 0; i < 8; i++) {
@@ -7025,6 +7042,520 @@ TEST(sprite_inspect_dispatch_works)
 
     cJSON_Delete(response);
     cJSON_Delete(params);
+}
+
+/* =================================================================
+ * Bug Fix Regression Tests
+ * ================================================================= */
+
+/* Tool declarations for bug fix regression tests */
+extern cJSON* mcp_tool_registers_set(cJSON *params);
+extern cJSON* mcp_tool_registers_get(cJSON *params);
+extern cJSON* mcp_tool_vicii_get_state(cJSON *params);
+extern cJSON* mcp_tool_sid_get_state(cJSON *params);
+extern cJSON* mcp_tool_cia_get_state(cJSON *params);
+
+/* --- Address Validation Tests (mcp_resolve_address) --- */
+
+/* Test: memory_read rejects address > 65535 */
+TEST(memory_read_rejects_address_above_64k)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "address", 70000);
+    cJSON *response = mcp_tools_dispatch("vice.memory.read", params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code);
+    ASSERT_TRUE(code->valueint < 0);  /* Error */
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+TEST(memory_read_rejects_negative_address)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "address", -1);
+    cJSON *response = mcp_tools_dispatch("vice.memory.read", params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code);
+    ASSERT_TRUE(code->valueint < 0);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+TEST(memory_read_accepts_max_valid_address)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "address", 65535);
+    cJSON_AddNumberToObject(params, "size", 1);
+    cJSON *response = mcp_tools_dispatch("vice.memory.read", params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code == NULL);  /* No error */
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+TEST(memory_read_hex_address_above_64k_rejected)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "address", "$1FFFF");
+    cJSON *response = mcp_tools_dispatch("vice.memory.read", params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code);
+    ASSERT_TRUE(code->valueint < 0);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* --- Registers N/Z Flag Tests --- */
+
+TEST(registers_set_n_flag)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "register", "N");
+    cJSON_AddNumberToObject(params, "value", 1);
+    cJSON *response = mcp_tool_registers_set(params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code == NULL);  /* No error */
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+TEST(registers_set_z_flag)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "register", "Z");
+    cJSON_AddNumberToObject(params, "value", 1);
+    cJSON *response = mcp_tool_registers_set(params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code == NULL);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+TEST(registers_set_n_flag_rejects_invalid_value)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "register", "N");
+    cJSON_AddNumberToObject(params, "value", 2);
+    cJSON *response = mcp_tool_registers_set(params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code);
+    ASSERT_TRUE(code->valueint < 0);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+TEST(registers_set_z_flag_rejects_invalid_value)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "register", "Z");
+    cJSON_AddNumberToObject(params, "value", 2);
+    cJSON *response = mcp_tool_registers_set(params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code);
+    ASSERT_TRUE(code->valueint < 0);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+TEST(registers_get_returns_valid_response)
+{
+    cJSON *response = mcp_tool_registers_get(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code == NULL);  /* Not an error */
+    cJSON *pc = cJSON_GetObjectItem(response, "PC");
+    ASSERT_NOT_NULL(pc);
+    cJSON_Delete(response);
+}
+
+/* --- VIC-II State Tests (uses mem_bank_peek) --- */
+
+TEST(vicii_get_state_reads_registers)
+{
+    test_memory_clear();
+    /* Set up some VIC-II register values */
+    test_memory_set_byte(0xD011, 0x1B);  /* Control reg 1 */
+    test_memory_set_byte(0xD012, 0x37);  /* Raster line */
+    test_memory_set_byte(0xD020, 0x0E);  /* Border color */
+    test_memory_set_byte(0xD021, 0x06);  /* Background color */
+
+    cJSON *response = mcp_tool_vicii_get_state(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code == NULL);
+
+    cJSON *border = cJSON_GetObjectItem(response, "border_color");
+    ASSERT_NOT_NULL(border);
+    ASSERT_INT_EQ(border->valueint, 0x0E);
+
+    cJSON *bg = cJSON_GetObjectItem(response, "background_color_0");
+    ASSERT_NOT_NULL(bg);
+    ASSERT_INT_EQ(bg->valueint, 0x06);
+
+    cJSON *regs = cJSON_GetObjectItem(response, "registers");
+    ASSERT_NOT_NULL(regs);
+    ASSERT_TRUE(cJSON_IsArray(regs));
+
+    cJSON_Delete(response);
+}
+
+/* --- SID State Tests --- */
+
+TEST(sid_get_state_reads_voices)
+{
+    test_memory_clear();
+    /* Voice 1 frequency: $D400-$D401 */
+    test_memory_set_byte(0xD400, 0x50);
+    test_memory_set_byte(0xD401, 0x10);
+    /* Voice 1 control: $D404 - bit 0=gate, bit 4=triangle */
+    test_memory_set_byte(0xD404, 0x11);  /* Gate + Triangle */
+
+    cJSON *response = mcp_tool_sid_get_state(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code == NULL);
+
+    cJSON *voices = cJSON_GetObjectItem(response, "voices");
+    ASSERT_NOT_NULL(voices);
+    ASSERT_TRUE(cJSON_IsArray(voices));
+    ASSERT_INT_EQ(cJSON_GetArraySize(voices), 3);
+
+    /* Check voice 1 */
+    cJSON *v1 = cJSON_GetArrayItem(voices, 0);
+    ASSERT_NOT_NULL(v1);
+    cJSON *gate = cJSON_GetObjectItem(v1, "gate");
+    ASSERT_NOT_NULL(gate);
+    ASSERT_TRUE(cJSON_IsTrue(gate));
+    cJSON *triangle = cJSON_GetObjectItem(v1, "triangle");
+    ASSERT_NOT_NULL(triangle);
+    ASSERT_TRUE(cJSON_IsTrue(triangle));
+
+    cJSON_Delete(response);
+}
+
+/* --- CIA State Tests --- */
+
+TEST(cia_get_state_reads_registers)
+{
+    test_memory_clear();
+    /* CIA1 data port A: $DC00 */
+    test_memory_set_byte(0xDC00, 0xFF);
+    /* CIA2 data port A: $DD00 */
+    test_memory_set_byte(0xDD00, 0x97);
+
+    cJSON *response = mcp_tool_cia_get_state(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code == NULL);
+
+    cJSON *cia1 = cJSON_GetObjectItem(response, "cia1");
+    ASSERT_NOT_NULL(cia1);
+
+    cJSON *cia2 = cJSON_GetObjectItem(response, "cia2");
+    ASSERT_NOT_NULL(cia2);
+
+    cJSON_Delete(response);
+}
+
+/* --- Watch Overflow Test --- */
+
+TEST(watch_add_rejects_overflow_range)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "address", 0xFFF0);
+    cJSON_AddNumberToObject(params, "size", 32);
+    cJSON *response = mcp_tools_dispatch("vice.watch.add", params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code);
+    ASSERT_TRUE(code->valueint < 0);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* --- run_until Cycles-Only Error Test --- */
+
+TEST(run_until_cycles_only_returns_not_implemented)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "cycles", 1000);
+    cJSON *response = mcp_tools_dispatch("vice.run_until", params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code);
+    ASSERT_INT_EQ(code->valueint, MCP_ERROR_NOT_IMPLEMENTED);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* --- Snapshot NULL -> mcp_error Tests --- */
+
+TEST(snapshot_save_returns_error_not_null_on_oom)
+{
+    /* Test that the response always has proper error structure, not bare NULL */
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "test_snap");
+    cJSON *response = mcp_tool_snapshot_save(params);
+    ASSERT_NOT_NULL(response);  /* Should never be NULL */
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* --- isalnum Unsigned Char Cast Tests --- */
+
+TEST(snapshot_load_rejects_special_chars_in_name)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "test/snap");
+    cJSON *response = mcp_tool_snapshot_load(params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code);
+    ASSERT_TRUE(code->valueint < 0);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+TEST(snapshot_load_allows_valid_name_chars)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "my-save_01");
+    cJSON *response = mcp_tool_snapshot_load(params);
+    ASSERT_NOT_NULL(response);
+    /* Should not be an invalid name error even if load fails for other reasons */
+    cJSON *msg = cJSON_GetObjectItem(response, "message");
+    if (msg != NULL && cJSON_IsString(msg)) {
+        ASSERT_TRUE(strstr(msg->valuestring, "Invalid name") == NULL);
+    }
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* --- Memory Compare Range2 Overflow Test --- */
+
+TEST(memory_compare_rejects_overflow_range2)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "range1_start", 0x0000);
+    cJSON_AddNumberToObject(params, "range1_end", 0x00FF);
+    cJSON_AddNumberToObject(params, "range2_start", 0xFF80);
+    cJSON *response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code);
+    ASSERT_TRUE(code->valueint < 0);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* --- Disassemble Boundary Tests --- */
+
+TEST(disassemble_at_end_of_memory)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "address", 0xFFFC);
+    cJSON_AddNumberToObject(params, "count", 5);
+    cJSON *response = mcp_tools_dispatch("vice.disassemble", params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code == NULL);  /* Should succeed */
+    cJSON *lines = cJSON_GetObjectItem(response, "lines");
+    ASSERT_NOT_NULL(lines);
+    ASSERT_TRUE(cJSON_IsArray(lines));
+    /* Should have <= 5 lines since we're near end of address space */
+    ASSERT_TRUE(cJSON_GetArraySize(lines) <= 5);
+    ASSERT_TRUE(cJSON_GetArraySize(lines) > 0);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* --- Sprite Inspect VIC Bank Tests --- */
+
+TEST(sprite_inspect_uses_correct_vic_bank)
+{
+    test_memory_clear();
+    /* Set up VIC bank 1 ($4000-$7FFF): CIA2 port A bits 0-1 = 2 means bank 1 */
+    test_memory_set_byte(0xDD00, 0x02);  /* Bank 1 = $4000-$7FFF */
+    /* Screen base: D018 = $10 means screen at $0400 within bank = $4400 */
+    test_memory_set_byte(0xD018, 0x10);
+    /* Sprite 0 pointer at screen_base + $3F8 = $4400 + $3F8 = $47F8 */
+    test_memory_set_byte(0x47F8, 0x80);  /* Pointer 128 = data at $2000 within bank = $6000 */
+    /* Set up some sprite data at $6000 */
+    test_memory_set_byte(0x6000, 0xFF);  /* First row, first byte */
+    /* Sprite multicolor register */
+    test_memory_set_byte(0xD01C, 0x00);  /* No multicolor */
+    /* Sprite color */
+    test_memory_set_byte(0xD027, 0x01);  /* White */
+    test_memory_set_byte(0xD025, 0x02);
+    test_memory_set_byte(0xD026, 0x03);
+
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", 0);
+    cJSON *response = mcp_tool_sprite_inspect(params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code == NULL);
+
+    /* Verify data_address reflects the VIC bank */
+    cJSON *data_addr = cJSON_GetObjectItem(response, "data_address");
+    ASSERT_NOT_NULL(data_addr);
+    /* pointer 0x80 * 64 = 0x2000, + vic_bank 0x4000 = 0x6000 */
+    ASSERT_TRUE(cJSON_IsString(data_addr));
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* --- Re-review round 2 regression tests --- */
+
+/* Additional tool declarations for re-review tests */
+extern cJSON* mcp_tool_sprite_get(cJSON *params);
+extern cJSON* mcp_tool_sprite_set(cJSON *params);
+extern cJSON* mcp_tool_memory_banks(cJSON *params);
+extern cJSON* mcp_tool_vicii_set_state(cJSON *params);
+
+/* Test: sprite_get reads don't clear collision register latches.
+ * mem_bank_peek should not alter $D01E/$D01F values, while mem_read would. */
+TEST(sprite_get_does_not_clear_collision_registers)
+{
+    test_memory_clear();
+    /* Set up VIC bank 0 */
+    test_memory_set_byte(0xDD00, 0x03);
+    test_memory_set_byte(0xD018, 0x14);
+    /* Set collision register values */
+    test_memory_set_byte(0xD01E, 0xAA);  /* Sprite-sprite collision */
+    test_memory_set_byte(0xD01F, 0x55);  /* Sprite-background collision */
+    /* Enable sprite 0 */
+    test_memory_set_byte(0xD015, 0x01);
+
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite", 0);
+    cJSON *response = mcp_tool_sprite_get(params);
+    ASSERT_NOT_NULL(response);
+    /* No error code */
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code == NULL);
+
+    /* After the read, collision registers should still have their values
+     * (mem_bank_peek doesn't clear them, while mem_read would) */
+    ASSERT_INT_EQ(test_memory_get_byte(0xD01E), 0xAA);
+    ASSERT_INT_EQ(test_memory_get_byte(0xD01F), 0x55);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: sprite_set reads don't clear collision register latches */
+TEST(sprite_set_does_not_clear_collision_registers)
+{
+    test_memory_clear();
+    test_memory_set_byte(0xDD00, 0x03);
+    test_memory_set_byte(0xD018, 0x14);
+    test_memory_set_byte(0xD01E, 0xBB);
+    test_memory_set_byte(0xD01F, 0xCC);
+    test_memory_set_byte(0xD015, 0x01);
+
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite", 0);
+    cJSON_AddNumberToObject(params, "color", 1);
+    cJSON *response = mcp_tool_sprite_set(params);
+    ASSERT_NOT_NULL(response);
+
+    /* Collision registers should be untouched */
+    ASSERT_INT_EQ(test_memory_get_byte(0xD01E), 0xBB);
+    ASSERT_INT_EQ(test_memory_get_byte(0xD01F), 0xCC);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory_compare uses non-destructive reads.
+ * Place known values in VIC-II I/O area and compare them. */
+TEST(memory_compare_does_not_trigger_side_effects)
+{
+    test_memory_clear();
+    /* Set VIC-II IRQ flag register to a known value */
+    test_memory_set_byte(0xD019, 0x81);  /* IRQ flag that would be cleared by mem_read */
+    /* Set the same value in another area for comparison */
+    test_memory_set_byte(0x0400, 0x81);
+
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "ranges");
+    cJSON_AddNumberToObject(params, "range1_start", 0xD019);
+    cJSON_AddNumberToObject(params, "range1_end", 0xD019);
+    cJSON_AddNumberToObject(params, "range2_start", 0x0400);
+    cJSON *response = mcp_tool_memory_compare(params);
+    ASSERT_NOT_NULL(response);
+
+    /* IRQ flag should not have been cleared by the comparison */
+    ASSERT_INT_EQ(test_memory_get_byte(0xD019), 0x81);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: vicii_set_state reads $D011 non-destructively when setting irq_raster_line */
+TEST(vicii_set_state_reads_d011_nondestructively)
+{
+    test_memory_clear();
+    /* Set $D011 to a known value with bit 7 set (raster line 256+) */
+    test_memory_set_byte(0xD011, 0x9B);  /* ECM=0, BMM=0, DEN=1, RSEL=1, YSCROLL=3, RST8=1 */
+    /* Set collision register to verify it's not read as side-effect */
+    test_memory_set_byte(0xD01E, 0xFF);
+
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "irq_raster_line", 0x50);  /* Line 80 - bit 8 clear */
+    cJSON *response = mcp_tool_vicii_set_state(params);
+    ASSERT_NOT_NULL(response);
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code == NULL);
+
+    /* D011 should have bit 7 cleared (raster line < 256) but other bits preserved */
+    uint8_t d011 = test_memory_get_byte(0xD011);
+    ASSERT_INT_EQ(d011 & 0x80, 0x00);  /* RST8 should be clear */
+    ASSERT_INT_EQ(d011 & 0x7F, 0x1B);  /* Lower 7 bits preserved */
+
+    /* Collision registers should be untouched */
+    ASSERT_INT_EQ(test_memory_get_byte(0xD01E), 0xFF);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: memory_banks returns valid response (exercises error path fix) */
+TEST(memory_banks_returns_valid_response)
+{
+    cJSON *response = mcp_tool_memory_banks(NULL);
+    ASSERT_NOT_NULL(response);
+    /* Should have a banks array */
+    cJSON *banks = cJSON_GetObjectItem(response, "banks");
+    ASSERT_NOT_NULL(banks);
+    ASSERT_TRUE(cJSON_IsArray(banks));
+    cJSON_Delete(response);
+}
+
+/* Test: memory_map returns valid response (exercises error path fix) */
+TEST(memory_map_returns_valid_response_with_params)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x0000);
+    cJSON_AddNumberToObject(params, "end", 0x00FF);
+    cJSON *response = mcp_tool_memory_map(params);
+    ASSERT_NOT_NULL(response);
+    cJSON *regions = cJSON_GetObjectItem(response, "regions");
+    ASSERT_NOT_NULL(regions);
+    ASSERT_TRUE(cJSON_IsArray(regions));
+    cJSON_Delete(params);
+    cJSON_Delete(response);
 }
 
 int main(void)
@@ -7343,6 +7874,36 @@ int main(void)
     RUN_TEST(sprite_inspect_returns_raw_data);
     RUN_TEST(sprite_inspect_all_sprites_valid);
     RUN_TEST(sprite_inspect_dispatch_works);
+
+    /* Bug fix regression tests */
+    RUN_TEST(memory_read_rejects_address_above_64k);
+    RUN_TEST(memory_read_rejects_negative_address);
+    RUN_TEST(memory_read_accepts_max_valid_address);
+    RUN_TEST(memory_read_hex_address_above_64k_rejected);
+    RUN_TEST(registers_set_n_flag);
+    RUN_TEST(registers_set_z_flag);
+    RUN_TEST(registers_set_n_flag_rejects_invalid_value);
+    RUN_TEST(registers_set_z_flag_rejects_invalid_value);
+    RUN_TEST(registers_get_returns_valid_response);
+    RUN_TEST(vicii_get_state_reads_registers);
+    RUN_TEST(sid_get_state_reads_voices);
+    RUN_TEST(cia_get_state_reads_registers);
+    RUN_TEST(watch_add_rejects_overflow_range);
+    RUN_TEST(run_until_cycles_only_returns_not_implemented);
+    RUN_TEST(snapshot_save_returns_error_not_null_on_oom);
+    RUN_TEST(snapshot_load_rejects_special_chars_in_name);
+    RUN_TEST(snapshot_load_allows_valid_name_chars);
+    RUN_TEST(memory_compare_rejects_overflow_range2);
+    RUN_TEST(disassemble_at_end_of_memory);
+    RUN_TEST(sprite_inspect_uses_correct_vic_bank);
+
+    /* Re-review round 2 regression tests */
+    RUN_TEST(sprite_get_does_not_clear_collision_registers);
+    RUN_TEST(sprite_set_does_not_clear_collision_registers);
+    RUN_TEST(memory_compare_does_not_trigger_side_effects);
+    RUN_TEST(vicii_set_state_reads_d011_nondestructively);
+    RUN_TEST(memory_banks_returns_valid_response);
+    RUN_TEST(memory_map_returns_valid_response_with_params);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);

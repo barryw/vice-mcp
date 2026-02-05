@@ -44,6 +44,9 @@
 #define MCP_ERROR_INVALID_VALUE    -32003  /* Value out of range */
 #define MCP_ERROR_SNAPSHOT_FAILED  -32004  /* Snapshot operation failed */
 
+/** @brief Static catastrophic error JSON response for OOM situations. */
+extern const char * const CATASTROPHIC_ERROR_JSON;
+
 /** @brief Function signature for MCP tool handlers.
  *
  *  @param params  JSON object containing tool parameters (may be NULL)
