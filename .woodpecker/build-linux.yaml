@@ -18,6 +18,7 @@ steps:
         autoconf
         automake
         build-essential
+        ca-certificates
         byacc
         dos2unix
         flex
@@ -89,7 +90,7 @@ steps:
       GITHUB_TOKEN:
         from_secret: github_token
     commands:
-      - apk add --no-cache bash git github-cli
+      - apk add --no-cache bash ca-certificates git github-cli
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh --current)
       - gh release upload "$${VERSION}" "$${VERSION}-linux-x86_64.zip" --repo "$${CI_REPO}" --clobber

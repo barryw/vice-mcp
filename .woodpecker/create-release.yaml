@@ -12,7 +12,7 @@ steps:
       GITHUB_TOKEN:
         from_secret: github_token
     commands:
-      - apk add --no-cache bash git github-cli
+      - apk add --no-cache bash ca-certificates git github-cli
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh)
       - echo "Creating draft release $${VERSION}"
