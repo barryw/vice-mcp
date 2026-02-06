@@ -64,7 +64,7 @@ steps:
         --with-portaudio
         --with-resid
         --with-vorbis
-      - SVN_REV=$$(git describe --tags --match 'r*' --abbrev=0 | sed 's/^r//')
+      - SVN_REV=$$(git tag -l 'r[0-9]*' --sort=-v:refname | head -1 | sed 's/^r//')
       - make -j$$(sysctl -n hw.ncpu) -s SVN_REVISION_OVERRIDE=$${SVN_REV}
       - DEPS_PREFIX=$$(brew --prefix) make bindistzip
       - |

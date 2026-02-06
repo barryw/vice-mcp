@@ -28,7 +28,7 @@ case "$ACTION" in
         cd "$REPO_ROOT/vice"
         ./src/buildtools/genvicedate_h.sh
         ./autogen.sh
-        SVN_REV=$(git describe --tags --match 'r*' --abbrev=0 | sed 's/^r//')
+        SVN_REV=$(git tag -l 'r[0-9]*' --sort=-v:refname | head -1 | sed 's/^r//')
         ./configure \
             --enable-option-checking=fatal \
             --enable-gtk3ui \
