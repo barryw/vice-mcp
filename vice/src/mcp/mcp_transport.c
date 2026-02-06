@@ -834,8 +834,6 @@ static enum MHD_Result http_handler(void *cls,
         /* All data received - process request */
         {
             char *response_json;
-            const char *accept;
-            int wants_sse;
             struct MHD_Response *response;
             enum MHD_Result ret;
 
@@ -855,49 +853,12 @@ static enum MHD_Result http_handler(void *cls,
                 return ret;
             }
 
-            /* Check if client accepts SSE */
-            accept = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "Accept");
-            wants_sse = (accept != NULL && strstr(accept, "text/event-stream") != NULL);
-
-            if (wants_sse) {
-                /* Format as SSE: event: message\ndata: {json}\n\n */
-                size_t json_len;
-                size_t sse_len;
-                char *sse_buf;
-
-                json_len = strlen(response_json);
-                /* "event: message\n" (15) + "data: " (6) + json + "\n\n" (2) + null (1) */
-                sse_len = 15 + 6 + json_len + 2 + 1;
-
-                sse_buf = (char *)lib_malloc(sse_len);
-                snprintf(sse_buf, sse_len, "event: message\ndata: %s\n\n", response_json);
-
-                /* Free the JSON (if not static) since we've copied it into SSE buffer.
-                 * cJSON_PrintUnformatted returns malloc'd memory - must use free(), not lib_free(). */
-                if (response_json != CATASTROPHIC_ERROR_JSON) {
-                    free(response_json);
-                }
-
-                /* Use MHD_RESPMEM_MUST_COPY because sse_buf was allocated with
-                 * lib_malloc (VICE allocator), but MHD would call stdlib free().
-                 * MHD copies the data, then we free our buffer with lib_free(). */
-                response = MHD_create_response_from_buffer(
-                    strlen(sse_buf),
-                    (void *)sse_buf,
-                    MHD_RESPMEM_MUST_COPY);
-
-                lib_free(sse_buf);
-
-                if (response == NULL) {
-                    log_error(mcp_transport_log, "Failed to create HTTP response");
-                    return MHD_NO;
-                }
-            } else {
-                /* Return plain JSON.
-                 * response_json is either:
-                 * - malloc'd by cJSON_PrintUnformatted: MHD_RESPMEM_MUST_FREE is correct
-                 *   (MHD will call free(), matching cJSON's malloc)
-                 * - static CATASTROPHIC_ERROR_JSON: MHD_RESPMEM_PERSISTENT is correct */
+            /* POST /mcp always returns plain JSON.
+             * response_json is either:
+             * - malloc'd by cJSON_PrintUnformatted: MHD_RESPMEM_MUST_FREE is correct
+             *   (MHD will call free(), matching cJSON's malloc)
+             * - static CATASTROPHIC_ERROR_JSON: MHD_RESPMEM_PERSISTENT is correct */
+            {
                 int is_static = (response_json == CATASTROPHIC_ERROR_JSON);
 
                 response = MHD_create_response_from_buffer(
@@ -914,14 +875,7 @@ static enum MHD_Result http_handler(void *cls,
                 }
             }
 
-            /* Add headers */
-            if (wants_sse) {
-                MHD_add_response_header(response, "Content-Type", "text/event-stream");
-                MHD_add_response_header(response, "Cache-Control", "no-cache, no-store");
-                MHD_add_response_header(response, "Connection", "keep-alive");
-            } else {
-                MHD_add_response_header(response, "Content-Type", "application/json");
-            }
+            MHD_add_response_header(response, "Content-Type", "application/json");
 
 #ifdef CORS_ALLOW_ORIGIN
             MHD_add_response_header(response, "Access-Control-Allow-Origin", CORS_ALLOW_ORIGIN);

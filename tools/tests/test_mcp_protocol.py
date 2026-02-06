@@ -67,7 +67,7 @@ class MCPClient:
         self.session = requests.Session()
         self.session.headers.update({
             "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
+            "Accept": "application/json",
         })
 
     # -- low level ----------------------------------------------------------
@@ -2090,3 +2090,90 @@ class TestEdgeCases:
         assert success_count >= 8, (
             f"Only {success_count}/10 concurrent requests succeeded"
         )
+
+
+# ---------------------------------------------------------------------------
+# HTTP Transport: Accept header and response format tests (Issues #1 & #2)
+# ---------------------------------------------------------------------------
+
+class TestAcceptHeader:
+    """POST /mcp should accept various Accept headers and always return JSON."""
+
+    PING_BODY = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "id": 999,
+        "params": {"name": "vice.ping"},
+    }
+
+    def _post(self, headers: dict, timeout: float = 5.0) -> requests.Response:
+        return requests.post(MCP_URL, json=self.PING_BODY,
+                             headers={"Content-Type": "application/json",
+                                      **headers},
+                             timeout=timeout)
+
+    def test_accept_application_json(self, mcp):
+        """Accept: application/json should return 200 with JSON body."""
+        resp = self._post({"Accept": "application/json"})
+        assert resp.status_code == 200
+        assert "application/json" in resp.headers.get("Content-Type", "")
+        data = resp.json()
+        assert data.get("jsonrpc") == "2.0"
+        assert data.get("id") == 999
+
+    def test_accept_wildcard(self, mcp):
+        """Accept: */* should return 200 with JSON body."""
+        resp = self._post({"Accept": "*/*"})
+        assert resp.status_code == 200
+        assert "application/json" in resp.headers.get("Content-Type", "")
+        data = resp.json()
+        assert data.get("jsonrpc") == "2.0"
+
+    def test_accept_json_and_sse(self, mcp):
+        """Accept: application/json, text/event-stream should return plain JSON, not SSE."""
+        resp = self._post({"Accept": "application/json, text/event-stream"})
+        assert resp.status_code == 200
+        assert "application/json" in resp.headers.get("Content-Type", "")
+        # Must NOT be SSE-wrapped
+        body = resp.text
+        assert not body.startswith("event:"), (
+            f"Response is SSE-wrapped but should be plain JSON: {body[:200]}"
+        )
+        assert not body.startswith("data:"), (
+            f"Response is SSE-wrapped but should be plain JSON: {body[:200]}"
+        )
+        data = resp.json()
+        assert data.get("jsonrpc") == "2.0"
+        assert data.get("id") == 999
+
+    def test_accept_sse_only_rejected(self, mcp):
+        """Accept: text/event-stream (without JSON) should be rejected with 406."""
+        resp = self._post({"Accept": "text/event-stream"})
+        assert resp.status_code == 406
+
+    def test_accept_xml_rejected(self, mcp):
+        """Accept: text/xml should be rejected with 406."""
+        resp = self._post({"Accept": "text/xml"})
+        assert resp.status_code == 406
+
+    def test_no_accept_header(self, mcp):
+        """Missing Accept header should be treated as */* (RFC 7231)."""
+        resp = requests.post(MCP_URL, json=self.PING_BODY,
+                             headers={"Content-Type": "application/json"},
+                             timeout=5.0)
+        assert resp.status_code == 200
+        assert "application/json" in resp.headers.get("Content-Type", "")
+        data = resp.json()
+        assert data.get("jsonrpc") == "2.0"
+
+    def test_response_never_sse_wrapped(self, mcp):
+        """Regardless of Accept header, POST /mcp Content-Type must be application/json."""
+        for accept in ["application/json",
+                        "*/*",
+                        "application/json, text/event-stream",
+                        "text/event-stream, application/json"]:
+            resp = self._post({"Accept": accept})
+            ct = resp.headers.get("Content-Type", "")
+            assert "application/json" in ct, (
+                f"Accept: {accept} -> Content-Type: {ct} (expected application/json)"
+            )
