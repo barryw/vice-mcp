@@ -3595,7 +3595,6 @@ AC_OUTPUT([Makefile
            src/lib/libusbsiddrv/Makefile
            src/lib/libzmbv/Makefile
            src/lib/md5/Makefile
-           src/lib/cjson/Makefile
            src/mcp/Makefile
            src/monitor/Makefile
            src/parallel/Makefile
