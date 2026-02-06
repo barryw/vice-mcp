@@ -1,0 +1,95 @@
+when:
+  - event: push
+    branch: feature/mcp-server
+
+depends_on:
+  - create-release
+
+labels:
+  platform: linux/amd64
+
+steps:
+  - name: build-and-package
+    image: debian:12
+    commands:
+      - apt-get update
+      - >-
+        apt-get install -y --no-install-recommends
+        autoconf
+        automake
+        build-essential
+        byacc
+        dos2unix
+        flex
+        git
+        libasound2-dev
+        libcap-dev
+        libcurl4-openssl-dev
+        libevdev-dev
+        libflac-dev
+        libgif-dev
+        libglew-dev
+        libgtk-3-dev
+        libieee1284-3-dev
+        libmicrohttpd-dev
+        libmp3lame-dev
+        libmpg123-dev
+        libpcap-dev
+        libpng-dev
+        libpulse-dev
+        libusb-1.0-0-dev
+        libvorbis-dev
+        pkg-config
+        portaudio19-dev
+        xa65
+        zip
+      - cd vice
+      - ./src/buildtools/genvicedate_h.sh
+      - ./autogen.sh
+      - >-
+        ./configure
+        --enable-option-checking=fatal
+        --enable-gtk3ui
+        --enable-mcp-server
+        --enable-cpuhistory
+        --enable-ethernet
+        --enable-midi
+        --enable-parsid
+        --enable-catweasel
+        --disable-arch
+        --disable-pdf-docs
+        --disable-html-docs
+        --with-alsa
+        --with-fastsid
+        --with-flac
+        --with-gif
+        --with-lame
+        --with-libcurl
+        --with-libieee1284
+        --with-mpg123
+        --with-png
+        --with-portaudio
+        --with-pulse
+        --with-resid
+        --with-vorbis
+      - SVN_REV=$$(git describe --tags --match 'r*' --abbrev=0 | sed 's/^r//')
+      - make -j$$(nproc) -s SVN_REVISION_OVERRIDE=$${SVN_REV}
+      - make DESTDIR=$${PWD}/install-tree install-strip
+      - cd ..
+      - git fetch --tags
+      - VERSION=$$(bash scripts/compute-version.sh --current)
+      - cd vice/install-tree
+      - zip -r "../../$${VERSION}-linux-x86_64.zip" .
+      - cd ../..
+      - ls -lh "$${VERSION}-linux-x86_64.zip"
+
+  - name: upload
+    image: alpine:3.19
+    environment:
+      GITHUB_TOKEN:
+        from_secret: github_token
+    commands:
+      - apk add --no-cache bash git github-cli
+      - git fetch --tags
+      - VERSION=$$(bash scripts/compute-version.sh --current)
+      - gh release upload "$${VERSION}" "$${VERSION}-linux-x86_64.zip" --repo "$${CI_REPO}" --clobber

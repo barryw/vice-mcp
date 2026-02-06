@@ -1,0 +1,24 @@
+when:
+  - event: push
+    branch: feature/mcp-server
+
+depends_on:
+  - build-linux
+  - build-macos
+  - build-windows
+
+labels:
+  platform: linux/amd64
+
+steps:
+  - name: publish-release
+    image: alpine:3.19
+    environment:
+      GITHUB_TOKEN:
+        from_secret: github_token
+    commands:
+      - apk add --no-cache bash git github-cli
+      - git fetch --tags
+      - VERSION=$$(bash scripts/compute-version.sh --current)
+      - echo "Publishing release $${VERSION}"
+      - gh release edit "$${VERSION}" --draft=false --repo "$${CI_REPO}"

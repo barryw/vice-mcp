@@ -1,0 +1,99 @@
+when:
+  - event: push
+    branch: feature/mcp-server
+
+depends_on:
+  - create-release
+
+labels:
+  platform: darwin/arm64
+
+steps:
+  - name: install-deps
+    image: bash
+    commands:
+      - brew update
+      - >-
+        brew install
+        autoconf
+        automake
+        pkg-config
+        xa
+        dos2unix
+        gtk+3
+        librsvg
+        adwaita-icon-theme
+        glew
+        libmicrohttpd
+        giflib
+        libpng
+        libvorbis
+        flac
+        lame
+        mpg123
+        libpcap
+        libusb
+        portaudio
+
+  - name: build-and-package
+    image: bash
+    commands:
+      - cd vice
+      - ./src/buildtools/genvicedate_h.sh
+      - ./autogen.sh
+      - >-
+        ./configure
+        --enable-option-checking=fatal
+        --enable-gtk3ui
+        --enable-mcp-server
+        --enable-cpuhistory
+        --enable-ethernet
+        --enable-midi
+        --enable-parsid
+        --disable-arch
+        --disable-pdf-docs
+        --disable-html-docs
+        --disable-openmp
+        --with-fastsid
+        --with-flac
+        --with-gif
+        --with-lame
+        --with-libcurl
+        --with-mpg123
+        --with-png
+        --with-portaudio
+        --with-resid
+        --with-vorbis
+      - SVN_REV=$$(git describe --tags --match 'r*' --abbrev=0 | sed 's/^r//')
+      - make -j$$(sysctl -n hw.ncpu) -s SVN_REVISION_OVERRIDE=$${SVN_REV}
+      - DEPS_PREFIX=$$(brew --prefix) make bindistzip
+      - |
+        cd ..
+        VERSION=$$(bash scripts/compute-version.sh --current)
+        cd vice
+        DMG_FILE=$$(ls *.dmg 2>/dev/null | head -1 || true)
+        ZIP_FILE=$$(ls *.zip 2>/dev/null | head -1 || true)
+        if [ -n "$${DMG_FILE}" ]; then
+          cp "$${DMG_FILE}" "../$${VERSION}-macos-arm64.dmg"
+          echo "Packaged: $${VERSION}-macos-arm64.dmg"
+        elif [ -n "$${ZIP_FILE}" ]; then
+          cp "$${ZIP_FILE}" "../$${VERSION}-macos-arm64.zip"
+          echo "Packaged: $${VERSION}-macos-arm64.zip"
+        else
+          echo "ERROR: No package artifact found" && exit 1
+        fi
+
+  - name: upload
+    image: bash
+    environment:
+      GITHUB_TOKEN:
+        from_secret: github_token
+    commands:
+      - VERSION=$$(bash scripts/compute-version.sh --current)
+      - |
+        if [ -f "$${VERSION}-macos-arm64.dmg" ]; then
+          ARTIFACT="$${VERSION}-macos-arm64.dmg"
+        else
+          ARTIFACT="$${VERSION}-macos-arm64.zip"
+        fi
+      - gh release upload "$${VERSION}" "$${ARTIFACT}" --repo "$${CI_REPO}" --clobber

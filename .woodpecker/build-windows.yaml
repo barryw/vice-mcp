@@ -1,0 +1,48 @@
+when:
+  - event: push
+    branch: feature/mcp-server
+
+depends_on:
+  - create-release
+
+labels:
+  platform: windows/amd64
+
+steps:
+  - name: install-deps
+    image: powershell
+    commands:
+      - C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"
+      - >-
+        C:\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm --needed
+        autotools base-devel git zip unzip p7zip subversion xmlto
+        mingw-w64-x86_64-curl mingw-w64-x86_64-docbook-xml mingw-w64-x86_64-docbook-xsl
+        mingw-w64-x86_64-flac mingw-w64-x86_64-giflib mingw-w64-x86_64-glew
+        mingw-w64-x86_64-gtk3 mingw-w64-x86_64-icoutils mingw-w64-x86_64-lame
+        mingw-w64-x86_64-libmicrohttpd mingw-w64-x86_64-libpcap mingw-w64-x86_64-libusb
+        mingw-w64-x86_64-libvorbis mingw-w64-x86_64-mpg123 mingw-w64-x86_64-ntldd
+        mingw-w64-x86_64-pkg-config mingw-w64-x86_64-portaudio mingw-w64-x86_64-toolchain
+        mingw-w64-x86_64-xa65 mingw-w64-x86_64-iconv"
+
+  - name: build-libieee1284
+    image: powershell
+    commands:
+      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash scripts/build-windows-msys2.sh build-libieee1284"
+
+  - name: build
+    image: powershell
+    commands:
+      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash scripts/build-windows-msys2.sh build"
+
+  - name: package
+    image: powershell
+    commands:
+      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash scripts/build-windows-msys2.sh package"
+
+  - name: upload
+    image: powershell
+    environment:
+      GITHUB_TOKEN:
+        from_secret: github_token
+    commands:
+      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; export GITHUB_TOKEN='$${GITHUB_TOKEN}'; export CI_REPO='$${CI_REPO}'; bash scripts/build-windows-msys2.sh upload"
