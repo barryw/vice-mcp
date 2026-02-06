@@ -2226,7 +2226,8 @@ if test x"$with_libcurl" != "xno"; then
 fi
 
 dnl ----- MCP Server Support -----
-dnl MCP server requires POSIX systems (Unix/Linux/macOS) - Windows support planned for future
+dnl MCP server requires libmicrohttpd and pthreads (available on all target platforms).
+dnl On POSIX: uses native socket headers. On Windows (MinGW): uses winsock2.
 if test x"$enable_mcp_server" = "xyes"; then
   if test x"$is_unix_x11" = "xyes" -o x"$is_unix_macosx" = "xyes"; then
     dnl Check for required POSIX headers
@@ -2246,8 +2247,26 @@ if test x"$enable_mcp_server" = "xyes"; then
     VICE_LDFLAGS="$VICE_LDFLAGS $LIBMICROHTTPD_LDFLAGS"
     LIBS="$LIBS $LIBMICROHTTPD_LIBS"
     AC_DEFINE(HAVE_MCP_SERVER, , [MCP server support])
+  elif test x"$is_win32" = "xyes" -o x"$is_win32_gtk3" = "xyes"; then
+    dnl Windows (MinGW-w64): pthreads via winpthreads, sockets via winsock2
+    MCP_HEADERS_PRESENT=yes
+    AC_CHECK_HEADERS(pthread.h winsock2.h ws2tcpip.h,,
+                     [MCP_HEADERS_PRESENT=no],)
+    if test x"$MCP_HEADERS_PRESENT" = "xno"; then
+      AC_MSG_ERROR([MCP server support requested, but required headers (pthread.h, winsock2.h, ws2tcpip.h) were not found.])
+    fi
+
+    PKG_CHECK_MODULES(LIBMICROHTTPD, [libmicrohttpd >= 0.9.0], [have_libmicrohttpd=yes], [have_libmicrohttpd=no])
+    if test x"$have_libmicrohttpd" = "xno"; then
+      AC_MSG_ERROR([MCP server support requested, but libmicrohttpd was not found.])
+    fi
+    HAVE_MCP_SERVER="yes"
+    VICE_CFLAGS="$VICE_CFLAGS $LIBMICROHTTPD_CFLAGS"
+    VICE_LDFLAGS="$VICE_LDFLAGS $LIBMICROHTTPD_LDFLAGS"
+    LIBS="$LIBS $LIBMICROHTTPD_LIBS -lws2_32"
+    AC_DEFINE(HAVE_MCP_SERVER, , [MCP server support])
   else
-    AC_MSG_WARN([MCP server support is only available on POSIX systems (Unix/Linux/macOS). Windows support is planned for a future release.])
+    AC_MSG_WARN([MCP server support is not available on this platform.])
     HAVE_MCP_SERVER="no "
   fi
 fi
@@ -3576,6 +3595,7 @@ AC_OUTPUT([Makefile
            src/lib/libusbsiddrv/Makefile
            src/lib/libzmbv/Makefile
            src/lib/md5/Makefile
+           src/lib/cjson/Makefile
            src/mcp/Makefile
            src/monitor/Makefile
            src/parallel/Makefile

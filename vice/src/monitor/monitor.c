@@ -77,9 +77,27 @@
 #include "montypes.h"
 
 #ifdef HAVE_MCP_SERVER
-/* Forward declarations for MCP step mode (avoids header include issues) */
-extern int mcp_is_step_active(void);
-extern void mcp_clear_step_active(void);
+/* MCP step mode flag - when set, monitor_check_icount() will use
+ * ui_pause_enable() instead of monitor_startup() when stepping completes.
+ * This prevents the monitor window from opening during MCP-controlled
+ * stepping operations. Defined here (not in libmcp) to avoid a circular
+ * link dependency between libmonitor.a and libmcp.a on GNU ld. */
+static int mcp_step_active = 0;
+
+int mcp_is_step_active(void)
+{
+    return mcp_step_active;
+}
+
+void mcp_clear_step_active(void)
+{
+    mcp_step_active = 0;
+}
+
+void mcp_set_step_active(int active)
+{
+    mcp_step_active = active;
+}
 #endif
 
 #include "userport_io_sim.h"

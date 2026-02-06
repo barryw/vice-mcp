@@ -263,6 +263,14 @@ void monitor_memmap_store(unsigned int addr, unsigned int type);
 #define MEMMAP_RAM_W    (1 << 1)
 #define MEMMAP_RAM_X    (1 << 0)
 
+/* MCP step mode interface - allows MCP server to control stepping behavior.
+ * When active, monitor_check_icount() pauses via UI instead of opening monitor. */
+#ifdef HAVE_MCP_SERVER
+int mcp_is_step_active(void);
+void mcp_clear_step_active(void);
+void mcp_set_step_active(int active);
+#endif
+
 /* HACK to enable fetch/load separation */
 extern uint8_t memmap_state;
 #define MEMMAP_STATE_OPCODE     0x01

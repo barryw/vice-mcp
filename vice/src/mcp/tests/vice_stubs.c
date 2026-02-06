@@ -284,6 +284,24 @@ int util_strncasecmp(const char *s1, const char *s2, size_t n)
     return strncasecmp(s1, s2, n);
 }
 
+/* MCP step mode stubs - actual implementations since tests verify flag behavior */
+static int test_mcp_step_active = 0;
+
+int mcp_is_step_active(void)
+{
+    return test_mcp_step_active;
+}
+
+void mcp_clear_step_active(void)
+{
+    test_mcp_step_active = 0;
+}
+
+void mcp_set_step_active(int active)
+{
+    test_mcp_step_active = active;
+}
+
 int vdrive_read_sector(void *vdrive, uint8_t *buf, unsigned int track, unsigned int sector)
 {
     (void)vdrive;

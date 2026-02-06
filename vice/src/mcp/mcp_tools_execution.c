@@ -31,26 +31,9 @@
 #include "monitor.h"  /* For mon_instructions_step/next, exit_mon */
 #include "ui.h"       /* For ui_pause_enable/disable/active */
 
-/* =========================================================================
- * MCP Step Mode State
- * ========================================================================= */
-
-/* MCP step mode flag - when set, monitor_check_icount() will use ui_pause_enable()
- * instead of monitor_startup() when stepping completes. This prevents the monitor
- * window from opening during MCP-controlled stepping operations. */
-static int mcp_step_active = 0;
-
-/* Check if MCP step mode is active (called from monitor.c) */
-int mcp_is_step_active(void)
-{
-    return mcp_step_active;
-}
-
-/* Clear MCP step mode (called from monitor.c when stepping completes) */
-void mcp_clear_step_active(void)
-{
-    mcp_step_active = 0;
-}
+/* mcp_step_active state is defined in monitor.c to avoid a circular link
+ * dependency between libmonitor.a and libmcp.a (GNU ld limitation).
+ * Use mcp_set_step_active() / mcp_is_step_active() from monitor.h. */
 
 /* =========================================================================
  * Execution Control Tools
@@ -146,7 +129,7 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     /* Set MCP step mode flag - this tells monitor_check_icount() to use
      * ui_pause_enable() instead of monitor_startup() when stepping completes,
      * preventing the monitor window from opening during MCP operations. */
-    mcp_step_active = 1;
+    mcp_set_step_active(1);
 
     /* Use VICE's step functions:
      * - mon_instructions_step: Step into subroutines

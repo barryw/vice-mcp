@@ -7,6 +7,7 @@ depends_on:
 
 labels:
   platform: windows/amd64
+  type: build
 
 steps:
   - name: install-deps
