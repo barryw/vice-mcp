@@ -55,6 +55,8 @@ case "$ACTION" in
         ;;
 
     package)
+        cd "$REPO_ROOT"
+        git fetch --tags
         cd "$REPO_ROOT/vice"
         make bindistzip
         VERSION=$(bash "$REPO_ROOT/scripts/compute-version.sh" --current)
@@ -70,6 +72,7 @@ case "$ACTION" in
 
     upload)
         cd "$REPO_ROOT"
+        git fetch --tags
         VERSION=$(bash scripts/compute-version.sh --current)
         gh release upload "$VERSION" "${VERSION}-windows-x86_64.zip" \
             --repo "${CI_REPO}" --clobber

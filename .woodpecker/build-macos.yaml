@@ -67,6 +67,7 @@ steps:
       - SVN_REV=$$(git tag -l 'r[0-9]*' --sort=-v:refname | head -1 | sed 's/^r//')
       - make -j$$(sysctl -n hw.ncpu) -s SVN_REVISION_OVERRIDE=$${SVN_REV}
       - DEPS_PREFIX=$$(brew --prefix) make bindistzip
+      - git fetch --tags
       - |
         cd ..
         VERSION=$$(bash scripts/compute-version.sh --current)
@@ -89,6 +90,7 @@ steps:
       GITHUB_TOKEN:
         from_secret: github_token
     commands:
+      - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh --current)
       - |
         if [ -f "$${VERSION}-macos-arm64.dmg" ]; then
