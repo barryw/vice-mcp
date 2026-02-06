@@ -743,18 +743,19 @@ static enum MHD_Result http_handler(void *cls,
                 return ret;
             }
 
-            /* Validate Accept header - MCP clients must accept both JSON and SSE */
+            /* Validate Accept header - POST /mcp returns JSON, so only require application/json.
+             * A missing Accept header implies the client accepts any media type (RFC 7231). */
             accept = MHD_lookup_connection_value(
                 connection, MHD_HEADER_KIND, "Accept");
 
-            if (accept == NULL ||
-                (strstr(accept, "application/json") == NULL && strstr(accept, "*/*") == NULL) ||
-                (strstr(accept, "text/event-stream") == NULL && strstr(accept, "*/*") == NULL)) {
-                const char *error_msg = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32000,\"message\":\"Not Acceptable: Client must accept both application/json and text/event-stream\"}}";
+            if (accept != NULL &&
+                strstr(accept, "application/json") == NULL &&
+                strstr(accept, "*/*") == NULL) {
+                const char *error_msg = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32000,\"message\":\"Not Acceptable: Client must accept application/json\"}}";
                 struct MHD_Response *response;
                 enum MHD_Result ret;
 
-                log_warning(mcp_transport_log, "Invalid Accept header for /mcp: %s (must accept both application/json and text/event-stream)",
+                log_warning(mcp_transport_log, "Invalid Accept header for POST /mcp: %s (must accept application/json)",
                            accept ? accept : "(none)");
 
                 response = MHD_create_response_from_buffer(
