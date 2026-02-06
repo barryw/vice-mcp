@@ -17,10 +17,14 @@ steps:
       - VERSION=$$(bash scripts/compute-version.sh)
       - echo "Creating draft release $${VERSION}"
       - |
-        gh release create "$${VERSION}" \
-          --repo "$${CI_REPO}" \
-          --target "$${CI_COMMIT_SHA}" \
-          --title "$${VERSION}" \
-          --notes "Automated MCP server build from feature/mcp-server branch." \
-          --draft \
-          --prerelease
+        if gh release view "$${VERSION}" --repo "$${CI_REPO}" >/dev/null 2>&1; then
+          echo "Release $${VERSION} already exists, skipping creation"
+        else
+          gh release create "$${VERSION}" \
+            --repo "$${CI_REPO}" \
+            --target "$${CI_COMMIT_SHA}" \
+            --title "$${VERSION}" \
+            --notes "Automated MCP server build from feature/mcp-server branch." \
+            --draft \
+            --prerelease
+        fi

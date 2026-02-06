@@ -18,9 +18,21 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # --current mode: return the latest vice-mcp-* tag
 if [ "${1:-}" = "--current" ]; then
+    # Try local tags first (fast path)
     LATEST=$(git -C "$REPO_ROOT" tag -l 'vice-mcp-*' --sort=-v:refname | head -1 || true)
+
+    # Fallback: query remote directly (handles case where git fetch --tags
+    # didn't pick up tags created by gh release create via GitHub API)
     if [ -z "$LATEST" ]; then
-        echo "ERROR: No vice-mcp-* tag found" >&2
+        echo "No local vice-mcp-* tags, querying remote..." >&2
+        LATEST=$(git -C "$REPO_ROOT" ls-remote --tags origin 'refs/tags/vice-mcp-*' \
+            | sed 's|.*refs/tags/||' \
+            | sort -V \
+            | tail -1 || true)
+    fi
+
+    if [ -z "$LATEST" ]; then
+        echo "ERROR: No vice-mcp-* tag found (local or remote)" >&2
         exit 1
     fi
     echo "$LATEST"
