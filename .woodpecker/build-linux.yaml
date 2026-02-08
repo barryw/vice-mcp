@@ -49,7 +49,6 @@ steps:
       - rm -f src/config.h
       - find . -name config.status -exec rm -f {} +
       - ./src/buildtools/genvicedate_h.sh
-      - ./autogen.sh
       - cd ..
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh --current)

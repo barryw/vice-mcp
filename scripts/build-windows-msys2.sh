@@ -42,7 +42,6 @@ do_autogen() {
     rm -f src/config.h
     find . -name config.status -exec rm -f {} +
     ./src/buildtools/genvicedate_h.sh
-    ./autogen.sh
 }
 
 case "$ACTION" in
