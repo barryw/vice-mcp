@@ -98,6 +98,21 @@ void mcp_set_step_active(int active)
 {
     mcp_step_active = active;
 }
+
+/* When a checkpoint (breakpoint/watchpoint) fires and MCP is active,
+ * suppress the interactive monitor and pause instead. */
+static int mcp_checkpoint_active = 0;
+
+#include "resources.h"
+
+static void mcp_mark_checkpoint_if_active(void)
+{
+    int mcp_enabled = 0;
+    resources_get_int("MCPServerEnabled", &mcp_enabled);
+    if (mcp_enabled) {
+        mcp_checkpoint_active = 1;
+    }
+}
 #endif
 
 #include "userport_io_sim.h"
@@ -2989,7 +3004,13 @@ void monitor_check_icount_interrupt(void)
  */
 int monitor_check_breakpoints(MEMSPACE mem, uint16_t addr)
 {
-    return mon_breakpoint_check_checkpoint(mem, addr, 0, e_exec); /* FIXME */
+    int hit = mon_breakpoint_check_checkpoint(mem, addr, 0, e_exec); /* FIXME */
+#ifdef HAVE_MCP_SERVER
+    if (hit) {
+        mcp_mark_checkpoint_if_active();
+    }
+#endif
+    return hit;
 }
 
 /* called by macro DO_INTERRUPT() in 6510(dtv)core.c */
@@ -2999,10 +3020,16 @@ void monitor_check_watchpoints(unsigned int lastpc, unsigned int pc)
 
     if (watch_load_occurred) {
         if (watchpoints_check_loads(e_comp_space, lastpc, pc)) {
+#ifdef HAVE_MCP_SERVER
+            mcp_mark_checkpoint_if_active();
+#endif
             monitor_startup(e_comp_space);
         }
         for (dnr = 0; dnr < NUM_DISK_UNITS; dnr++) {
             if (watchpoints_check_loads(monitor_diskspace_mem(dnr), lastpc, pc)) {
+#ifdef HAVE_MCP_SERVER
+                mcp_mark_checkpoint_if_active();
+#endif
                 monitor_startup(monitor_diskspace_mem(dnr));
             }
         }
@@ -3011,10 +3038,16 @@ void monitor_check_watchpoints(unsigned int lastpc, unsigned int pc)
 
     if (watch_store_occurred) {
         if (watchpoints_check_stores(e_comp_space, lastpc, pc)) {
+#ifdef HAVE_MCP_SERVER
+            mcp_mark_checkpoint_if_active();
+#endif
             monitor_startup(e_comp_space);
         }
         for (dnr = 0; dnr < NUM_DISK_UNITS; dnr++) {
             if (watchpoints_check_stores(monitor_diskspace_mem(dnr), lastpc, pc)) {
+#ifdef HAVE_MCP_SERVER
+                mcp_mark_checkpoint_if_active();
+#endif
                 monitor_startup(monitor_diskspace_mem(dnr));
             }
         }
@@ -3362,6 +3395,14 @@ void monitor_startup(MEMSPACE mem)
          */
         return;
     }
+
+#ifdef HAVE_MCP_SERVER
+    if (mcp_checkpoint_active) {
+        mcp_checkpoint_active = 0;
+        ui_pause_enable();
+        return;
+    }
+#endif
 
     if (ui_pause_active()) {
         should_pause_on_exit_mon = true;
