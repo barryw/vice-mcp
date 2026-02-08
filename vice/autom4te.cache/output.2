@@ -12159,6 +12159,7 @@ HAVE_IOSID_SUPPORT="no "
 HAVE_IPV6_SUPPORT="no "
 HAVE_LIBIEEE1284_SUPPORT="no "
 HAVE_LIGHTPEN_SUPPORT="no "
+HAVE_MCP_SERVER="no "
 HAVE_MIDI_SUPPORT="no "
 HAVE_MOUSE_SUPPORT="no "
 HAVE_NETWORK_SUPPORT="no "
@@ -19180,12 +19181,12 @@ if test -n "$PKG_CONFIG"; then
         pkg_cv_libcurl_CFLAGS="$libcurl_CFLAGS"
     else
         if test -n "$PKG_CONFIG" && \
-    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libcurl\""; } >&5
-  ($PKG_CONFIG --exists --print-errors "libcurl") 2>&5
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libcurl >= 7.66.0\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libcurl >= 7.66.0") 2>&5
   ac_status=$?
   printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
   test $ac_status = 0; }; then
-  pkg_cv_libcurl_CFLAGS=`$PKG_CONFIG --cflags "libcurl" 2>/dev/null`
+  pkg_cv_libcurl_CFLAGS=`$PKG_CONFIG --cflags "libcurl >= 7.66.0" 2>/dev/null`
 else
   pkg_failed=yes
 fi
@@ -19198,12 +19199,12 @@ if test -n "$PKG_CONFIG"; then
         pkg_cv_libcurl_LIBS="$libcurl_LIBS"
     else
         if test -n "$PKG_CONFIG" && \
-    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libcurl\""; } >&5
-  ($PKG_CONFIG --exists --print-errors "libcurl") 2>&5
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libcurl >= 7.66.0\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libcurl >= 7.66.0") 2>&5
   ac_status=$?
   printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
   test $ac_status = 0; }; then
-  pkg_cv_libcurl_LIBS=`$PKG_CONFIG --libs "libcurl" 2>/dev/null`
+  pkg_cv_libcurl_LIBS=`$PKG_CONFIG --libs "libcurl >= 7.66.0" 2>/dev/null`
 else
   pkg_failed=yes
 fi
@@ -19222,9 +19223,9 @@ else
         _pkg_short_errors_supported=no
 fi
         if test $_pkg_short_errors_supported = yes; then
-	        libcurl_PKG_ERRORS=`$PKG_CONFIG --short-errors --errors-to-stdout --print-errors "libcurl"`
+	        libcurl_PKG_ERRORS=`$PKG_CONFIG --short-errors --errors-to-stdout --print-errors "libcurl >= 7.66.0"`
         else 
-	        libcurl_PKG_ERRORS=`$PKG_CONFIG --errors-to-stdout --print-errors "libcurl"`
+	        libcurl_PKG_ERRORS=`$PKG_CONFIG --errors-to-stdout --print-errors "libcurl >= 7.66.0"`
         fi
 	# Put the nasty error message in config.log where it belongs
 	echo "$libcurl_PKG_ERRORS" >&5
@@ -19240,7 +19241,7 @@ printf "%s\n" "yes" >&6; }
 	have_libcurl=yes
 fi
   if test x"$have_libcurl" = "xno"; then
-    as_fn_error $? "libcurl support requested, but libcurl was not found." "$LINENO" 5
+    as_fn_error $? "libcurl (>= 7.66.0) support requested, but libcurl was not found." "$LINENO" 5
   fi
   HAVE_LIBCURL_SUPPORT="yes"
   VICE_CFLAGS="$VICE_CFLAGS $libcurl_CFLAGS"
@@ -19252,7 +19253,29 @@ printf "%s\n" "@%:@define HAVE_LIBCURL /**/" >>confdefs.h
 fi
 
 if test x"$enable_mcp_server" = "xyes"; then
-  
+  if test x"$is_unix_x11" = "xyes" -o x"$is_unix_macosx" = "xyes"; then
+        MCP_HEADERS_PRESENT=yes
+           for ac_header in pthread.h sys/socket.h netinet/in.h arpa/inet.h
+do :
+  as_ac_Header=`printf "%s\n" "ac_cv_header_$ac_header" | sed "$as_sed_sh"`
+ac_fn_c_check_header_compile "$LINENO" "$ac_header" "$as_ac_Header" "$ac_includes_default"
+if eval test \"x\$"$as_ac_Header"\" = x"yes"
+then :
+  cat >>confdefs.h <<_ACEOF
+@%:@define `printf "%s\n" "HAVE_$ac_header" | sed "$as_sed_cpp"` 1
+_ACEOF
+ 
+else case e in @%:@(
+  e) MCP_HEADERS_PRESENT=no ;;
+esac
+fi
+
+done
+    if test x"$MCP_HEADERS_PRESENT" = "xno"; then
+      as_fn_error $? "MCP server support requested, but required POSIX headers were not found." "$LINENO" 5
+    fi
+
+    
 pkg_failed=no
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for LIBMICROHTTPD" >&5
 printf %s "checking for LIBMICROHTTPD... " >&6; }
@@ -19321,16 +19344,122 @@ else
 printf "%s\n" "yes" >&6; }
 	have_libmicrohttpd=yes
 fi
-  if test x"$have_libmicrohttpd" = "xno"; then
-    as_fn_error $? "MCP server support requested, but libmicrohttpd was not found." "$LINENO" 5
-  fi
-  HAVE_MCP_SERVER="yes"
-  VICE_CFLAGS="$VICE_CFLAGS $LIBMICROHTTPD_CFLAGS"
-  VICE_LDFLAGS="$VICE_LDFLAGS $LIBMICROHTTPD_LDFLAGS"
-  LIBS="$LIBS $LIBMICROHTTPD_LIBS"
-  
+    if test x"$have_libmicrohttpd" = "xno"; then
+      as_fn_error $? "MCP server support requested, but libmicrohttpd was not found." "$LINENO" 5
+    fi
+    HAVE_MCP_SERVER="yes"
+    VICE_CFLAGS="$VICE_CFLAGS $LIBMICROHTTPD_CFLAGS"
+    VICE_LDFLAGS="$VICE_LDFLAGS $LIBMICROHTTPD_LDFLAGS"
+    LIBS="$LIBS $LIBMICROHTTPD_LIBS"
+    
 printf "%s\n" "@%:@define HAVE_MCP_SERVER /**/" >>confdefs.h
 
+  elif test x"$is_win32" = "xyes" -o x"$is_win32_gtk3" = "xyes"; then
+        MCP_HEADERS_PRESENT=yes
+           for ac_header in pthread.h winsock2.h ws2tcpip.h
+do :
+  as_ac_Header=`printf "%s\n" "ac_cv_header_$ac_header" | sed "$as_sed_sh"`
+ac_fn_c_check_header_compile "$LINENO" "$ac_header" "$as_ac_Header" "$ac_includes_default"
+if eval test \"x\$"$as_ac_Header"\" = x"yes"
+then :
+  cat >>confdefs.h <<_ACEOF
+@%:@define `printf "%s\n" "HAVE_$ac_header" | sed "$as_sed_cpp"` 1
+_ACEOF
+ 
+else case e in @%:@(
+  e) MCP_HEADERS_PRESENT=no ;;
+esac
+fi
+
+done
+    if test x"$MCP_HEADERS_PRESENT" = "xno"; then
+      as_fn_error $? "MCP server support requested, but required headers (pthread.h, winsock2.h, ws2tcpip.h) were not found." "$LINENO" 5
+    fi
+
+    
+pkg_failed=no
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for LIBMICROHTTPD" >&5
+printf %s "checking for LIBMICROHTTPD... " >&6; }
+
+if test -n "$PKG_CONFIG"; then
+    if test -n "$LIBMICROHTTPD_CFLAGS"; then
+        pkg_cv_LIBMICROHTTPD_CFLAGS="$LIBMICROHTTPD_CFLAGS"
+    else
+        if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libmicrohttpd >= 0.9.0\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libmicrohttpd >= 0.9.0") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_LIBMICROHTTPD_CFLAGS=`$PKG_CONFIG --cflags "libmicrohttpd >= 0.9.0" 2>/dev/null`
+else
+  pkg_failed=yes
+fi
+    fi
+else
+	pkg_failed=untried
+fi
+if test -n "$PKG_CONFIG"; then
+    if test -n "$LIBMICROHTTPD_LIBS"; then
+        pkg_cv_LIBMICROHTTPD_LIBS="$LIBMICROHTTPD_LIBS"
+    else
+        if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libmicrohttpd >= 0.9.0\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libmicrohttpd >= 0.9.0") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_LIBMICROHTTPD_LIBS=`$PKG_CONFIG --libs "libmicrohttpd >= 0.9.0" 2>/dev/null`
+else
+  pkg_failed=yes
+fi
+    fi
+else
+	pkg_failed=untried
+fi
+
+
+
+if test $pkg_failed = yes; then
+        
+if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
+        _pkg_short_errors_supported=yes
+else
+        _pkg_short_errors_supported=no
+fi
+        if test $_pkg_short_errors_supported = yes; then
+	        LIBMICROHTTPD_PKG_ERRORS=`$PKG_CONFIG --short-errors --errors-to-stdout --print-errors "libmicrohttpd >= 0.9.0"`
+        else 
+	        LIBMICROHTTPD_PKG_ERRORS=`$PKG_CONFIG --errors-to-stdout --print-errors "libmicrohttpd >= 0.9.0"`
+        fi
+	# Put the nasty error message in config.log where it belongs
+	echo "$LIBMICROHTTPD_PKG_ERRORS" >&5
+
+	have_libmicrohttpd=no
+elif test $pkg_failed = untried; then
+	have_libmicrohttpd=no
+else
+	LIBMICROHTTPD_CFLAGS=$pkg_cv_LIBMICROHTTPD_CFLAGS
+	LIBMICROHTTPD_LIBS=$pkg_cv_LIBMICROHTTPD_LIBS
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+	have_libmicrohttpd=yes
+fi
+    if test x"$have_libmicrohttpd" = "xno"; then
+      as_fn_error $? "MCP server support requested, but libmicrohttpd was not found." "$LINENO" 5
+    fi
+    HAVE_MCP_SERVER="yes"
+    VICE_CFLAGS="$VICE_CFLAGS $LIBMICROHTTPD_CFLAGS"
+    VICE_LDFLAGS="$VICE_LDFLAGS $LIBMICROHTTPD_LDFLAGS"
+    LIBS="$LIBS $LIBMICROHTTPD_LIBS -lws2_32"
+    
+printf "%s\n" "@%:@define HAVE_MCP_SERVER /**/" >>confdefs.h
+
+  else
+    { printf "%s\n" "$as_me:${as_lineno-$LINENO}: WARNING: MCP server support is not available on this platform." >&5
+printf "%s\n" "$as_me: WARNING: MCP server support is not available on this platform." >&2;}
+    HAVE_MCP_SERVER="no "
+  fi
 fi
  if test x"$HAVE_MCP_SERVER" = "xyes"; then
   HAVE_MCP_SERVER_TRUE=

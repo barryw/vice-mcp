@@ -14,6 +14,9 @@
 
 @SET_MAKE@
 
+# Makefile.am to build libcjson.a for VICE MCP server
+# cJSON is a third-party JSON library (MIT license)
+
 VPATH = @srcdir@
 am__is_gnu_make = { \
   if test -z '$(MAKELEVEL)'; then \
@@ -90,7 +93,7 @@ PRE_UNINSTALL = :
 POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
-subdir = src/arch/headless
+subdir = src/lib/cjson
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/m4/ax_cxx_compile_stdcxx.m4 \
 	$(top_srcdir)/m4/lib-ld.m4 \
@@ -110,23 +113,11 @@ AM_V_AR = $(am__v_AR_@AM_V@)
 am__v_AR_ = $(am__v_AR_@AM_DEFAULT_V@)
 am__v_AR_0 = @echo "  AR      " $@;
 am__v_AR_1 = 
-libarch_a_AR = $(AR) $(ARFLAGS)
-libarch_a_RANLIB = $(RANLIB)
-libarch_a_LIBADD =
-am_libarch_a_OBJECTS = archdep.$(OBJEXT) kbd.$(OBJEXT) \
-	console.$(OBJEXT) ui.$(OBJEXT) uimon.$(OBJEXT) \
-	uistatusbar.$(OBJEXT) main.$(OBJEXT) video.$(OBJEXT) \
-	vsidui.$(OBJEXT) vsyncarch.$(OBJEXT) c64scui.$(OBJEXT) \
-	mousedrv.$(OBJEXT) c64dtvui.$(OBJEXT) scpu64ui.$(OBJEXT) \
-	c128ui.$(OBJEXT) vic20ui.$(OBJEXT) petui.$(OBJEXT) \
-	plus4ui.$(OBJEXT) cbm2ui.$(OBJEXT) cbm5x0ui.$(OBJEXT) \
-	c64ui.$(OBJEXT)
-libarch_a_OBJECTS = $(am_libarch_a_OBJECTS)
-libtoolarch_a_AR = $(AR) $(ARFLAGS)
-libtoolarch_a_RANLIB = $(RANLIB)
-libtoolarch_a_LIBADD =
-am_libtoolarch_a_OBJECTS = archdep.$(OBJEXT)
-libtoolarch_a_OBJECTS = $(am_libtoolarch_a_OBJECTS)
+libcjson_a_AR = $(AR) $(ARFLAGS)
+libcjson_a_RANLIB = $(RANLIB)
+libcjson_a_LIBADD =
+am_libcjson_a_OBJECTS = cJSON.$(OBJEXT)
+libcjson_a_OBJECTS = $(am_libcjson_a_OBJECTS)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -142,16 +133,7 @@ am__v_at_1 =
 DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)/src
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
-am__depfiles_remade = ./$(DEPDIR)/archdep.Po ./$(DEPDIR)/c128ui.Po \
-	./$(DEPDIR)/c64dtvui.Po ./$(DEPDIR)/c64scui.Po \
-	./$(DEPDIR)/c64ui.Po ./$(DEPDIR)/cbm2ui.Po \
-	./$(DEPDIR)/cbm5x0ui.Po ./$(DEPDIR)/console.Po \
-	./$(DEPDIR)/kbd.Po ./$(DEPDIR)/main.Po ./$(DEPDIR)/mousedrv.Po \
-	./$(DEPDIR)/petui.Po ./$(DEPDIR)/plus4ui.Po \
-	./$(DEPDIR)/scpu64ui.Po ./$(DEPDIR)/ui.Po ./$(DEPDIR)/uimon.Po \
-	./$(DEPDIR)/uistatusbar.Po ./$(DEPDIR)/vic20ui.Po \
-	./$(DEPDIR)/video.Po ./$(DEPDIR)/vsidui.Po \
-	./$(DEPDIR)/vsyncarch.Po
+am__depfiles_remade = ./$(DEPDIR)/cJSON.Po
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -165,8 +147,8 @@ AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
-SOURCES = $(libarch_a_SOURCES) $(libtoolarch_a_SOURCES)
-DIST_SOURCES = $(libarch_a_SOURCES) $(libtoolarch_a_SOURCES)
+SOURCES = $(libcjson_a_SOURCES)
+DIST_SOURCES = $(libcjson_a_SOURCES)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -427,79 +409,13 @@ xpet_LDFLAGS = @xpet_LDFLAGS@
 xplus4_LDFLAGS = @xplus4_LDFLAGS@
 xscpu64_LDFLAGS = @xscpu64_LDFLAGS@
 xvic_LDFLAGS = @xvic_LDFLAGS@
-AM_CPPFLAGS = \
-	@VICE_CPPFLAGS@ \
-	@ARCH_INCLUDES@ \
-	-I$(top_srcdir)/src/arch/shared \
-	$(extra_includes) \
-	-I$(top_builddir)/src \
-	-I$(top_srcdir)/src \
-	-I$(top_srcdir)/src/crtc \
-	-I$(top_srcdir)/src/drive \
-	-I$(top_srcdir)/src/joyport \
-	-I$(top_srcdir)/src/lib/p64 \
-	-I$(top_srcdir)/src/raster \
-	-I$(top_srcdir)/src/rs232drv \
-	-I$(top_srcdir)/src/sid \
-	-I$(top_srcdir)/src/vdc \
-	-I$(top_srcdir)/src/c64 \
-	-I$(top_srcdir)/src/c64dtv \
-	-I$(top_srcdir)/src/c128 \
-	-I$(top_srcdir)/src/cbm2 \
-	-I$(top_srcdir)/src/pet \
-	-I$(top_srcdir)/src/plus4 \
-	-I$(top_srcdir)/src/scpu64 \
-	-I$(top_srcdir)/src/vic20 \
-	-I$(top_srcdir)/src/samplerdrv \
-	-I$(top_srcdir)/src/c64/cart \
-	-I$(top_srcdir)/src/imagecontents \
-	-I$(top_srcdir)/src/monitor \
-	-I$(top_srcdir)/src/tapeport \
-	-I$(top_srcdir)/src/core/rtc \
-	-I$(top_srcdir)/src/hvsc \
-	-I$(top_srcdir)/src/datasette
-
+AM_CPPFLAGS = @VICE_CPPFLAGS@
 AM_CFLAGS = @VICE_CFLAGS@
 AM_CXXFLAGS = @VICE_CXXFLAGS@
-AM_OBJCFLAGS = @VICE_OBJCFLAGS@
 AM_LDFLAGS = @VICE_LDFLAGS@
-noinst_LIBRARIES = libarch.a libtoolarch.a
-libarch_a_SOURCES = \
-	archdep.c \
-	kbd.c \
-	console.c \
-	ui.c \
-	uimon.c \
-	uistatusbar.c \
-	main.c \
-	video.c \
-	vsidui.c \
-	vsyncarch.c \
-	c64scui.c \
-	mousedrv.c \
-	c64dtvui.c \
-	scpu64ui.c \
-	c128ui.c \
-	vic20ui.c \
-	petui.c \
-	plus4ui.c \
-	cbm2ui.c \
-	cbm5x0ui.c \
-	c64ui.c
-
-libtoolarch_a_SOURCES = \
-	archdep.c
-
-EXTRA_DIST = \
-	archdep.h \
-	debug_headless.h \
-	kbd.h \
-	mousedrv.h \
-	ui.h \
-	uistatusbar.h \
-	videoarch.h \
-	make-bindist_win32.sh
-
+noinst_LIBRARIES = libcjson.a
+libcjson_a_SOURCES = cJSON.c
+EXTRA_DIST = cJSON.h
 all: all-am
 
 .SUFFIXES:
@@ -513,9 +429,9 @@ $(srcdir)/Makefile.in:  $(srcdir)/Makefile.am  $(am__configure_deps)
 	      exit 1;; \
 	  esac; \
 	done; \
-	echo ' cd $(top_srcdir) && $(AUTOMAKE) --foreign src/arch/headless/Makefile'; \
+	echo ' cd $(top_srcdir) && $(AUTOMAKE) --foreign src/lib/cjson/Makefile'; \
 	$(am__cd) $(top_srcdir) && \
-	  $(AUTOMAKE) --foreign src/arch/headless/Makefile
+	  $(AUTOMAKE) --foreign src/lib/cjson/Makefile
 Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
 	@case '$?' in \
 	  *config.status*) \
@@ -537,15 +453,10 @@ $(am__aclocal_m4_deps):
 clean-noinstLIBRARIES:
 	-$(am__rm_f) $(noinst_LIBRARIES)
 
-libarch.a: $(libarch_a_OBJECTS) $(libarch_a_DEPENDENCIES) $(EXTRA_libarch_a_DEPENDENCIES) 
-	$(AM_V_at)-rm -f libarch.a
-	$(AM_V_AR)$(libarch_a_AR) libarch.a $(libarch_a_OBJECTS) $(libarch_a_LIBADD)
-	$(AM_V_at)$(libarch_a_RANLIB) libarch.a
-
-libtoolarch.a: $(libtoolarch_a_OBJECTS) $(libtoolarch_a_DEPENDENCIES) $(EXTRA_libtoolarch_a_DEPENDENCIES) 
-	$(AM_V_at)-rm -f libtoolarch.a
-	$(AM_V_AR)$(libtoolarch_a_AR) libtoolarch.a $(libtoolarch_a_OBJECTS) $(libtoolarch_a_LIBADD)
-	$(AM_V_at)$(libtoolarch_a_RANLIB) libtoolarch.a
+libcjson.a: $(libcjson_a_OBJECTS) $(libcjson_a_DEPENDENCIES) $(EXTRA_libcjson_a_DEPENDENCIES) 
+	$(AM_V_at)-rm -f libcjson.a
+	$(AM_V_AR)$(libcjson_a_AR) libcjson.a $(libcjson_a_OBJECTS) $(libcjson_a_LIBADD)
+	$(AM_V_at)$(libcjson_a_RANLIB) libcjson.a
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
@@ -553,27 +464,7 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/archdep.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/c128ui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/c64dtvui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/c64scui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/c64ui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cbm2ui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cbm5x0ui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/console.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/kbd.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/main.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mousedrv.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/petui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/plus4ui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/scpu64ui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/ui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/uimon.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/uistatusbar.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/vic20ui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/video.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/vsidui.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/vsyncarch.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cJSON.Po@am__quote@ # am--include-marker
 
 $(am__depfiles_remade):
 	@$(MKDIR_P) $(@D)
@@ -719,27 +610,7 @@ clean: clean-am
 clean-am: clean-generic clean-noinstLIBRARIES mostlyclean-am
 
 distclean: distclean-am
-	-rm -f ./$(DEPDIR)/archdep.Po
-	-rm -f ./$(DEPDIR)/c128ui.Po
-	-rm -f ./$(DEPDIR)/c64dtvui.Po
-	-rm -f ./$(DEPDIR)/c64scui.Po
-	-rm -f ./$(DEPDIR)/c64ui.Po
-	-rm -f ./$(DEPDIR)/cbm2ui.Po
-	-rm -f ./$(DEPDIR)/cbm5x0ui.Po
-	-rm -f ./$(DEPDIR)/console.Po
-	-rm -f ./$(DEPDIR)/kbd.Po
-	-rm -f ./$(DEPDIR)/main.Po
-	-rm -f ./$(DEPDIR)/mousedrv.Po
-	-rm -f ./$(DEPDIR)/petui.Po
-	-rm -f ./$(DEPDIR)/plus4ui.Po
-	-rm -f ./$(DEPDIR)/scpu64ui.Po
-	-rm -f ./$(DEPDIR)/ui.Po
-	-rm -f ./$(DEPDIR)/uimon.Po
-	-rm -f ./$(DEPDIR)/uistatusbar.Po
-	-rm -f ./$(DEPDIR)/vic20ui.Po
-	-rm -f ./$(DEPDIR)/video.Po
-	-rm -f ./$(DEPDIR)/vsidui.Po
-	-rm -f ./$(DEPDIR)/vsyncarch.Po
+	-rm -f ./$(DEPDIR)/cJSON.Po
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-tags
@@ -785,27 +656,7 @@ install-ps-am:
 installcheck-am:
 
 maintainer-clean: maintainer-clean-am
-	-rm -f ./$(DEPDIR)/archdep.Po
-	-rm -f ./$(DEPDIR)/c128ui.Po
-	-rm -f ./$(DEPDIR)/c64dtvui.Po
-	-rm -f ./$(DEPDIR)/c64scui.Po
-	-rm -f ./$(DEPDIR)/c64ui.Po
-	-rm -f ./$(DEPDIR)/cbm2ui.Po
-	-rm -f ./$(DEPDIR)/cbm5x0ui.Po
-	-rm -f ./$(DEPDIR)/console.Po
-	-rm -f ./$(DEPDIR)/kbd.Po
-	-rm -f ./$(DEPDIR)/main.Po
-	-rm -f ./$(DEPDIR)/mousedrv.Po
-	-rm -f ./$(DEPDIR)/petui.Po
-	-rm -f ./$(DEPDIR)/plus4ui.Po
-	-rm -f ./$(DEPDIR)/scpu64ui.Po
-	-rm -f ./$(DEPDIR)/ui.Po
-	-rm -f ./$(DEPDIR)/uimon.Po
-	-rm -f ./$(DEPDIR)/uistatusbar.Po
-	-rm -f ./$(DEPDIR)/vic20ui.Po
-	-rm -f ./$(DEPDIR)/video.Po
-	-rm -f ./$(DEPDIR)/vsidui.Po
-	-rm -f ./$(DEPDIR)/vsyncarch.Po
+	-rm -f ./$(DEPDIR)/cJSON.Po
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
 

@@ -413,6 +413,9 @@
 /* Define to 1 if you have the <process.h> header file. */
 #undef HAVE_PROCESS_H
 
+/* Define to 1 if you have the <pthread.h> header file. */
+#undef HAVE_PTHREAD_H
+
 /* Define to 1 if you have the <pulse/simple.h> header file. */
 #undef HAVE_PULSE_SIMPLE_H
 
@@ -634,6 +637,9 @@
 /* Define to 1 if you have the <winioctl.h> header file. */
 #undef HAVE_WINIOCTL_H
 
+/* Define to 1 if you have the <winsock2.h> header file. */
+#undef HAVE_WINSOCK2_H
+
 /* Define to 1 if you have the <winsock.h> header file. */
 #undef HAVE_WINSOCK_H
 
@@ -642,6 +648,9 @@
 
 /* Define to 1 if 'vfork' works. */
 #undef HAVE_WORKING_VFORK
+
+/* Define to 1 if you have the <ws2tcpip.h> header file. */
+#undef HAVE_WS2TCPIP_H
 
 /* Support X64 images */
 #undef HAVE_X64_IMAGE
