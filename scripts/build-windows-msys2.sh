@@ -44,8 +44,8 @@ do_autogen() {
     ./src/buildtools/genvicedate_h.sh
     # Fix autotools timestamps: git clone gives all files same mtime,
     # causing make to think generated files need regeneration
-    sleep 1 && touch aclocal.m4
-    sleep 1 && touch configure src/config.h.in
+    sleep 1 && find . -name aclocal.m4 -exec touch {} +
+    sleep 1 && find . -name configure -exec touch {} + && find . -name config.h.in -exec touch {} +
     find . -name Makefile.in -exec touch {} +
 }
 
