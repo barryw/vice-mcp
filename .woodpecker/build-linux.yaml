@@ -45,9 +45,9 @@ steps:
         xa65
         zip
       - cd vice
-      - find . -name config.status -exec rm -f {} +
       - rm -rf build-gui build-headless
-      - test -f Makefile && make distclean || true
+      - rm -f src/config.h
+      - find . -name config.status -exec rm -f {} +
       - ./src/buildtools/genvicedate_h.sh
       - ./autogen.sh
       - cd ..

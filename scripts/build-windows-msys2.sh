@@ -39,10 +39,10 @@ COMMON_CONFIGURE_FLAGS=(
 
 do_autogen() {
     cd "$REPO_ROOT/vice"
+    rm -f src/config.h
+    find . -name config.status -exec rm -f {} +
     ./src/buildtools/genvicedate_h.sh
-    if [ ! -f configure ] || [ configure.ac -nt configure ]; then
-        ./autogen.sh
-    fi
+    ./autogen.sh
 }
 
 case "$ACTION" in

@@ -39,10 +39,11 @@ steps:
     image: bash
     commands:
       - cd vice
+      - rm -rf build-gui build-headless
+      - rm -f src/config.h
       - find . -name config.status -exec rm -f {} +
-      - rm -rf build-gui
       - ./src/buildtools/genvicedate_h.sh
-      - test -f configure && echo "configure exists" || ./autogen.sh
+      - ./autogen.sh
       - mkdir -p build-gui && cd build-gui
       - >-
         ../configure
