@@ -19,6 +19,6 @@ steps:
     commands:
       - apk add --no-cache bash ca-certificates git github-cli
       - git fetch --tags
-      - VERSION=$$(bash scripts/compute-version.sh --current)
+      - VERSION=$$(bash scripts/compute-version.sh)
       - echo "Publishing release $${VERSION}"
       - gh release edit "$${VERSION}" --draft=false --prerelease=false --latest --repo "$${CI_REPO}"
