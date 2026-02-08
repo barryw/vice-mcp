@@ -43,6 +43,11 @@ steps:
       - rm -f src/config.h
       - find . -name config.status -exec rm -f {} +
       - ./src/buildtools/genvicedate_h.sh
+      # Fix autotools timestamps: git clone gives all files same mtime,
+      # causing make to think generated files need regeneration
+      - sleep 1 && touch aclocal.m4
+      - sleep 1 && touch configure src/config.h.in
+      - find . -name Makefile.in -exec touch {} +
       - mkdir -p build-gui && cd build-gui
       - >-
         ../configure
