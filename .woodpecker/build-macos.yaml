@@ -39,6 +39,7 @@ steps:
     image: bash
     commands:
       - cd vice
+      - find . -name config.status -exec rm -f {} +
       - rm -rf build-gui
       - ./src/buildtools/genvicedate_h.sh
       - test -f configure && echo "configure exists" || ./autogen.sh
