@@ -46,6 +46,7 @@ steps:
         zip
       - cd vice
       - find . -name config.status -exec rm -f {} +
+      - rm -rf build-gui build-headless
       - test -f Makefile && make distclean || true
       - ./src/buildtools/genvicedate_h.sh
       - ./autogen.sh

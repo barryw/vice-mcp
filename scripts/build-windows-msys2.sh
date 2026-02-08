@@ -63,7 +63,7 @@ case "$ACTION" in
     build|build-gui)
         do_autogen
         cd "$REPO_ROOT/vice"
-        test -f config.status && make distclean || true
+        rm -rf build-gui
         mkdir -p build-gui && cd build-gui
         ../configure \
             --enable-gtk3ui \
@@ -92,7 +92,7 @@ case "$ACTION" in
     build-headless)
         do_autogen
         cd "$REPO_ROOT/vice"
-        test -f config.status && make distclean || true
+        rm -rf build-headless
         mkdir -p build-headless && cd build-headless
         ../configure \
             --enable-headlessui \
