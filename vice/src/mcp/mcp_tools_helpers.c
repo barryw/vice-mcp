@@ -33,7 +33,6 @@
 #include "archdep_mkdir.h"
 #include "util.h"
 
-#include <sys/stat.h>
 #include <time.h>
 
 /* -------------------------------------------------------------------------

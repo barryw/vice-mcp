@@ -32,7 +32,7 @@
 #include "video.h"
 #include "videoarch.h"
 
-#include <unistd.h>
+#include "archdep_tmpnam.h"
 
 /* =========================================================================
  * Phase 2.5: Display Capture Tools
@@ -134,8 +134,15 @@ cJSON* mcp_tool_display_screenshot(cJSON *params)
 
     /* If return_base64 and no path, use temp file */
     if (return_base64 && path == NULL) {
-        snprintf(temp_path, sizeof(temp_path), "/tmp/vice_mcp_screenshot_%d.%s",
-                 (int)getpid(), strcmp(format, "PNG") == 0 ? "png" : "bmp");
+        char *tmpname = archdep_tmpnam();
+        if (tmpname != NULL) {
+            snprintf(temp_path, sizeof(temp_path), "%s.%s",
+                     tmpname, strcmp(format, "PNG") == 0 ? "png" : "bmp");
+            lib_free(tmpname);
+        } else {
+            snprintf(temp_path, sizeof(temp_path), "vice_mcp_screenshot.%s",
+                     strcmp(format, "PNG") == 0 ? "png" : "bmp");
+        }
         path = temp_path;
         use_temp_file = 1;
     } else if (path == NULL) {

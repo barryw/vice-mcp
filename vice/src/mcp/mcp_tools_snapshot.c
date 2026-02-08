@@ -28,8 +28,9 @@
 
 #include "machine.h"
 
+#include "archdep_dir.h"
+
 #include <ctype.h>
-#include <dirent.h>
 #include <string.h>
 
 /* =========================================================================
@@ -269,7 +270,7 @@ cJSON* mcp_tool_snapshot_list(cJSON *params)
 {
     cJSON *response, *snapshots_array;
     char *snapshots_dir;
-    DIR *dir;
+    archdep_dir_t *dir;
 
     (void)params;
 
@@ -298,16 +299,16 @@ cJSON* mcp_tool_snapshot_list(cJSON *params)
     cJSON_AddStringToObject(response, "directory", snapshots_dir);
 
     /* Open directory and enumerate .vsf files */
-    dir = opendir(snapshots_dir);
+    dir = archdep_opendir(snapshots_dir, ARCHDEP_OPENDIR_ALL_FILES);
     if (dir != NULL) {
-        struct dirent *entry;
-        while ((entry = readdir(dir)) != NULL) {
+        const char *entry_name;
+        while ((entry_name = archdep_readdir(dir)) != NULL) {
             const char *ext;
-            size_t name_len = strlen(entry->d_name);
+            size_t name_len = strlen(entry_name);
 
             /* Skip if not a .vsf file */
             if (name_len < 5) continue;
-            ext = entry->d_name + name_len - 4;
+            ext = entry_name + name_len - 4;
             if (strcmp(ext, ".vsf") != 0) continue;
 
             /* Found a snapshot file */
@@ -317,14 +318,14 @@ cJSON* mcp_tool_snapshot_list(cJSON *params)
                     /* Extract name (without .vsf extension) */
                     char *name = lib_malloc(name_len - 3);
                     if (name != NULL) {
-                        strncpy(name, entry->d_name, name_len - 4);
+                        strncpy(name, entry_name, name_len - 4);
                         name[name_len - 4] = '\0';
                         cJSON_AddStringToObject(snapshot_obj, "name", name);
                     }
 
                     /* Add full path */
                     {
-                        char *vsf_path = mcp_build_vsf_path(snapshots_dir, entry->d_name);
+                        char *vsf_path = mcp_build_vsf_path(snapshots_dir, entry_name);
                         if (vsf_path != NULL) {
                             cJSON_AddStringToObject(snapshot_obj, "path", vsf_path);
                             lib_free(vsf_path);
@@ -333,7 +334,7 @@ cJSON* mcp_tool_snapshot_list(cJSON *params)
 
                     /* Try to read metadata from sidecar */
                     {
-                        char *vsf_path = mcp_build_vsf_path(snapshots_dir, entry->d_name);
+                        char *vsf_path = mcp_build_vsf_path(snapshots_dir, entry_name);
                         cJSON *metadata = mcp_read_snapshot_metadata(vsf_path);
                         lib_free(vsf_path);
 
@@ -363,7 +364,7 @@ cJSON* mcp_tool_snapshot_list(cJSON *params)
                 }
             }
         }
-        closedir(dir);
+        archdep_closedir(dir);
     }
 
     lib_free(snapshots_dir);
