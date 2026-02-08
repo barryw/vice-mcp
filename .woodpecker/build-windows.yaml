@@ -19,7 +19,7 @@ steps:
       # Install cross-compiler toolchain and dependencies
       - >-
         dnf install -y --setopt=install_weak_deps=False
-        gcc gcc-c++ autoconf automake make pkg-config xa
+        gcc gcc-c++ autoconf automake make pkg-config xa icoutils
         flex bison dos2unix git zip curl ca-certificates
         mingw64-gcc mingw64-gcc-c++
         mingw64-curl mingw64-flac mingw64-portaudio
