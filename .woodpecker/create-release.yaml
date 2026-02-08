@@ -16,6 +16,17 @@ steps:
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh)
       - echo "Creating draft release $${VERSION}"
+      # Generate release notes from commit messages since last tag
+      - |
+        PREV_TAG=$$(git tag -l 'vice-mcp-*' --sort=-v:refname | head -1 || true)
+        if [ -n "$${PREV_TAG}" ]; then
+          NOTES=$$(git log "$${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges)
+        else
+          NOTES=$$(git log --pretty=format:"- %s" --no-merges -20)
+        fi
+        if [ -z "$${NOTES}" ]; then
+          NOTES="No changes since last release."
+        fi
       - |
         if gh release view "$${VERSION}" --repo "$${CI_REPO}" >/dev/null 2>&1; then
           echo "Release $${VERSION} already exists, skipping creation"
@@ -24,7 +35,6 @@ steps:
             --repo "$${CI_REPO}" \
             --target "$${CI_COMMIT_SHA}" \
             --title "$${VERSION}" \
-            --notes "Automated MCP server build from mcp-server branch. Includes GUI and headless variants." \
-            --draft \
-            --prerelease
+            --notes "$${NOTES}" \
+            --draft
         fi

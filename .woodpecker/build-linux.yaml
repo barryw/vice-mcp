@@ -93,9 +93,9 @@ steps:
       - make -j$$(nproc) -s
       - make DESTDIR=$${PWD}/install-tree install-strip
       - cd install-tree
+      - find . -type f -exec sha256sum {} + > SHA256SUMS
       - zip -r "../../../$${VERSION}-linux-x86_64-gui.zip" .
       - cd ../../..
-      - sha256sum "$${VERSION}-linux-x86_64-gui.zip" > "$${VERSION}-linux-x86_64-gui.zip.sha256"
       - cd vice
       # --- Headless build ---
       - mkdir -p build-headless && cd build-headless
@@ -128,10 +128,10 @@ steps:
       - make -j$$(nproc) -s
       - make DESTDIR=$${PWD}/install-tree install-strip
       - cd install-tree
+      - find . -type f -exec sha256sum {} + > SHA256SUMS
       - zip -r "../../../$${VERSION}-linux-x86_64-headless.zip" .
       - cd ../../..
-      - sha256sum "$${VERSION}-linux-x86_64-headless.zip" > "$${VERSION}-linux-x86_64-headless.zip.sha256"
-      - ls -lh $${VERSION}-linux-x86_64-*.zip*
+      - ls -lh $${VERSION}-linux-x86_64-*.zip
 
   - name: upload
     image: alpine:3.19
@@ -147,6 +147,6 @@ steps:
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh --current)
       - |
-        for f in $${VERSION}-linux-x86_64-*.zip $${VERSION}-linux-x86_64-*.sha256; do
+        for f in $${VERSION}-linux-x86_64-*.zip; do
           gh release upload "$${VERSION}" "$${f}" --repo "$${CI_REPO}" --clobber
         done

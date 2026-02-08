@@ -232,16 +232,17 @@ src/x64sc -help | grep mcp
 
 ### Pre-built Binaries
 
-Pre-built binaries are coming soon. The plan is to provide two variants per platform:
+Pre-built binaries are available on the [Releases](https://github.com/barryw/vice-mcp/releases) page.
 
-| Variant | Use Case |
-|---|---|
-| **VICE MCP (GUI)** | Full emulator with GTK3 UI + MCP server — for interactive use and development |
-| **VICE MCP (Headless)** | No GUI, MCP server only — for CI pipelines, automated testing, and server-side agents |
+| Platform | GUI | Headless | Notes |
+|---|---|---|---|
+| **Linux x86_64** | Yes | Yes | GTK3 UI |
+| **macOS arm64** | Yes | Yes | GTK3 UI (Apple Silicon) |
+| **Windows x86_64** | No | Yes | Headless only — cross-compiled via MinGW-w64 |
 
-Targets: Linux x86_64, macOS arm64, Windows x86_64.
-
-Until then, [build from source](#building-from-source).
+Windows does not include a GUI build. GTK3 cross-compilation for Windows is not
+supported by VICE's build system. If you need a Windows GUI, [build from source](#building-from-source)
+natively using MSYS2.
 
 ## Python Client
 
@@ -834,22 +835,20 @@ Read entries without stopping the log.
 
 ## Project Status
 
-This is active, working software. The MCP server compiles and runs on Linux and macOS.
-Windows support is implemented (using Winsock2 and winpthreads) but awaiting verification.
-All 63 tools are implemented and tested.
+This is active, working software. The MCP server compiles and runs on Linux, macOS,
+and Windows. All 63 tools are implemented and tested. CI produces binaries for all
+three platforms on every push.
 
 **What's solid:**
 - Full tool suite — execution, memory, breakpoints, sprites, chip state, disk, input, debugging
 - Machine-aware responses across all VICE-emulated platforms
 - Python client with retry logic and full test coverage
-- Cross-platform build (Linux x86_64, macOS arm64, Windows x86_64 in progress)
+- Cross-platform builds: Linux x86_64 (GUI + headless), macOS arm64 (GUI + headless), Windows x86_64 (headless)
+- Automated CI/CD pipeline with binary releases
 
 **What's in progress:**
-- CI/CD pipeline for automated binary releases
-- Headless (no GUI) build variant for CI integration
 - SSE event streaming (infrastructure present, limited by libmicrohttpd)
 - Execution tracing and interrupt logging hooks into VICE CPU core
-- Windows build verification
 
 ## Contributing
 

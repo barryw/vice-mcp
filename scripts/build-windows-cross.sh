@@ -212,12 +212,16 @@ case "$ACTION" in
             [ -f "$SRC_DIR/$doc" ] && cp "$SRC_DIR/$doc" "$DIST_DIR/doc/"
         done
 
+        # Generate checksums of all files in the distribution
+        echo "--- Generating checksums ---"
+        cd "$DIST_DIR"
+        find . -type f -exec sha256sum {} + > SHA256SUMS
+        cd "$BUILD_DIR"
+
         # Create zip
         echo "--- Creating archive ---"
-        cd "$BUILD_DIR"
         zip -r -9 -q "$REPO_ROOT/${VERSION}-windows-x86_64-headless.zip" "$DIST_NAME/"
         cd "$REPO_ROOT"
-        sha256sum "${VERSION}-windows-x86_64-headless.zip" > "${VERSION}-windows-x86_64-headless.zip.sha256"
         echo "Packaged: ${VERSION}-windows-x86_64-headless.zip"
         ls -lh "${VERSION}-windows-x86_64-headless.zip"
         ;;
@@ -226,7 +230,7 @@ case "$ACTION" in
         cd "$REPO_ROOT"
         git fetch --tags
         VERSION=$(bash scripts/compute-version.sh --current)
-        for artifact in "${VERSION}-windows-x86_64"-*.zip "${VERSION}-windows-x86_64"-*.sha256; do
+        for artifact in "${VERSION}-windows-x86_64"-*.zip; do
             if [ -f "$artifact" ]; then
                 gh release upload "$VERSION" "$artifact" --repo "${CI_REPO}" --clobber
                 echo "Uploaded: $artifact"

@@ -83,12 +83,8 @@ steps:
         ZIP_FILE=$$(ls *.zip 2>/dev/null | head -1 || true)
         if [ -n "$${DMG_FILE}" ]; then
           cp "$${DMG_FILE}" "../../$${VERSION}-macos-arm64-gui.dmg"
-          cd ../..
-          shasum -a 256 "$${VERSION}-macos-arm64-gui.dmg" > "$${VERSION}-macos-arm64-gui.dmg.sha256"
         elif [ -n "$${ZIP_FILE}" ]; then
           cp "$${ZIP_FILE}" "../../$${VERSION}-macos-arm64-gui.zip"
-          cd ../..
-          shasum -a 256 "$${VERSION}-macos-arm64-gui.zip" > "$${VERSION}-macos-arm64-gui.zip.sha256"
         else
           echo "ERROR: No package artifact found" && exit 1
         fi
@@ -128,9 +124,9 @@ steps:
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh --current)
       - cd vice/build-headless/install-tree
+      - find . -type f -exec shasum -a 256 {} + > SHA256SUMS
       - zip -r "../../../$${VERSION}-macos-arm64-headless.zip" .
       - cd ../../..
-      - shasum -a 256 "$${VERSION}-macos-arm64-headless.zip" > "$${VERSION}-macos-arm64-headless.zip.sha256"
 
   - name: upload
     image: bash
@@ -141,6 +137,6 @@ steps:
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh --current)
       - |
-        for f in $${VERSION}-macos-arm64-*; do
+        for f in $${VERSION}-macos-arm64-*.dmg $${VERSION}-macos-arm64-*.zip; do
           [ -f "$${f}" ] && gh release upload "$${VERSION}" "$${f}" --repo "$${CI_REPO}" --clobber
         done
