@@ -697,7 +697,7 @@ HEREDOC
 echo "  copying documents"
 
 mkdir $BUILD_DIR/doc
-cp README $BUILD_DIR/doc/README.txt
+cp "$TOP_DIR/README" $BUILD_DIR/doc/README.txt
 if [ -f doc/vice.pdf ]; then
   cp doc/vice.pdf $BUILD_DIR/doc/
 fi
