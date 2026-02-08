@@ -39,8 +39,8 @@ steps:
     image: bash
     commands:
       - cd vice
+      - find . -name config.status -exec rm -f {} +
       - test -f Makefile && make distclean || true
-      - rm -f config.status
       - ./src/buildtools/genvicedate_h.sh
       - ./autogen.sh
       - mkdir -p build-gui && cd build-gui

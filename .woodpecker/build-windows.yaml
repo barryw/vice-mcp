@@ -28,27 +28,27 @@ steps:
   - name: build-libieee1284
     image: powershell
     commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '${CI_WORKSPACE}/scripts/build-windows-msys2.sh' build-libieee1284"
+      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '$$PWD/scripts/build-windows-msys2.sh' build-libieee1284"
 
   - name: build-gui
     image: powershell
     commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '${CI_WORKSPACE}/scripts/build-windows-msys2.sh' build-gui"
+      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '$$PWD/scripts/build-windows-msys2.sh' build-gui"
 
   - name: package-gui
     image: powershell
     commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '${CI_WORKSPACE}/scripts/build-windows-msys2.sh' package-gui"
+      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '$$PWD/scripts/build-windows-msys2.sh' package-gui"
 
   - name: build-headless
     image: powershell
     commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '${CI_WORKSPACE}/scripts/build-windows-msys2.sh' build-headless"
+      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '$$PWD/scripts/build-windows-msys2.sh' build-headless"
 
   - name: package-headless
     image: powershell
     commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '${CI_WORKSPACE}/scripts/build-windows-msys2.sh' package-headless"
+      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '$$PWD/scripts/build-windows-msys2.sh' package-headless"
 
   - name: upload
     image: powershell
@@ -56,4 +56,4 @@ steps:
       GITHUB_TOKEN:
         from_secret: github_token
     commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; export GITHUB_TOKEN='$${GITHUB_TOKEN}'; export CI_REPO='$${CI_REPO}'; bash '${CI_WORKSPACE}/scripts/build-windows-msys2.sh' upload"
+      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; export GITHUB_TOKEN='$${GITHUB_TOKEN}'; export CI_REPO='$${CI_REPO}'; bash '$$PWD/scripts/build-windows-msys2.sh' upload"
