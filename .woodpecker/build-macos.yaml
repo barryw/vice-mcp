@@ -39,6 +39,7 @@ steps:
     image: bash
     commands:
       - cd vice
+      - test -f Makefile && make distclean || true
       - ./src/buildtools/genvicedate_h.sh
       - ./autogen.sh
       - mkdir -p build-gui && cd build-gui
@@ -90,6 +91,7 @@ steps:
     image: bash
     commands:
       - cd vice
+      - test -f config.status && make distclean || true
       - mkdir -p build-headless && cd build-headless
       - >-
         ../configure
