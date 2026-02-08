@@ -45,6 +45,7 @@ steps:
         xa65
         zip
       - cd vice
+      - test -f Makefile && make distclean || true
       - ./src/buildtools/genvicedate_h.sh
       - ./autogen.sh
       - cd ..
