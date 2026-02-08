@@ -29,7 +29,12 @@ libmcp_a_SOURCES = \
     mcp_tools_chipstate.c \
     mcp_tools_checkpoint.c \
     mcp_tools_trace.c \
-    mcp_tools_protocol.c
+    mcp_tools_protocol.c \
+    mcp_tools_validation.c \
+    mcp_tools_validation.h \
+    mcp_tools_machine.c \
+    $(top_srcdir)/src/lib/cjson/cJSON.c \
+    $(top_srcdir)/src/lib/cjson/cJSON.h
 
 libmcp_a_CFLAGS = $(AM_CFLAGS) $(LIBMICROHTTPD_CFLAGS)
 endif

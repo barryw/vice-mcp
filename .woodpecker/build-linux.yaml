@@ -1,6 +1,6 @@
 when:
   - event: push
-    branch: feature/mcp-server
+    branch: mcp-server
 
 depends_on:
   - create-release
@@ -47,8 +47,14 @@ steps:
       - cd vice
       - ./src/buildtools/genvicedate_h.sh
       - ./autogen.sh
+      - cd ..
+      - git fetch --tags
+      - VERSION=$$(bash scripts/compute-version.sh --current)
+      - cd vice
+      # --- GUI build ---
+      - mkdir -p build-gui && cd build-gui
       - >-
-        ./configure
+        ../configure
         --enable-option-checking=fatal
         --enable-gtk3ui
         --enable-mcp-server
@@ -73,16 +79,48 @@ steps:
         --with-pulse
         --with-resid
         --with-vorbis
-      - SVN_REV=$$(git tag -l 'r[0-9]*' --sort=-v:refname | head -1 | sed 's/^r//')
-      - make -j$$(nproc) -s SVN_REVISION_OVERRIDE=$${SVN_REV}
+      - make -j$$(nproc) -s
       - make DESTDIR=$${PWD}/install-tree install-strip
-      - cd ..
-      - git fetch --tags
-      - VERSION=$$(bash scripts/compute-version.sh --current)
-      - cd vice/install-tree
-      - zip -r "../../$${VERSION}-linux-x86_64.zip" .
-      - cd ../..
-      - ls -lh "$${VERSION}-linux-x86_64.zip"
+      - cd install-tree
+      - zip -r "../../../$${VERSION}-linux-x86_64-gui.zip" .
+      - cd ../../..
+      - sha256sum "$${VERSION}-linux-x86_64-gui.zip" > "$${VERSION}-linux-x86_64-gui.zip.sha256"
+      - cd vice
+      # --- Headless build ---
+      - mkdir -p build-headless && cd build-headless
+      - >-
+        ../configure
+        --enable-option-checking=fatal
+        --enable-headlessui
+        --enable-mcp-server
+        --enable-cpuhistory
+        --enable-ethernet
+        --enable-midi
+        --enable-parsid
+        --enable-catweasel
+        --disable-arch
+        --disable-pdf-docs
+        --disable-html-docs
+        --with-alsa
+        --with-fastsid
+        --with-flac
+        --with-gif
+        --with-lame
+        --with-libcurl
+        --with-libieee1284
+        --with-mpg123
+        --with-png
+        --with-portaudio
+        --with-pulse
+        --with-resid
+        --with-vorbis
+      - make -j$$(nproc) -s
+      - make DESTDIR=$${PWD}/install-tree install-strip
+      - cd install-tree
+      - zip -r "../../../$${VERSION}-linux-x86_64-headless.zip" .
+      - cd ../../..
+      - sha256sum "$${VERSION}-linux-x86_64-headless.zip" > "$${VERSION}-linux-x86_64-headless.zip.sha256"
+      - ls -lh $${VERSION}-linux-x86_64-*.zip*
 
   - name: upload
     image: alpine:3.19
@@ -93,4 +131,7 @@ steps:
       - apk add --no-cache bash ca-certificates git github-cli
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh --current)
-      - gh release upload "$${VERSION}" "$${VERSION}-linux-x86_64.zip" --repo "$${CI_REPO}" --clobber
+      - |
+        for f in $${VERSION}-linux-x86_64-*.zip $${VERSION}-linux-x86_64-*.sha256; do
+          gh release upload "$${VERSION}" "$${f}" --repo "$${CI_REPO}" --clobber
+        done

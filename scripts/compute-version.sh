@@ -3,15 +3,14 @@ set -euo pipefail
 
 # Compute the vice-mcp version string from git state.
 #
-# Scheme: vice-mcp-{VICE_VERSION}-r{SVN_REV}-{MCP_REL}
+# Scheme: vice-mcp-{VICE_VERSION}-{GIT_SHA}-{MCP_REL}
 #   VICE_VERSION  - from vice/configure.ac (e.g. 3.10.0)
-#   SVN_REV       - from latest r* tag reachable from HEAD (e.g. 45966)
+#   GIT_SHA       - short git commit hash (7 chars)
 #   MCP_REL       - increments per push; resets to 1 when upstream changes
 #
 # Usage:
 #   scripts/compute-version.sh              # compute the NEXT version
 #   scripts/compute-version.sh --current    # return the latest existing tag
-#   scripts/compute-version.sh --file FILE  # compute next and write to FILE
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -51,17 +50,11 @@ MINOR=$(sed -n 's/.*m4_define(vice_version_minor, *\([0-9]*\)).*/\1/p' "$CONFIGU
 BUILD=$(sed -n 's/.*m4_define(vice_version_build, *\([0-9]*\)).*/\1/p' "$CONFIGURE_AC")
 VICE_VERSION="${MAJOR}.${MINOR}.${BUILD}"
 
-# Get upstream SVN revision from highest r* tag.
-# Uses tag listing (not git describe) so it works in shallow clones.
-SVN_TAG=$(git -C "$REPO_ROOT" tag -l 'r[0-9]*' --sort=-v:refname | head -1 || true)
-if [ -z "$SVN_TAG" ]; then
-    echo "ERROR: No r* tag found" >&2
-    exit 1
-fi
-SVN_REV="$SVN_TAG"
+# Get short git SHA (7 chars)
+GIT_SHA=$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)
 
 # Compute MCP release number
-PREFIX="vice-mcp-${VICE_VERSION}-${SVN_REV}"
+PREFIX="vice-mcp-${VICE_VERSION}-${GIT_SHA}"
 LATEST_TAG=$(git -C "$REPO_ROOT" tag -l "${PREFIX}-*" --sort=-v:refname | head -1 || true)
 
 if [ -n "$LATEST_TAG" ]; then
@@ -72,10 +65,4 @@ else
 fi
 
 VERSION="${PREFIX}-${MCP_REL}"
-
-# Optionally write to file
-if [ "${1:-}" = "--file" ] && [ -n "${2:-}" ]; then
-    echo "$VERSION" > "$2"
-fi
-
 echo "$VERSION"

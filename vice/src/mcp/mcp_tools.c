@@ -207,12 +207,17 @@ const mcp_tool_t tool_registry[] = {
       "Supports incremental reads via since_index parameter.",
       mcp_tool_interrupt_log_read },
 
-    /* Phase 5.5: Memory Map */
-    { "vice.memory.map",
-      "Display memory region layout with optional symbol-based content hints. "
-      "Returns the C64 memory map showing RAM, ROM, I/O, and cartridge regions. "
-      "When symbols are loaded, adds content_hint showing symbols in each region.",
-      mcp_tool_memory_map },
+    /* Machine Configuration */
+    { "vice.machine.config.get",
+      "Get current machine configuration including chips, memory map, and resources. "
+      "Returns machine type, available chips, memory layout, and configurable resources.",
+      mcp_tool_machine_config_get },
+    { "vice.machine.config.set",
+      "Set machine configuration resources (WarpMode, Speed, video standard, SID model, CIA model, etc). "
+      "WarpMode (0/1) disables speed limiting for fast execution. "
+      "Speed (1-10000, 0=unlimited) sets CPU speed percentage. "
+      "Only whitelisted resources can be changed. Returns the new configuration.",
+      mcp_tool_machine_config_set },
 
     /* Phase 5.5: Sprite Inspect */
     { "vice.sprite.inspect",

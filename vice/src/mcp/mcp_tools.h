@@ -187,8 +187,9 @@ extern cJSON* mcp_tool_interrupt_log_start(cJSON *params);
 extern cJSON* mcp_tool_interrupt_log_stop(cJSON *params);
 extern cJSON* mcp_tool_interrupt_log_read(cJSON *params);
 
-/* Tool handlers - Phase 5.5: Memory Map */
-extern cJSON* mcp_tool_memory_map(cJSON *params);
+/* Tool handlers - Machine Configuration */
+extern cJSON* mcp_tool_machine_config_get(cJSON *params);
+extern cJSON* mcp_tool_machine_config_set(cJSON *params);
 
 /* Tool handlers - Phase 5.5: Sprite Inspect */
 extern cJSON* mcp_tool_sprite_inspect(cJSON *params);

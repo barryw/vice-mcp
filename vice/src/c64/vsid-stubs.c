@@ -1318,3 +1318,28 @@ int userport_get_device(void)
 {
     return 0;
 }
+
+/*******************************************************************************
+    MCP Server (not available in VSID)
+*******************************************************************************/
+
+#ifdef HAVE_MCP_SERVER
+int mcp_server_register_resources(void)
+{
+    return 0;
+}
+
+int mcp_server_register_cmdline_options(void)
+{
+    return 0;
+}
+
+int mcp_server_init(void)
+{
+    return 0;
+}
+
+void mcp_server_shutdown(void)
+{
+}
+#endif

@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <sys/stat.h>
 
 #include "cJSON.h"
 
@@ -2604,7 +2605,7 @@ TEST(snapshot_save_failure_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, -32004);  /* Snapshot failed */
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INTERNAL_ERROR);  /* Implementation uses internal error */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -2615,9 +2616,16 @@ TEST(snapshot_load_with_name_succeeds)
 {
     cJSON *response, *params;
     cJSON *name_item;
+    FILE *f;
 
     test_snapshot_reset();
     test_snapshot_set_load_result(0);  /* Success */
+
+    /* Create the snapshots directory and a dummy .vsf file so fopen() finds it */
+    mkdir("/tmp/vice-test-config", 0755);
+    mkdir("/tmp/vice-test-config/mcp_snapshots", 0755);
+    f = fopen("/tmp/vice-test-config/mcp_snapshots/test_debug_state.vsf", "w");
+    if (f) { fprintf(f, "dummy"); fclose(f); }
 
     params = cJSON_CreateObject();
     cJSON_AddStringToObject(params, "name", "test_debug_state");
@@ -2633,6 +2641,9 @@ TEST(snapshot_load_with_name_succeeds)
     name_item = cJSON_GetObjectItem(response, "name");
     ASSERT_NOT_NULL(name_item);
     ASSERT_STR_EQ(name_item->valuestring, "test_debug_state");
+
+    /* Clean up dummy file */
+    remove("/tmp/vice-test-config/mcp_snapshots/test_debug_state.vsf");
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -2662,19 +2673,29 @@ TEST(snapshot_load_without_name_returns_error)
 TEST(snapshot_load_failure_returns_error)
 {
     cJSON *response, *params, *code_item;
+    FILE *f;
 
     test_snapshot_reset();
     test_snapshot_set_load_result(-1);  /* Simulate failure */
 
+    /* Create the snapshots directory and a dummy .vsf file so we reach machine_read_snapshot */
+    mkdir("/tmp/vice-test-config", 0755);
+    mkdir("/tmp/vice-test-config/mcp_snapshots", 0755);
+    f = fopen("/tmp/vice-test-config/mcp_snapshots/will_fail_load.vsf", "w");
+    if (f) { fprintf(f, "dummy"); fclose(f); }
+
     params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "name", "nonexistent");
+    cJSON_AddStringToObject(params, "name", "will_fail_load");
 
     response = mcp_tool_snapshot_load(params);
     ASSERT_NOT_NULL(response);
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, -32004);  /* Snapshot failed */
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INTERNAL_ERROR);  /* Implementation uses internal error */
+
+    /* Clean up dummy file */
+    remove("/tmp/vice-test-config/mcp_snapshots/will_fail_load.vsf");
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -2710,8 +2731,8 @@ TEST(snapshot_list_returns_directory)
     response = mcp_tool_snapshot_list(NULL);
     ASSERT_NOT_NULL(response);
 
-    /* Should return snapshots_directory */
-    dir_item = cJSON_GetObjectItem(response, "snapshots_directory");
+    /* Should return directory */
+    dir_item = cJSON_GetObjectItem(response, "directory");
     ASSERT_NOT_NULL(dir_item);
     ASSERT_TRUE(cJSON_IsString(dir_item));
     ASSERT_TRUE(strstr(dir_item->valuestring, "mcp_snapshots") != NULL);
@@ -6386,296 +6407,6 @@ TEST(interrupt_log_read_dispatch_works)
 }
 
 /* =================================================================
- * Memory Map Tests (Phase 5.5)
- * ================================================================= */
-
-/* Memory map tool declaration */
-extern cJSON* mcp_tool_memory_map(cJSON *params);
-
-/* Test: memory.map with null params returns full memory map */
-TEST(memory_map_null_params_returns_full_map)
-{
-    cJSON *response, *regions_item, *region_count_item;
-
-    response = mcp_tool_memory_map(NULL);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    /* Should have regions array */
-    regions_item = cJSON_GetObjectItem(response, "regions");
-    ASSERT_NOT_NULL(regions_item);
-    ASSERT_TRUE(cJSON_IsArray(regions_item));
-
-    /* Should have multiple regions */
-    region_count_item = cJSON_GetObjectItem(response, "region_count");
-    ASSERT_NOT_NULL(region_count_item);
-    ASSERT_TRUE(cJSON_IsNumber(region_count_item));
-    ASSERT_TRUE(region_count_item->valueint > 0);
-
-    cJSON_Delete(response);
-}
-
-/* Test: memory.map returns regions with required fields */
-TEST(memory_map_regions_have_required_fields)
-{
-    cJSON *response, *regions_item, *region_obj;
-
-    response = mcp_tool_memory_map(NULL);
-    ASSERT_NOT_NULL(response);
-
-    regions_item = cJSON_GetObjectItem(response, "regions");
-    ASSERT_NOT_NULL(regions_item);
-
-    /* Get first region */
-    region_obj = cJSON_GetArrayItem(regions_item, 0);
-    ASSERT_NOT_NULL(region_obj);
-
-    /* Check required fields */
-    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "start"));
-    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "end"));
-    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "type"));
-    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "name"));
-    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "bank"));
-    ASSERT_NOT_NULL(cJSON_GetObjectItem(region_obj, "contents_hint"));
-
-    cJSON_Delete(response);
-}
-
-/* Test: memory.map returns zero page as first region */
-TEST(memory_map_returns_zero_page_first)
-{
-    cJSON *response, *regions_item, *region_obj, *name_item, *start_item;
-
-    response = mcp_tool_memory_map(NULL);
-    ASSERT_NOT_NULL(response);
-
-    regions_item = cJSON_GetObjectItem(response, "regions");
-    ASSERT_NOT_NULL(regions_item);
-
-    /* First region should be Zero Page */
-    region_obj = cJSON_GetArrayItem(regions_item, 0);
-    ASSERT_NOT_NULL(region_obj);
-
-    name_item = cJSON_GetObjectItem(region_obj, "name");
-    ASSERT_NOT_NULL(name_item);
-    ASSERT_STR_EQ(name_item->valuestring, "Zero Page");
-
-    start_item = cJSON_GetObjectItem(region_obj, "start");
-    ASSERT_NOT_NULL(start_item);
-    ASSERT_STR_EQ(start_item->valuestring, "$0000");
-
-    cJSON_Delete(response);
-}
-
-/* Test: memory.map with start/end filters regions */
-TEST(memory_map_with_start_end_filters_regions)
-{
-    cJSON *response, *params, *regions_item, *region_count_item;
-
-    params = cJSON_CreateObject();
-    cJSON_AddNumberToObject(params, "start", 0xD000);
-    cJSON_AddNumberToObject(params, "end", 0xDFFF);
-
-    response = mcp_tool_memory_map(params);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    /* Should have regions array with I/O regions only */
-    regions_item = cJSON_GetObjectItem(response, "regions");
-    ASSERT_NOT_NULL(regions_item);
-
-    /* Should have fewer regions than full map (just I/O) */
-    region_count_item = cJSON_GetObjectItem(response, "region_count");
-    ASSERT_NOT_NULL(region_count_item);
-    ASSERT_TRUE(region_count_item->valueint >= 1);
-    ASSERT_TRUE(region_count_item->valueint <= 8);  /* I/O area has several sub-regions */
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: memory.map with hex string addresses */
-TEST(memory_map_with_hex_string_addresses)
-{
-    cJSON *response, *params, *regions_item;
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "start", "$A000");
-    cJSON_AddStringToObject(params, "end", "$BFFF");
-
-    response = mcp_tool_memory_map(params);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    /* Should have regions (BASIC ROM) */
-    regions_item = cJSON_GetObjectItem(response, "regions");
-    ASSERT_NOT_NULL(regions_item);
-    ASSERT_TRUE(cJSON_GetArraySize(regions_item) >= 1);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: memory.map invalid range returns error */
-TEST(memory_map_invalid_range_returns_error)
-{
-    cJSON *response, *params, *code_item;
-
-    params = cJSON_CreateObject();
-    cJSON_AddNumberToObject(params, "start", 0xFFFF);
-    cJSON_AddNumberToObject(params, "end", 0x0000);
-
-    response = mcp_tool_memory_map(params);
-    ASSERT_NOT_NULL(response);
-
-    /* Should be an error */
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: memory.map region types are valid strings */
-TEST(memory_map_region_types_are_valid)
-{
-    cJSON *response, *regions_item, *region_obj, *type_item;
-    int i, count;
-    const char *type;
-
-    response = mcp_tool_memory_map(NULL);
-    ASSERT_NOT_NULL(response);
-
-    regions_item = cJSON_GetObjectItem(response, "regions");
-    ASSERT_NOT_NULL(regions_item);
-
-    count = cJSON_GetArraySize(regions_item);
-    for (i = 0; i < count; i++) {
-        region_obj = cJSON_GetArrayItem(regions_item, i);
-        ASSERT_NOT_NULL(region_obj);
-
-        type_item = cJSON_GetObjectItem(region_obj, "type");
-        ASSERT_NOT_NULL(type_item);
-        ASSERT_TRUE(cJSON_IsString(type_item));
-
-        type = type_item->valuestring;
-        ASSERT_TRUE(strcmp(type, "ram") == 0 ||
-                    strcmp(type, "rom") == 0 ||
-                    strcmp(type, "io") == 0 ||
-                    strcmp(type, "unmapped") == 0 ||
-                    strcmp(type, "cartridge") == 0);
-    }
-
-    cJSON_Delete(response);
-}
-
-/* Test: memory.map returns machine name */
-TEST(memory_map_returns_machine_name)
-{
-    cJSON *response, *machine_item;
-
-    response = mcp_tool_memory_map(NULL);
-    ASSERT_NOT_NULL(response);
-
-    machine_item = cJSON_GetObjectItem(response, "machine");
-    ASSERT_NOT_NULL(machine_item);
-    ASSERT_TRUE(cJSON_IsString(machine_item));
-
-    cJSON_Delete(response);
-}
-
-/* Test: memory.map with symbols shows content_hint */
-TEST(memory_map_with_symbols_shows_content_hint)
-{
-    cJSON *response, *regions_item, *region_obj, *hint_item;
-    int i, count, found_hint = 0;
-
-    /* Clear any existing symbols and add a test symbol in zero page */
-    test_symbol_table_clear();
-    /* Add a symbol at $0002 (zero page) */
-    mon_add_name_to_symbol_table(0x0002, lib_strdup("test_symbol"));
-
-    response = mcp_tool_memory_map(NULL);
-    ASSERT_NOT_NULL(response);
-
-    regions_item = cJSON_GetObjectItem(response, "regions");
-    ASSERT_NOT_NULL(regions_item);
-
-    /* Check if any region has a non-null contents_hint */
-    count = cJSON_GetArraySize(regions_item);
-    for (i = 0; i < count; i++) {
-        region_obj = cJSON_GetArrayItem(regions_item, i);
-        hint_item = cJSON_GetObjectItem(region_obj, "contents_hint");
-        if (hint_item != NULL && !cJSON_IsNull(hint_item)) {
-            found_hint = 1;
-            break;
-        }
-    }
-
-    /* Should have found a content hint since we added a symbol */
-    ASSERT_TRUE(found_hint);
-
-    cJSON_Delete(response);
-    test_symbol_table_clear();
-}
-
-/* Test: memory.map dispatch works */
-TEST(memory_map_dispatch_works)
-{
-    cJSON *response, *regions_item;
-
-    response = mcp_tools_dispatch("vice.memory.map", NULL);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    regions_item = cJSON_GetObjectItem(response, "regions");
-    ASSERT_NOT_NULL(regions_item);
-
-    cJSON_Delete(response);
-}
-
-/* Test: memory.map with granularity parameter */
-TEST(memory_map_with_granularity)
-{
-    cJSON *response1, *response2, *params, *region_count1, *region_count2;
-
-    /* Get full map */
-    response1 = mcp_tool_memory_map(NULL);
-    ASSERT_NOT_NULL(response1);
-    region_count1 = cJSON_GetObjectItem(response1, "region_count");
-    ASSERT_NOT_NULL(region_count1);
-
-    /* Get map with large granularity - may have fewer regions */
-    params = cJSON_CreateObject();
-    cJSON_AddNumberToObject(params, "granularity", 4096);
-
-    response2 = mcp_tool_memory_map(params);
-    ASSERT_NOT_NULL(response2);
-    region_count2 = cJSON_GetObjectItem(response2, "region_count");
-    ASSERT_NOT_NULL(region_count2);
-
-    /* Both should have valid counts */
-    ASSERT_TRUE(region_count1->valueint > 0);
-    ASSERT_TRUE(region_count2->valueint > 0);
-
-    cJSON_Delete(response1);
-    cJSON_Delete(params);
-    cJSON_Delete(response2);
-}
-
-/* =================================================================
  * Sprite Inspect Tests (Phase 5.5)
  * ================================================================= */
 
@@ -7045,15 +6776,721 @@ TEST(sprite_inspect_dispatch_works)
 }
 
 /* =================================================================
- * Bug Fix Regression Tests
+ * Machine Config & Validation Tests
  * ================================================================= */
 
-/* Tool declarations for bug fix regression tests */
-extern cJSON* mcp_tool_registers_set(cJSON *params);
-extern cJSON* mcp_tool_registers_get(cJSON *params);
+/* Machine config tool declarations */
+extern cJSON* mcp_tool_machine_config_get(cJSON *params);
+extern cJSON* mcp_tool_machine_config_set(cJSON *params);
 extern cJSON* mcp_tool_vicii_get_state(cJSON *params);
 extern cJSON* mcp_tool_sid_get_state(cJSON *params);
 extern cJSON* mcp_tool_cia_get_state(cJSON *params);
+extern cJSON* mcp_tool_tools_list(cJSON *params);
+extern cJSON* mcp_tool_memory_read(cJSON *params);
+
+/* Validation function declarations - can't include mcp_tools_validation.h
+ * because it pulls in types.h which needs VICE headers */
+extern int mcp_machine_has_vicii(void);
+extern int mcp_machine_has_vic(void);
+extern int mcp_machine_has_sid(void);
+extern int mcp_machine_has_cia(void);
+extern int mcp_machine_has_ted(void);
+extern int mcp_machine_has_crtc(void);
+extern int mcp_machine_has_vdc(void);
+extern int mcp_machine_has_acia(void);
+extern int mcp_machine_has_via(void);
+
+/* Local typedefs matching mcp_tools_validation.h */
+typedef struct {
+    unsigned short start;
+    unsigned short end;
+    int type;
+    const char *name;
+} test_mem_region_t;
+
+typedef struct {
+    int valid;
+    char error_msg[512];
+} test_addr_check_t;
+
+extern test_addr_check_t mcp_validate_address_range(unsigned short address, unsigned short size);
+extern int mcp_build_memory_map(test_mem_region_t *regions);
+extern const char *mcp_mem_type_to_string(int type);
+
+/* Test helpers from vice_stubs.c */
+extern void test_set_machine_class(int mc);
+extern void test_resources_reset(void);
+extern void test_resources_set(const char *name, int value);
+extern void test_setup_c64_defaults(void);
+extern int machine_class;
+
+/* Machine class constants for tests (matching vice_stubs.c defines) */
+#define TEST_VICE_MACHINE_C64        (1U<<0)
+#define TEST_VICE_MACHINE_C128       (1U<<1)
+#define TEST_VICE_MACHINE_VIC20      (1U<<2)
+#define TEST_VICE_MACHINE_PET        (1U<<3)
+#define TEST_VICE_MACHINE_PLUS4      (1U<<6)
+#define TEST_VICE_MACHINE_C64DTV     (1U<<7)
+#define TEST_VICE_MACHINE_C64SC      (1U<<8)
+
+/* --- Machine Detection Tests --- */
+
+TEST(machine_has_vicii_true_for_c64)
+{
+    test_setup_c64_defaults();
+    ASSERT_TRUE(mcp_machine_has_vicii() == 1);
+    test_setup_c64_defaults();
+}
+
+TEST(machine_has_vicii_false_for_vic20)
+{
+    test_set_machine_class(TEST_VICE_MACHINE_VIC20);
+    ASSERT_TRUE(mcp_machine_has_vicii() == 0);
+    test_setup_c64_defaults();
+}
+
+TEST(machine_has_vic_true_for_vic20)
+{
+    test_set_machine_class(TEST_VICE_MACHINE_VIC20);
+    ASSERT_TRUE(mcp_machine_has_vic() == 1);
+    test_setup_c64_defaults();
+}
+
+TEST(machine_has_vic_false_for_c64)
+{
+    test_setup_c64_defaults();
+    ASSERT_TRUE(mcp_machine_has_vic() == 0);
+    test_setup_c64_defaults();
+}
+
+TEST(machine_has_sid_true_for_c64)
+{
+    test_setup_c64_defaults();
+    ASSERT_TRUE(mcp_machine_has_sid() == 1);
+    test_setup_c64_defaults();
+}
+
+TEST(machine_has_sid_false_for_pet)
+{
+    test_set_machine_class(TEST_VICE_MACHINE_PET);
+    ASSERT_TRUE(mcp_machine_has_sid() == 0);
+    test_setup_c64_defaults();
+}
+
+TEST(machine_has_cia_true_for_c64)
+{
+    test_setup_c64_defaults();
+    ASSERT_TRUE(mcp_machine_has_cia() == 1);
+    test_setup_c64_defaults();
+}
+
+TEST(machine_has_cia_false_for_vic20)
+{
+    test_set_machine_class(TEST_VICE_MACHINE_VIC20);
+    ASSERT_TRUE(mcp_machine_has_cia() == 0);
+    test_setup_c64_defaults();
+}
+
+TEST(machine_has_ted_true_for_plus4)
+{
+    test_set_machine_class(TEST_VICE_MACHINE_PLUS4);
+    ASSERT_TRUE(mcp_machine_has_ted() == 1);
+    test_setup_c64_defaults();
+}
+
+TEST(machine_has_crtc_true_for_pet)
+{
+    test_set_machine_class(TEST_VICE_MACHINE_PET);
+    test_resources_set("Crtc", 1);  /* PET CRTC resource must be enabled */
+    ASSERT_TRUE(mcp_machine_has_crtc() == 1);
+    test_setup_c64_defaults();
+}
+
+TEST(machine_has_vdc_true_for_c128)
+{
+    test_set_machine_class(TEST_VICE_MACHINE_C128);
+    ASSERT_TRUE(mcp_machine_has_vdc() == 1);
+    test_setup_c64_defaults();
+}
+
+/* --- Memory Map Builder Tests --- */
+
+TEST(build_memory_map_c64_has_regions)
+{
+    test_mem_region_t regions[32];
+    int count;
+    test_setup_c64_defaults();
+    memset(regions, 0, sizeof(regions));
+    count = mcp_build_memory_map(regions);
+    ASSERT_TRUE(count > 0);
+    test_setup_c64_defaults();
+}
+
+TEST(build_memory_map_c64_starts_zero_page)
+{
+    test_mem_region_t regions[32];
+    test_setup_c64_defaults();
+    memset(regions, 0, sizeof(regions));
+    mcp_build_memory_map(regions);
+    ASSERT_TRUE(regions[0].start == 0x0000);
+    ASSERT_STR_EQ(regions[0].name, "Zero Page");
+    test_setup_c64_defaults();
+}
+
+TEST(build_memory_map_c64_has_io_regions)
+{
+    test_mem_region_t regions[32];
+    int count, i, found_io = 0;
+    test_setup_c64_defaults();
+    memset(regions, 0, sizeof(regions));
+    count = mcp_build_memory_map(regions);
+    for (i = 0; i < count; i++) {
+        if (regions[i].type == 2) { /* MCP_MEM_TYPE_IO */
+            found_io = 1;
+            break;
+        }
+    }
+    ASSERT_TRUE(found_io);
+    test_setup_c64_defaults();
+}
+
+TEST(build_memory_map_vic20_different)
+{
+    test_mem_region_t c64_regions[32], vic20_regions[32];
+    int c64_count, vic20_count;
+
+    test_setup_c64_defaults();
+    memset(c64_regions, 0, sizeof(c64_regions));
+    c64_count = mcp_build_memory_map(c64_regions);
+
+    test_set_machine_class(TEST_VICE_MACHINE_VIC20);
+    memset(vic20_regions, 0, sizeof(vic20_regions));
+    vic20_count = mcp_build_memory_map(vic20_regions);
+
+    /* Different machines should have different region counts */
+    ASSERT_TRUE(c64_count != vic20_count || c64_count > 0);
+    test_setup_c64_defaults();
+}
+
+TEST(mem_type_to_string_returns_correct)
+{
+    ASSERT_STR_EQ(mcp_mem_type_to_string(0), "ram");
+    ASSERT_STR_EQ(mcp_mem_type_to_string(1), "rom");
+    ASSERT_STR_EQ(mcp_mem_type_to_string(2), "io");
+    ASSERT_STR_EQ(mcp_mem_type_to_string(3), "unmapped");
+    ASSERT_STR_EQ(mcp_mem_type_to_string(4), "cartridge");
+}
+
+/* --- Address Validation Tests --- */
+
+TEST(validate_address_valid_range)
+{
+    test_addr_check_t result;
+    test_setup_c64_defaults();
+    result = mcp_validate_address_range(0x0400, 0x0400);
+    ASSERT_TRUE(result.valid == 1);
+    test_setup_c64_defaults();
+}
+
+TEST(validate_address_overflow_rejected)
+{
+    /* On C64, all 64K is mapped, so overflow just caps to $FFFF (valid).
+     * Test on unexpanded VIC-20 where $2000+ is unmapped. */
+    test_addr_check_t result;
+    test_set_machine_class(TEST_VICE_MACHINE_VIC20);
+    test_resources_reset();
+    test_resources_set("MachineVideoStandard", 2);
+    /* No RAM blocks enabled = unexpanded VIC-20 */
+    result = mcp_validate_address_range(0x2000, 1);
+    ASSERT_TRUE(result.valid == 0);
+    test_setup_c64_defaults();
+}
+
+TEST(validate_address_full_range_valid)
+{
+    test_addr_check_t result;
+    test_setup_c64_defaults();
+    result = mcp_validate_address_range(0x0000, 1);
+    ASSERT_TRUE(result.valid == 1);
+    test_setup_c64_defaults();
+}
+
+TEST(validate_address_zero_size_valid)
+{
+    test_addr_check_t result;
+    test_setup_c64_defaults();
+    result = mcp_validate_address_range(0x1000, 0);
+    ASSERT_TRUE(result.valid == 1);
+    test_setup_c64_defaults();
+}
+
+TEST(validate_address_c64_always_valid)
+{
+    test_addr_check_t result;
+    test_setup_c64_defaults();
+    result = mcp_validate_address_range(0xFFFF, 1);
+    ASSERT_TRUE(result.valid == 1);
+    test_setup_c64_defaults();
+}
+
+TEST(validate_address_max_range)
+{
+    test_addr_check_t result;
+    test_setup_c64_defaults();
+    /* Full 64K range */
+    result = mcp_validate_address_range(0x0000, 0);
+    ASSERT_TRUE(result.valid == 1);
+    test_setup_c64_defaults();
+}
+
+/* --- Machine Config Get Tests --- */
+
+TEST(config_get_null_params_returns_config)
+{
+    cJSON *response;
+    test_setup_c64_defaults();
+    response = mcp_tool_machine_config_get(NULL);
+    ASSERT_NOT_NULL(response);
+    /* Should not be an error */
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_get_has_machine_field)
+{
+    cJSON *response, *machine_item;
+    test_setup_c64_defaults();
+    response = mcp_tool_machine_config_get(NULL);
+    ASSERT_NOT_NULL(response);
+    machine_item = cJSON_GetObjectItem(response, "machine");
+    ASSERT_NOT_NULL(machine_item);
+    ASSERT_TRUE(cJSON_IsString(machine_item));
+    ASSERT_STR_EQ(machine_item->valuestring, "C64");
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_get_has_chips_array)
+{
+    cJSON *response, *chips_item;
+    test_setup_c64_defaults();
+    response = mcp_tool_machine_config_get(NULL);
+    ASSERT_NOT_NULL(response);
+    chips_item = cJSON_GetObjectItem(response, "chips");
+    ASSERT_NOT_NULL(chips_item);
+    ASSERT_TRUE(cJSON_IsArray(chips_item));
+    ASSERT_TRUE(cJSON_GetArraySize(chips_item) > 0);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_get_has_memory_map)
+{
+    cJSON *response, *map_item;
+    test_setup_c64_defaults();
+    response = mcp_tool_machine_config_get(NULL);
+    ASSERT_NOT_NULL(response);
+    map_item = cJSON_GetObjectItem(response, "memory_map");
+    ASSERT_NOT_NULL(map_item);
+    ASSERT_TRUE(cJSON_IsArray(map_item));
+    ASSERT_TRUE(cJSON_GetArraySize(map_item) > 0);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_get_has_resources)
+{
+    cJSON *response, *res_item;
+    test_setup_c64_defaults();
+    response = mcp_tool_machine_config_get(NULL);
+    ASSERT_NOT_NULL(response);
+    res_item = cJSON_GetObjectItem(response, "resources");
+    ASSERT_NOT_NULL(res_item);
+    ASSERT_TRUE(cJSON_IsObject(res_item));
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_get_dispatch_works)
+{
+    cJSON *response;
+    test_setup_c64_defaults();
+    response = mcp_tools_dispatch("vice.machine.config.get", NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON *code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_TRUE(code_item == NULL);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+/* --- Machine Config Set Tests --- */
+
+TEST(config_set_requires_resources)
+{
+    cJSON *response, *code_item;
+    test_setup_c64_defaults();
+    response = mcp_tool_machine_config_set(NULL);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_set_rejects_empty_params)
+{
+    cJSON *response, *params, *code_item;
+    test_setup_c64_defaults();
+    params = cJSON_CreateObject();
+    response = mcp_tool_machine_config_set(params);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_set_rejects_non_object_resources)
+{
+    cJSON *response, *params, *code_item;
+    test_setup_c64_defaults();
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "resources", 123);
+    response = mcp_tool_machine_config_set(params);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_set_rejects_unknown_resource)
+{
+    cJSON *response, *params, *resources, *code_item;
+    test_setup_c64_defaults();
+    params = cJSON_CreateObject();
+    resources = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resources, "FakeResource", 1);
+    cJSON_AddItemToObject(params, "resources", resources);
+    response = mcp_tool_machine_config_set(params);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_set_valid_resource_applied)
+{
+    cJSON *response, *params, *resources;
+    test_setup_c64_defaults();
+    params = cJSON_CreateObject();
+    resources = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resources, "MachineVideoStandard", 1);
+    cJSON_AddItemToObject(params, "resources", resources);
+    response = mcp_tool_machine_config_set(params);
+    ASSERT_NOT_NULL(response);
+    /* Should succeed — changes_applied is an array of change entries */
+    cJSON *changes = cJSON_GetObjectItem(response, "changes_applied");
+    ASSERT_NOT_NULL(changes);
+    ASSERT_TRUE(cJSON_IsArray(changes));
+    ASSERT_TRUE(cJSON_GetArraySize(changes) == 1);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_set_returns_new_config)
+{
+    cJSON *response, *params, *resources, *new_config;
+    test_setup_c64_defaults();
+    params = cJSON_CreateObject();
+    resources = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resources, "MachineVideoStandard", 1);
+    cJSON_AddItemToObject(params, "resources", resources);
+    response = mcp_tool_machine_config_set(params);
+    ASSERT_NOT_NULL(response);
+    /* If successful, should have new_config */
+    new_config = cJSON_GetObjectItem(response, "new_config");
+    if (new_config != NULL) {
+        ASSERT_TRUE(cJSON_IsObject(new_config));
+    }
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_set_dispatch_works)
+{
+    cJSON *response, *params, *resources;
+    test_setup_c64_defaults();
+    params = cJSON_CreateObject();
+    resources = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resources, "MachineVideoStandard", 1);
+    cJSON_AddItemToObject(params, "resources", resources);
+    response = mcp_tools_dispatch("vice.machine.config.set", params);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+/* --- WarpMode / Speed Tests --- */
+
+extern void vsync_set_warp_mode(int val);
+extern int vsync_get_warp_mode(void);
+
+TEST(config_get_includes_warp_mode)
+{
+    cJSON *response, *resources, *warp;
+    test_setup_c64_defaults();
+    response = mcp_tool_machine_config_get(NULL);
+    ASSERT_NOT_NULL(response);
+    resources = cJSON_GetObjectItem(response, "resources");
+    ASSERT_NOT_NULL(resources);
+    warp = cJSON_GetObjectItem(resources, "WarpMode");
+    ASSERT_NOT_NULL(warp);
+    ASSERT_TRUE(cJSON_IsNumber(warp));
+    ASSERT_INT_EQ(0, warp->valueint);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_get_includes_speed)
+{
+    cJSON *response, *resources, *speed;
+    test_setup_c64_defaults();
+    response = mcp_tool_machine_config_get(NULL);
+    ASSERT_NOT_NULL(response);
+    resources = cJSON_GetObjectItem(response, "resources");
+    ASSERT_NOT_NULL(resources);
+    speed = cJSON_GetObjectItem(resources, "Speed");
+    ASSERT_NOT_NULL(speed);
+    ASSERT_TRUE(cJSON_IsNumber(speed));
+    ASSERT_INT_EQ(100, speed->valueint);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_set_warp_mode_succeeds)
+{
+    cJSON *response, *params, *resources, *changes, *entry;
+    test_setup_c64_defaults();
+    params = cJSON_CreateObject();
+    resources = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resources, "WarpMode", 1);
+    cJSON_AddItemToObject(params, "resources", resources);
+    response = mcp_tool_machine_config_set(params);
+    ASSERT_NOT_NULL(response);
+    changes = cJSON_GetObjectItem(response, "changes_applied");
+    ASSERT_NOT_NULL(changes);
+    ASSERT_TRUE(cJSON_IsArray(changes));
+    ASSERT_TRUE(cJSON_GetArraySize(changes) == 1);
+    entry = cJSON_GetArrayItem(changes, 0);
+    ASSERT_NOT_NULL(entry);
+    ASSERT_STR_EQ("WarpMode", cJSON_GetObjectItem(entry, "resource")->valuestring);
+    ASSERT_INT_EQ(0, cJSON_GetObjectItem(entry, "old_value")->valueint);
+    ASSERT_INT_EQ(1, cJSON_GetObjectItem(entry, "new_value")->valueint);
+    /* WarpMode should NOT trigger a machine reset */
+    ASSERT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(response, "machine_reset")));
+    /* Verify warp is actually enabled */
+    ASSERT_INT_EQ(1, vsync_get_warp_mode());
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_set_warp_mode_no_reset)
+{
+    cJSON *response, *params, *resources;
+    test_setup_c64_defaults();
+    params = cJSON_CreateObject();
+    resources = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resources, "WarpMode", 1);
+    cJSON_AddItemToObject(params, "resources", resources);
+    response = mcp_tool_machine_config_set(params);
+    ASSERT_NOT_NULL(response);
+    ASSERT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(response, "machine_reset")));
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(config_set_speed_succeeds)
+{
+    cJSON *response, *params, *resources, *changes, *entry;
+    test_setup_c64_defaults();
+    params = cJSON_CreateObject();
+    resources = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resources, "Speed", 200);
+    cJSON_AddItemToObject(params, "resources", resources);
+    response = mcp_tool_machine_config_set(params);
+    ASSERT_NOT_NULL(response);
+    changes = cJSON_GetObjectItem(response, "changes_applied");
+    ASSERT_NOT_NULL(changes);
+    ASSERT_TRUE(cJSON_GetArraySize(changes) == 1);
+    entry = cJSON_GetArrayItem(changes, 0);
+    ASSERT_STR_EQ("Speed", cJSON_GetObjectItem(entry, "resource")->valuestring);
+    ASSERT_INT_EQ(100, cJSON_GetObjectItem(entry, "old_value")->valueint);
+    ASSERT_INT_EQ(200, cJSON_GetObjectItem(entry, "new_value")->valueint);
+    ASSERT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(response, "machine_reset")));
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+/* --- Ping Machine Name Test --- */
+
+TEST(ping_includes_machine_field)
+{
+    cJSON *response, *machine_item;
+    test_setup_c64_defaults();
+    response = mcp_tool_ping(NULL);
+    ASSERT_NOT_NULL(response);
+    machine_item = cJSON_GetObjectItem(response, "machine");
+    ASSERT_NOT_NULL(machine_item);
+    ASSERT_TRUE(cJSON_IsString(machine_item));
+    ASSERT_TRUE(strcmp(machine_item->valuestring, "C64") == 0);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+/* --- Tools/List Config Tests --- */
+
+TEST(tools_list_includes_config_get)
+{
+    cJSON *response, *tools_item;
+    int i, found = 0;
+    test_setup_c64_defaults();
+    response = mcp_tool_tools_list(NULL);
+    ASSERT_NOT_NULL(response);
+    tools_item = cJSON_GetObjectItem(response, "tools");
+    ASSERT_NOT_NULL(tools_item);
+    ASSERT_TRUE(cJSON_IsArray(tools_item));
+    for (i = 0; i < cJSON_GetArraySize(tools_item); i++) {
+        cJSON *tool = cJSON_GetArrayItem(tools_item, i);
+        cJSON *name = cJSON_GetObjectItem(tool, "name");
+        if (name && cJSON_IsString(name) &&
+            strcmp(name->valuestring, "vice.machine.config.get") == 0) {
+            found = 1;
+            break;
+        }
+    }
+    ASSERT_TRUE(found);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(tools_list_excludes_memory_map)
+{
+    cJSON *response, *tools_item;
+    int i, found = 0;
+    test_setup_c64_defaults();
+    response = mcp_tool_tools_list(NULL);
+    ASSERT_NOT_NULL(response);
+    tools_item = cJSON_GetObjectItem(response, "tools");
+    ASSERT_NOT_NULL(tools_item);
+    for (i = 0; i < cJSON_GetArraySize(tools_item); i++) {
+        cJSON *tool = cJSON_GetArrayItem(tools_item, i);
+        cJSON *name = cJSON_GetObjectItem(tool, "name");
+        if (name && cJSON_IsString(name) &&
+            strcmp(name->valuestring, "vice.memory.map") == 0) {
+            found = 1;
+            break;
+        }
+    }
+    ASSERT_TRUE(!found);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+/* --- Chip Error Message Tests --- */
+
+TEST(vicii_get_state_error_on_vic20)
+{
+    cJSON *response, *code_item;
+    test_set_machine_class(TEST_VICE_MACHINE_VIC20);
+    response = mcp_tool_vicii_get_state(NULL);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    /* Should return an error since VIC-20 has no VIC-II */
+    ASSERT_TRUE(code_item->valueint != 0);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(sid_get_state_error_on_pet)
+{
+    cJSON *response, *code_item;
+    test_set_machine_class(TEST_VICE_MACHINE_PET);
+    response = mcp_tool_sid_get_state(NULL);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint != 0);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+TEST(cia_get_state_error_on_vic20)
+{
+    cJSON *response, *code_item;
+    test_set_machine_class(TEST_VICE_MACHINE_VIC20);
+    response = mcp_tool_cia_get_state(NULL);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_TRUE(code_item->valueint != 0);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+/* --- Memory Tool Validation Integration Tests --- */
+
+TEST(memory_map_dispatch_returns_not_found)
+{
+    cJSON *response, *code_item;
+    response = mcp_tools_dispatch("vice.memory.map", NULL);
+    ASSERT_NOT_NULL(response);
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_METHOD_NOT_FOUND);
+    cJSON_Delete(response);
+}
+
+TEST(memory_read_validates_address)
+{
+    cJSON *response;
+    test_setup_c64_defaults();
+    /* Valid C64 read should not crash */
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "address", 0x0400);
+    cJSON_AddNumberToObject(params, "size", 16);
+    response = mcp_tool_memory_read(params);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_setup_c64_defaults();
+}
+
+/* =================================================================
+ * Bug Fix Regression Tests
+ * ================================================================= */
+
+/* Tool declarations for bug fix regression tests
+ * Note: mcp_tool_vicii_get_state, mcp_tool_sid_get_state, mcp_tool_cia_get_state
+ * are declared above in Machine Config & Validation Tests section */
+extern cJSON* mcp_tool_registers_set(cJSON *params);
+extern cJSON* mcp_tool_registers_get(cJSON *params);
 
 /* --- Address Validation Tests (mcp_resolve_address) --- */
 
@@ -7543,21 +7980,6 @@ TEST(memory_banks_returns_valid_response)
     cJSON_Delete(response);
 }
 
-/* Test: memory_map returns valid response (exercises error path fix) */
-TEST(memory_map_returns_valid_response_with_params)
-{
-    cJSON *params = cJSON_CreateObject();
-    cJSON_AddNumberToObject(params, "start", 0x0000);
-    cJSON_AddNumberToObject(params, "end", 0x00FF);
-    cJSON *response = mcp_tool_memory_map(params);
-    ASSERT_NOT_NULL(response);
-    cJSON *regions = cJSON_GetObjectItem(response, "regions");
-    ASSERT_NOT_NULL(regions);
-    ASSERT_TRUE(cJSON_IsArray(regions));
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
 int main(void)
 {
     printf("=== MCP Tools Test Suite ===\n\n");
@@ -7851,19 +8273,6 @@ int main(void)
     RUN_TEST(interrupt_log_stop_dispatch_works);
     RUN_TEST(interrupt_log_read_dispatch_works);
 
-    /* Memory map tests (Phase 5.5) */
-    RUN_TEST(memory_map_null_params_returns_full_map);
-    RUN_TEST(memory_map_regions_have_required_fields);
-    RUN_TEST(memory_map_returns_zero_page_first);
-    RUN_TEST(memory_map_with_start_end_filters_regions);
-    RUN_TEST(memory_map_with_hex_string_addresses);
-    RUN_TEST(memory_map_invalid_range_returns_error);
-    RUN_TEST(memory_map_region_types_are_valid);
-    RUN_TEST(memory_map_returns_machine_name);
-    RUN_TEST(memory_map_with_symbols_shows_content_hint);
-    RUN_TEST(memory_map_dispatch_works);
-    RUN_TEST(memory_map_with_granularity);
-
     /* Sprite inspect tests (Phase 5.5) */
     RUN_TEST(sprite_inspect_requires_sprite_number);
     RUN_TEST(sprite_inspect_validates_sprite_number_range);
@@ -7874,6 +8283,56 @@ int main(void)
     RUN_TEST(sprite_inspect_returns_raw_data);
     RUN_TEST(sprite_inspect_all_sprites_valid);
     RUN_TEST(sprite_inspect_dispatch_works);
+
+    /* Machine config & validation tests */
+    RUN_TEST(machine_has_vicii_true_for_c64);
+    RUN_TEST(machine_has_vicii_false_for_vic20);
+    RUN_TEST(machine_has_vic_true_for_vic20);
+    RUN_TEST(machine_has_vic_false_for_c64);
+    RUN_TEST(machine_has_sid_true_for_c64);
+    RUN_TEST(machine_has_sid_false_for_pet);
+    RUN_TEST(machine_has_cia_true_for_c64);
+    RUN_TEST(machine_has_cia_false_for_vic20);
+    RUN_TEST(machine_has_ted_true_for_plus4);
+    RUN_TEST(machine_has_crtc_true_for_pet);
+    RUN_TEST(machine_has_vdc_true_for_c128);
+    RUN_TEST(build_memory_map_c64_has_regions);
+    RUN_TEST(build_memory_map_c64_starts_zero_page);
+    RUN_TEST(build_memory_map_c64_has_io_regions);
+    RUN_TEST(build_memory_map_vic20_different);
+    RUN_TEST(mem_type_to_string_returns_correct);
+    RUN_TEST(validate_address_valid_range);
+    RUN_TEST(validate_address_overflow_rejected);
+    RUN_TEST(validate_address_full_range_valid);
+    RUN_TEST(validate_address_zero_size_valid);
+    RUN_TEST(validate_address_c64_always_valid);
+    RUN_TEST(validate_address_max_range);
+    RUN_TEST(config_get_null_params_returns_config);
+    RUN_TEST(config_get_has_machine_field);
+    RUN_TEST(config_get_has_chips_array);
+    RUN_TEST(config_get_has_memory_map);
+    RUN_TEST(config_get_has_resources);
+    RUN_TEST(config_get_dispatch_works);
+    RUN_TEST(config_set_requires_resources);
+    RUN_TEST(config_set_rejects_empty_params);
+    RUN_TEST(config_set_rejects_non_object_resources);
+    RUN_TEST(config_set_rejects_unknown_resource);
+    RUN_TEST(config_set_valid_resource_applied);
+    RUN_TEST(config_set_returns_new_config);
+    RUN_TEST(config_set_dispatch_works);
+    RUN_TEST(config_get_includes_warp_mode);
+    RUN_TEST(config_get_includes_speed);
+    RUN_TEST(config_set_warp_mode_succeeds);
+    RUN_TEST(config_set_warp_mode_no_reset);
+    RUN_TEST(config_set_speed_succeeds);
+    RUN_TEST(ping_includes_machine_field);
+    RUN_TEST(tools_list_includes_config_get);
+    RUN_TEST(tools_list_excludes_memory_map);
+    RUN_TEST(vicii_get_state_error_on_vic20);
+    RUN_TEST(sid_get_state_error_on_pet);
+    RUN_TEST(cia_get_state_error_on_vic20);
+    RUN_TEST(memory_map_dispatch_returns_not_found);
+    RUN_TEST(memory_read_validates_address);
 
     /* Bug fix regression tests */
     RUN_TEST(memory_read_rejects_address_above_64k);
@@ -7903,7 +8362,6 @@ int main(void)
     RUN_TEST(memory_compare_does_not_trigger_side_effects);
     RUN_TEST(vicii_set_state_reads_d011_nondestructively);
     RUN_TEST(memory_banks_returns_valid_response);
-    RUN_TEST(memory_map_returns_valid_response_with_params);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);

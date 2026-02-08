@@ -1,6 +1,6 @@
 when:
   - event: push
-    branch: feature/mcp-server
+    branch: mcp-server
 
 depends_on:
   - create-release
@@ -35,14 +35,15 @@ steps:
         libusb
         portaudio
 
-  - name: build-and-package
+  - name: build-gui
     image: bash
     commands:
       - cd vice
       - ./src/buildtools/genvicedate_h.sh
       - ./autogen.sh
+      - mkdir -p build-gui && cd build-gui
       - >-
-        ./configure
+        ../configure
         --enable-option-checking=fatal
         --enable-gtk3ui
         --enable-mcp-server
@@ -64,25 +65,64 @@ steps:
         --with-portaudio
         --with-resid
         --with-vorbis
-      - SVN_REV=$$(git tag -l 'r[0-9]*' --sort=-v:refname | head -1 | sed 's/^r//')
-      - make -j$$(sysctl -n hw.ncpu) -s SVN_REVISION_OVERRIDE=$${SVN_REV}
+      - make -j$$(sysctl -n hw.ncpu) -s
       - DEPS_PREFIX=$$(brew --prefix) make bindistzip
+      - cd ../..
       - git fetch --tags
+      - VERSION=$$(bash scripts/compute-version.sh --current)
       - |
-        cd ..
-        VERSION=$$(bash scripts/compute-version.sh --current)
-        cd vice
+        cd vice/build-gui
         DMG_FILE=$$(ls *.dmg 2>/dev/null | head -1 || true)
         ZIP_FILE=$$(ls *.zip 2>/dev/null | head -1 || true)
         if [ -n "$${DMG_FILE}" ]; then
-          cp "$${DMG_FILE}" "../$${VERSION}-macos-arm64.dmg"
-          echo "Packaged: $${VERSION}-macos-arm64.dmg"
+          cp "$${DMG_FILE}" "../../$${VERSION}-macos-arm64-gui.dmg"
+          cd ../..
+          shasum -a 256 "$${VERSION}-macos-arm64-gui.dmg" > "$${VERSION}-macos-arm64-gui.dmg.sha256"
         elif [ -n "$${ZIP_FILE}" ]; then
-          cp "$${ZIP_FILE}" "../$${VERSION}-macos-arm64.zip"
-          echo "Packaged: $${VERSION}-macos-arm64.zip"
+          cp "$${ZIP_FILE}" "../../$${VERSION}-macos-arm64-gui.zip"
+          cd ../..
+          shasum -a 256 "$${VERSION}-macos-arm64-gui.zip" > "$${VERSION}-macos-arm64-gui.zip.sha256"
         else
           echo "ERROR: No package artifact found" && exit 1
         fi
+
+  - name: build-headless
+    image: bash
+    commands:
+      - cd vice
+      - mkdir -p build-headless && cd build-headless
+      - >-
+        ../configure
+        --enable-option-checking=fatal
+        --enable-headlessui
+        --enable-mcp-server
+        --enable-cpuhistory
+        --enable-ethernet
+        --enable-midi
+        --enable-parsid
+        --disable-arch
+        --disable-pdf-docs
+        --disable-html-docs
+        --disable-openmp
+        --with-fastsid
+        --with-flac
+        --with-gif
+        --with-lame
+        --with-libcurl
+        --with-mpg123
+        --with-png
+        --with-portaudio
+        --with-resid
+        --with-vorbis
+      - make -j$$(sysctl -n hw.ncpu) -s
+      - make DESTDIR=$${PWD}/install-tree install-strip
+      - cd ../..
+      - git fetch --tags
+      - VERSION=$$(bash scripts/compute-version.sh --current)
+      - cd vice/build-headless/install-tree
+      - zip -r "../../../$${VERSION}-macos-arm64-headless.zip" .
+      - cd ../../..
+      - shasum -a 256 "$${VERSION}-macos-arm64-headless.zip" > "$${VERSION}-macos-arm64-headless.zip.sha256"
 
   - name: upload
     image: bash
@@ -93,9 +133,6 @@ steps:
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh --current)
       - |
-        if [ -f "$${VERSION}-macos-arm64.dmg" ]; then
-          ARTIFACT="$${VERSION}-macos-arm64.dmg"
-        else
-          ARTIFACT="$${VERSION}-macos-arm64.zip"
-        fi
-      - gh release upload "$${VERSION}" "$${ARTIFACT}" --repo "$${CI_REPO}" --clobber
+        for f in $${VERSION}-macos-arm64-*; do
+          [ -f "$${f}" ] && gh release upload "$${VERSION}" "$${f}" --repo "$${CI_REPO}" --clobber
+        done

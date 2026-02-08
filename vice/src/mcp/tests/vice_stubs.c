@@ -88,9 +88,23 @@ int log_warning(log_t log, const char *format, ...)
 }
 
 /* Machine name stub */
+extern int machine_class;
 const char *machine_get_name(void)
 {
-    return "TEST-MACHINE";
+    switch (machine_class) {
+        case 1:    return "C64";      /* VICE_MACHINE_C64 */
+        case 256:  return "C64SC";    /* VICE_MACHINE_C64SC */
+        case 2:    return "C128";     /* VICE_MACHINE_C128 */
+        case 4:    return "VIC20";    /* VICE_MACHINE_VIC20 */
+        case 64:   return "PLUS4";    /* VICE_MACHINE_PLUS4 */
+        case 8:    return "PET";      /* VICE_MACHINE_PET */
+        case 16:   return "CBM-II-5x0"; /* VICE_MACHINE_CBM5x0 */
+        case 32:   return "CBM-II";   /* VICE_MACHINE_CBM6x0 */
+        case 128:  return "C64DTV";   /* VICE_MACHINE_C64DTV */
+        case 1024: return "SCPU64";   /* VICE_MACHINE_SCPU64 */
+        case 512:  return "VSID";     /* VICE_MACHINE_VSID */
+        default:   return "UNKNOWN";
+    }
 }
 
 /* Memory search test support - forward declaration and storage */
@@ -197,6 +211,11 @@ void vsync_on_vsync_do(vsync_callback_func_t callback_func, void *callback_param
     (void)callback_param;
     /* In tests, we don't actually call the callback - just record that it was scheduled */
 }
+
+/* Vsync warp mode stubs - WarpMode is not a VICE resource, uses vsync API */
+static int stub_warp_mode = 0;
+void vsync_set_warp_mode(int val) { stub_warp_mode = val ? 1 : 0; }
+int vsync_get_warp_mode(void) { return stub_warp_mode; }
 
 void joystick_set_value_absolute(unsigned int joyport, uint16_t value)
 {
@@ -1022,4 +1041,126 @@ void test_ui_pause_reset(void)
 void test_ui_pause_set(int paused)
 {
     test_ui_pause_state = paused;
+}
+
+/* =============================================================================
+ * Machine class and resource stubs for machine config testing
+ * ============================================================================= */
+
+/* Machine class bit flags (matching machine.h values) */
+#define VICE_MACHINE_NONE       0
+#define VICE_MACHINE_C64        (1U<<0)
+#define VICE_MACHINE_C128       (1U<<1)
+#define VICE_MACHINE_VIC20      (1U<<2)
+#define VICE_MACHINE_PET        (1U<<3)
+#define VICE_MACHINE_CBM5x0     (1U<<4)
+#define VICE_MACHINE_CBM6x0     (1U<<5)
+#define VICE_MACHINE_PLUS4      (1U<<6)
+#define VICE_MACHINE_C64DTV     (1U<<7)
+#define VICE_MACHINE_C64SC      (1U<<8)
+#define VICE_MACHINE_VSID       (1U<<9)
+#define VICE_MACHINE_SCPU64     (1U<<10)
+
+int machine_class = 1;  /* Default: VICE_MACHINE_C64 */
+
+void test_set_machine_class(int mc) {
+    machine_class = mc;
+}
+
+/* Simple key-value resource system for testing */
+#define MAX_TEST_RESOURCES 32
+static struct { const char *name; int value; } test_resources[MAX_TEST_RESOURCES];
+static int test_resource_count = 0;
+
+int resources_get_int(const char *name, int *value_return) {
+    int i;
+    for (i = 0; i < test_resource_count; i++) {
+        if (strcmp(test_resources[i].name, name) == 0) {
+            *value_return = test_resources[i].value;
+            return 0;
+        }
+    }
+    return -1;  /* Not found */
+}
+
+int resources_set_int(const char *name, int value) {
+    int i;
+    /* Update existing */
+    for (i = 0; i < test_resource_count; i++) {
+        if (strcmp(test_resources[i].name, name) == 0) {
+            test_resources[i].value = value;
+            return 0;
+        }
+    }
+    /* Add new */
+    if (test_resource_count < MAX_TEST_RESOURCES) {
+        test_resources[test_resource_count].name = name;
+        test_resources[test_resource_count].value = value;
+        test_resource_count++;
+        return 0;
+    }
+    return -1;
+}
+
+void test_resources_reset(void) {
+    test_resource_count = 0;
+    stub_warp_mode = 0;
+}
+
+void test_resources_set(const char *name, int value) {
+    resources_set_int(name, value);
+}
+
+void test_setup_c64_defaults(void) {
+    machine_class = 1;  /* VICE_MACHINE_C64 */
+    test_resources_reset();
+    test_resources_set("MachineVideoStandard", 2);
+    test_resources_set("Speed", 100);
+    test_resources_set("SidModel", 1);
+    test_resources_set("CIA1Model", 1);
+    test_resources_set("CIA2Model", 1);
+}
+
+/* Stubs needed by mcp_server.o (loaded via force_load) */
+int cmdline_register_options(void *options) {
+    (void)options;
+    return 0;
+}
+
+int resources_register_int(void *resources) {
+    (void)resources;
+    return 0;
+}
+
+int resources_register_string(void *resources) {
+    (void)resources;
+    return 0;
+}
+
+int resources_set_string(const char *name, const char *value) {
+    (void)name;
+    (void)value;
+    return 0;
+}
+
+/* lib_calloc and lib_realloc stubs (needed by mcp_transport.o via force_load) */
+void *lib_calloc(size_t nmemb, size_t size)
+{
+    return calloc(nmemb, size);
+}
+
+void *lib_realloc(void *ptr, size_t size)
+{
+    return realloc(ptr, size);
+}
+
+/* Mainlock stubs (needed by mcp_transport.o via force_load) */
+void mainlock_obtain(void)
+{
+    /* No-op in test environment */
+}
+
+void mainlock_release(void)
+{
+    /* No-op in test environment */
 }

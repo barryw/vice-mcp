@@ -873,16 +873,17 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             /* No required params - pressed is optional */
             schema = mcp_schema_object(props, NULL);
 
-        } else if (strcmp(name, "vice.memory.map") == 0) {
+        } else if (strcmp(name, "vice.machine.config.get") == 0) {
+            /* No parameters required */
+            schema = mcp_schema_empty();
+
+        } else if (strcmp(name, "vice.machine.config.set") == 0) {
             props = cJSON_CreateObject();
-            cJSON_AddItemToObject(props, "start", mcp_prop_string(
-                "Start address: number, hex string ($0000), or symbol (default: $0000)"));
-            cJSON_AddItemToObject(props, "end", mcp_prop_string(
-                "End address: number, hex string ($FFFF), or symbol (default: $FFFF)"));
-            cJSON_AddItemToObject(props, "granularity", mcp_prop_number(
-                "Region granularity in bytes (default: 256)"));
-            /* No required params - all optional */
-            schema = mcp_schema_object(props, NULL);
+            cJSON_AddItemToObject(props, "resources", mcp_prop_string(
+                "Object of resource name/value pairs (e.g. {\"MachineVideoStandard\": 1, \"SidModel\": 0})"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("resources"));
+            schema = mcp_schema_object(props, required);
 
         } else if (strcmp(name, "vice.sprite.inspect") == 0) {
             props = cJSON_CreateObject();

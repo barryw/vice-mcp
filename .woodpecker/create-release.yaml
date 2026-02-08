@@ -1,6 +1,6 @@
 when:
   - event: push
-    branch: feature/mcp-server
+    branch: mcp-server
 
 labels:
   platform: linux/amd64
@@ -24,7 +24,7 @@ steps:
             --repo "$${CI_REPO}" \
             --target "$${CI_COMMIT_SHA}" \
             --title "$${VERSION}" \
-            --notes "Automated MCP server build from feature/mcp-server branch." \
+            --notes "Automated MCP server build from mcp-server branch. Includes GUI and headless variants." \
             --draft \
             --prerelease
         fi

@@ -45,6 +45,9 @@
 #include "monitor_binary.h"
 #include "monitor_network.h"
 #endif
+#ifdef HAVE_MCP_SERVER
+#include "mcp_server.h"
+#endif
 #include "palette.h"
 #include "ram.h"
 #include "resources.h"
@@ -154,6 +157,14 @@ int init_resources(void)
         return -1;
     }
 #endif
+#ifdef HAVE_MCP_SERVER
+    if (machine_class != VICE_MACHINE_VSID) {
+        if (mcp_server_register_resources() < 0) {
+            init_resource_fail("MCP server");
+            return -1;
+        }
+    }
+#endif
     DBG(("init_resources done"));
     return 0;
 }
@@ -238,6 +249,12 @@ int init_cmdline_options(void)
         return -1;
     }
 #endif
+#ifdef HAVE_MCP_SERVER
+    if (mcp_server_register_cmdline_options() < 0) {
+        init_cmdline_options_fail("MCP server");
+        return -1;
+    }
+#endif
     DBG(("init_cmdline_options done"));
     return 0;
 }
@@ -301,6 +318,13 @@ int init_main(void)
         log_error(LOG_DEFAULT, "Machine initialization failed.");
         return -1;
     }
+
+#ifdef HAVE_MCP_SERVER
+    if (mcp_server_init() < 0) {
+        log_error(LOG_DEFAULT, "MCP server initialization failed.");
+        /* Non-fatal: continue without MCP server */
+    }
+#endif
 
     /* FIXME: what's about uimon_init??? */
     /* the monitor console MUST be available, because of for example cpujam,
