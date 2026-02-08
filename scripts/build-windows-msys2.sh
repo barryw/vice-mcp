@@ -109,12 +109,19 @@ case "$ACTION" in
         git fetch --tags
         VERSION=$(bash "$REPO_ROOT/scripts/compute-version.sh" --current)
         cd "$REPO_ROOT/vice/build-headless"
-        make DESTDIR="$PWD/install-tree" install-strip
-        cd install-tree
-        zip -r "$REPO_ROOT/${VERSION}-windows-x86_64-headless.zip" .
-        cd "$REPO_ROOT"
-        sha256sum "${VERSION}-windows-x86_64-headless.zip" > "${VERSION}-windows-x86_64-headless.zip.sha256"
-        echo "Packaged: ${VERSION}-windows-x86_64-headless.zip"
+        # Note: VICE disables 'make install' for Windows targets (configure sets
+        # MAKE_INSTALL=false). Use bindistzip which calls the headless bindist script.
+        make bindistzip
+        ZIP_FILE=$(ls *.zip 2>/dev/null | head -1)
+        if [ -n "$ZIP_FILE" ]; then
+            cp "$ZIP_FILE" "$REPO_ROOT/${VERSION}-windows-x86_64-headless.zip"
+            cd "$REPO_ROOT"
+            sha256sum "${VERSION}-windows-x86_64-headless.zip" > "${VERSION}-windows-x86_64-headless.zip.sha256"
+            echo "Packaged: ${VERSION}-windows-x86_64-headless.zip"
+        else
+            echo "ERROR: No zip artifact found" >&2
+            exit 1
+        fi
         ;;
 
     upload)

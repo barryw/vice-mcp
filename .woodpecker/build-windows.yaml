@@ -6,54 +6,40 @@ depends_on:
   - create-release
 
 labels:
-  platform: windows/amd64
-  type: build
+  platform: linux/amd64
 
 steps:
-  - name: install-deps
-    image: powershell
+  - name: build-and-package
+    image: fedora:41
+    backend_options:
+      kubernetes:
+        node_selector:
+          ci-role: windows
     commands:
-      - C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"
+      # Install cross-compiler toolchain and dependencies
       - >-
-        C:\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm --needed
-        autotools base-devel git zip unzip p7zip subversion xmlto
-        mingw-w64-x86_64-curl mingw-w64-x86_64-docbook-xml mingw-w64-x86_64-docbook-xsl
-        mingw-w64-x86_64-flac mingw-w64-x86_64-giflib mingw-w64-x86_64-glew
-        mingw-w64-x86_64-gtk3 mingw-w64-x86_64-icoutils mingw-w64-x86_64-lame
-        mingw-w64-x86_64-libmicrohttpd mingw-w64-x86_64-libpcap mingw-w64-x86_64-libusb
-        mingw-w64-x86_64-libvorbis mingw-w64-x86_64-mpg123 mingw-w64-x86_64-ntldd
-        mingw-w64-x86_64-pkg-config mingw-w64-x86_64-portaudio mingw-w64-x86_64-toolchain
-        mingw-w64-x86_64-xa65 mingw-w64-x86_64-iconv"
-
-  - name: build-libieee1284
-    image: powershell
-    commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '$$PWD/scripts/build-windows-msys2.sh' build-libieee1284"
-
-  - name: build-gui
-    image: powershell
-    commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '$$PWD/scripts/build-windows-msys2.sh' build-gui"
-
-  - name: package-gui
-    image: powershell
-    commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '$$PWD/scripts/build-windows-msys2.sh' package-gui"
-
-  - name: build-headless
-    image: powershell
-    commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '$$PWD/scripts/build-windows-msys2.sh' build-headless"
-
-  - name: package-headless
-    image: powershell
-    commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; bash '$$PWD/scripts/build-windows-msys2.sh' package-headless"
+        dnf install -y --setopt=install_weak_deps=False
+        gcc gcc-c++ autoconf automake make pkg-config xa
+        flex bison dos2unix git zip curl ca-certificates
+        mingw64-gcc mingw64-gcc-c++
+        mingw64-curl mingw64-flac mingw64-portaudio
+        mingw64-giflib mingw64-libvorbis mingw64-libpng
+      # Cross-compile libmicrohttpd (no Fedora mingw64 package available)
+      - bash scripts/build-windows-cross.sh build-libmicrohttpd
+      # Cross-compile VICE headless
+      - bash scripts/build-windows-cross.sh build
+      # Package into zip with DLLs and data files
+      - bash scripts/build-windows-cross.sh package
 
   - name: upload
-    image: powershell
+    image: fedora:41
+    backend_options:
+      kubernetes:
+        node_selector:
+          ci-role: windows
     environment:
       GITHUB_TOKEN:
         from_secret: github_token
     commands:
-      - C:\msys64\usr\bin\bash.exe -lc "export MSYSTEM=MINGW64; source /etc/profile; export GITHUB_TOKEN='$${GITHUB_TOKEN}'; export CI_REPO='$${CI_REPO}'; bash '$$PWD/scripts/build-windows-msys2.sh' upload"
+      - dnf install -y --setopt=install_weak_deps=False git gh bash
+      - bash scripts/build-windows-cross.sh upload

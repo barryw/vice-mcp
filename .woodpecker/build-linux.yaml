@@ -11,6 +11,10 @@ labels:
 steps:
   - name: build-and-package
     image: debian:12
+    backend_options:
+      kubernetes:
+        node_selector:
+          ci-role: linux
     commands:
       - apt-get update
       - >-
@@ -131,6 +135,10 @@ steps:
 
   - name: upload
     image: alpine:3.19
+    backend_options:
+      kubernetes:
+        node_selector:
+          ci-role: linux
     environment:
       GITHUB_TOKEN:
         from_secret: github_token
