@@ -31,11 +31,12 @@ if [ "${1:-}" = "--current" ]; then
     fi
 
     if [ -z "$LATEST" ]; then
-        echo "ERROR: No vice-mcp-* tag found (local or remote)" >&2
-        exit 1
+        echo "No vice-mcp-* tag found, computing version from git state..." >&2
+        # Fall through to compute version directly
+    else
+        echo "$LATEST"
+        exit 0
     fi
-    echo "$LATEST"
-    exit 0
 fi
 
 # Extract VICE version from configure.ac
