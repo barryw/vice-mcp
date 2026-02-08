@@ -40,6 +40,7 @@ steps:
     commands:
       - cd vice
       - test -f Makefile && make distclean || true
+      - rm -f config.status
       - ./src/buildtools/genvicedate_h.sh
       - ./autogen.sh
       - mkdir -p build-gui && cd build-gui
