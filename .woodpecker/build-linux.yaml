@@ -60,7 +60,7 @@ steps:
       - find . -name Makefile.in -exec touch {} +
       - cd ..
       - git fetch --tags
-      - VERSION=$$(bash scripts/compute-version.sh)
+      - VERSION=$$(bash scripts/compute-version.sh --current)
       - cd vice
       # --- GUI build ---
       - mkdir -p build-gui && cd build-gui
@@ -145,7 +145,7 @@ steps:
     commands:
       - apk add --no-cache bash ca-certificates git github-cli
       - git fetch --tags
-      - VERSION=$$(bash scripts/compute-version.sh)
+      - VERSION=$$(bash scripts/compute-version.sh --current)
       - |
         for f in $${VERSION}-linux-x86_64-*.zip; do
           gh release upload "$${VERSION}" "$${f}" --repo "$${CI_REPO}" --clobber

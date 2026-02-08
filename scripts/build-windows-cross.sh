@@ -229,7 +229,7 @@ case "$ACTION" in
     upload)
         cd "$REPO_ROOT"
         git fetch --tags
-        VERSION=$(bash scripts/compute-version.sh)
+        VERSION=$(bash scripts/compute-version.sh --current)
         for artifact in "${VERSION}-windows-x86_64"-*.zip; do
             if [ -f "$artifact" ]; then
                 gh release upload "$VERSION" "$artifact" --repo "${CI_REPO}" --clobber
