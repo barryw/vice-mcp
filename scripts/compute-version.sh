@@ -9,35 +9,11 @@ set -euo pipefail
 #   MCP_REL       - increments per push; resets to 1 when upstream changes
 #
 # Usage:
-#   scripts/compute-version.sh              # compute the NEXT version
-#   scripts/compute-version.sh --current    # return the latest existing tag
+#   scripts/compute-version.sh              # compute the NEXT version (create-release only)
+#   scripts/compute-version.sh --current    # return the tag for HEAD (build/upload steps)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# --current mode: return the latest vice-mcp-* tag
-if [ "${1:-}" = "--current" ]; then
-    # Try local tags first (fast path)
-    LATEST=$(git -C "$REPO_ROOT" tag -l 'vice-mcp-*' --sort=-v:refname | head -1 || true)
-
-    # Fallback: query remote directly (handles case where git fetch --tags
-    # didn't pick up tags created by gh release create via GitHub API)
-    if [ -z "$LATEST" ]; then
-        echo "No local vice-mcp-* tags, querying remote..." >&2
-        LATEST=$(git -C "$REPO_ROOT" ls-remote --tags origin 'refs/tags/vice-mcp-*' \
-            | sed 's|.*refs/tags/||' \
-            | sort -V \
-            | tail -1 || true)
-    fi
-
-    if [ -z "$LATEST" ]; then
-        echo "No vice-mcp-* tag found, computing version from git state..." >&2
-        # Fall through to compute version directly
-    else
-        echo "$LATEST"
-        exit 0
-    fi
-fi
 
 # Extract VICE version from configure.ac
 CONFIGURE_AC="$REPO_ROOT/vice/configure.ac"
@@ -54,8 +30,34 @@ VICE_VERSION="${MAJOR}.${MINOR}.${BUILD}"
 # Get short git SHA (7 chars)
 GIT_SHA=$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)
 
-# Compute MCP release number
+# Prefix for this commit
 PREFIX="vice-mcp-${VICE_VERSION}-${GIT_SHA}"
+
+# --current mode: return the existing tag for THIS commit
+if [ "${1:-}" = "--current" ]; then
+    # Look for a tag matching this commit's SHA prefix
+    TAG=$(git -C "$REPO_ROOT" tag -l "${PREFIX}-*" --sort=-v:refname | head -1 || true)
+
+    # Fallback: query remote
+    if [ -z "$TAG" ]; then
+        echo "No local ${PREFIX}-* tag, querying remote..." >&2
+        TAG=$(git -C "$REPO_ROOT" ls-remote --tags origin "refs/tags/${PREFIX}-*" \
+            | sed 's|.*refs/tags/||' \
+            | sort -V \
+            | tail -1 || true)
+    fi
+
+    if [ -z "$TAG" ]; then
+        echo "ERROR: No tag found for HEAD (${PREFIX}-*)" >&2
+        echo "Has create-release run? Try: git fetch --tags" >&2
+        exit 1
+    fi
+
+    echo "$TAG"
+    exit 0
+fi
+
+# Default mode: compute the NEXT version (for create-release)
 LATEST_TAG=$(git -C "$REPO_ROOT" tag -l "${PREFIX}-*" --sort=-v:refname | head -1 || true)
 
 if [ -n "$LATEST_TAG" ]; then
