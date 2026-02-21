@@ -1,8 +1,8 @@
 /*
- * joyport_io_sim.h
+ * userport_v8_joystick.h:
  *
  * Written by
- *  Marco van den Heuvel <blackystardust68@yahoo.com>
+ *  groepaz <groepaz@gmx.net>
  *
  * This file is part of VICE, the Versatile Commodore Emulator.
  * See README for copyright notice.
@@ -24,22 +24,11 @@
  *
  */
 
-#ifndef VICE_JOYPORT_IO_SIM_H
-#define VICE_JOYPORT_IO_SIM_H
+#ifndef VICE_USERPORT_V8_JOYSTICK_H
+#define VICE_USERPORT_V8_JOYSTICK_H
 
 #include "types.h"
 
-int joyport_io_sim_resources_init(void);
-
-/* used in the monitor to set the lines */
-void joyport_io_sim_set_out_lines(uint8_t val, int port);
-void joyport_io_sim_set_potx(uint8_t val, int port);
-void joyport_io_sim_set_poty(uint8_t val, int port);
-
-/* used in the monitor to get the lines */
-uint8_t joyport_io_sim_get_out_lines(int port);
-uint8_t joyport_io_sim_get_in_lines(int port);
-uint8_t joyport_io_sim_get_potx(int port);
-uint8_t joyport_io_sim_get_poty(int port);
+int userport_joystick_v8_resources_init(void);
 
 #endif
