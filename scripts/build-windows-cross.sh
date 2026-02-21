@@ -76,8 +76,13 @@ do_regenerate_autotools() {
     find . -name config.status -exec rm -f {} +
     ./src/buildtools/genvicedate_h.sh
     # Regenerate all autotools output from source to ensure
-    # Makefile.in, configure, etc. match their .am/.ac inputs
+    # Makefile.in, configure, etc. match their .am/.ac inputs,
+    # then fix timestamps so make doesn't re-run autotools
+    # (CI automake version may differ from upstream's)
     autoreconf -fi
+    sleep 1 && find . -name aclocal.m4 -exec touch {} +
+    sleep 1 && find . -name configure -exec touch {} + && find . -name config.h.in -exec touch {} +
+    find . -name Makefile.in -exec touch {} +
 }
 
 case "$ACTION" in
