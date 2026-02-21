@@ -70,16 +70,14 @@ find_and_copy_dlls() {
     done
 }
 
-do_fix_timestamps() {
+do_regenerate_autotools() {
     cd "$REPO_ROOT/vice"
     rm -f src/config.h
     find . -name config.status -exec rm -f {} +
     ./src/buildtools/genvicedate_h.sh
-    # Fix autotools timestamps: git clone gives all files same mtime,
-    # causing make to think generated files need regeneration
-    sleep 1 && find . -name aclocal.m4 -exec touch {} +
-    sleep 1 && find . -name configure -exec touch {} + && find . -name config.h.in -exec touch {} +
-    find . -name Makefile.in -exec touch {} +
+    # Regenerate all autotools output from source to ensure
+    # Makefile.in, configure, etc. match their .am/.ac inputs
+    autoreconf -fi
 }
 
 case "$ACTION" in
@@ -109,7 +107,7 @@ case "$ACTION" in
 
     build)
         echo "=== Cross-compiling VICE headless for Windows ==="
-        do_fix_timestamps
+        do_regenerate_autotools
         cd "$REPO_ROOT/vice"
         rm -rf build-headless
         mkdir -p build-headless && cd build-headless
