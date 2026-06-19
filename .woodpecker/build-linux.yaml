@@ -1,6 +1,6 @@
 when:
   - event: push
-    branch: mcp-server
+    branch: main
 
 depends_on:
   - create-release
