@@ -31,15 +31,35 @@ steps:
       # Package into zip with DLLs and data files
       - bash scripts/build-windows-cross.sh package
 
+  # WAL-72/WAL-70: mint a short-lived GitHub App installation token (product-ci
+  # profile) just before upload in place of the shared admin PAT. This is a Linux
+  # cross-compile node (the windows label is a node role, not a Windows host), so
+  # the minter plugin image runs here. Same node selector co-locates the token.
+  - name: mint-token
+    image: ghcr.io/barryw/woodpecker-release:go
+    pull: true
+    backend_options:
+      kubernetes:
+        node_selector:
+          ci-role: windows
+    environment:
+      GH_APP_ID:
+        from_secret: gh_app_id
+      GH_APP_INSTALLATION_ID:
+        from_secret: gh_app_installation_id
+      GH_APP_PRIVATE_KEY:
+        from_secret: gh_app_private_key
+    commands:
+      - /plugin/mint-installation-token.sh --profile product-ci > "$CI_WORKSPACE/.ci-token"
+      - 'test -s "$CI_WORKSPACE/.ci-token" || { echo "FATAL: empty minted token"; exit 1; }'
+
   - name: upload
     image: fedora:41
     backend_options:
       kubernetes:
         node_selector:
           ci-role: windows
-    environment:
-      GITHUB_TOKEN:
-        from_secret: github_token
     commands:
+      - export GITHUB_TOKEN=$(cat "$CI_WORKSPACE/.ci-token")
       - dnf install -y --setopt=install_weak_deps=False git gh bash
       - bash scripts/build-windows-cross.sh upload

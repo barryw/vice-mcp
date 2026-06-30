@@ -139,16 +139,35 @@ steps:
       - cd ../../..
       - ls -lh $${VERSION}-linux-x86_64-*.zip
 
+  # WAL-72/WAL-70: mint a short-lived GitHub App installation token (product-ci
+  # profile) just before upload in place of the shared admin PAT. Same node
+  # selector as upload so the workspace token file is co-located.
+  - name: mint-token
+    image: ghcr.io/barryw/woodpecker-release:go
+    pull: true
+    backend_options:
+      kubernetes:
+        node_selector:
+          ci-role: linux
+    environment:
+      GH_APP_ID:
+        from_secret: gh_app_id
+      GH_APP_INSTALLATION_ID:
+        from_secret: gh_app_installation_id
+      GH_APP_PRIVATE_KEY:
+        from_secret: gh_app_private_key
+    commands:
+      - /plugin/mint-installation-token.sh --profile product-ci > "$CI_WORKSPACE/.ci-token"
+      - 'test -s "$CI_WORKSPACE/.ci-token" || { echo "FATAL: empty minted token"; exit 1; }'
+
   - name: upload
     image: alpine:3.19
     backend_options:
       kubernetes:
         node_selector:
           ci-role: linux
-    environment:
-      GITHUB_TOKEN:
-        from_secret: github_token
     commands:
+      - export GITHUB_TOKEN=$(cat "$CI_WORKSPACE/.ci-token")
       - apk add --no-cache bash ca-certificates git github-cli
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh --current)

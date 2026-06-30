@@ -6,12 +6,28 @@ labels:
   platform: linux/amd64
 
 steps:
+  # WAL-72/WAL-70: mint a short-lived, down-scoped GitHub App installation token
+  # (product-ci profile: contents=write,metadata=read) in place of the shared
+  # admin PAT. Minter is vendored in the woodpecker-release plugin image; GH_APP_*
+  # are org-level Woodpecker secrets. Token (~1h TTL) lands in the shared workspace.
+  - name: mint-token
+    image: ghcr.io/barryw/woodpecker-release:go
+    pull: true
+    environment:
+      GH_APP_ID:
+        from_secret: gh_app_id
+      GH_APP_INSTALLATION_ID:
+        from_secret: gh_app_installation_id
+      GH_APP_PRIVATE_KEY:
+        from_secret: gh_app_private_key
+    commands:
+      - /plugin/mint-installation-token.sh --profile product-ci > "$CI_WORKSPACE/.ci-token"
+      - 'test -s "$CI_WORKSPACE/.ci-token" || { echo "FATAL: empty minted token"; exit 1; }'
+
   - name: create-draft-release
     image: alpine:3.19
-    environment:
-      GITHUB_TOKEN:
-        from_secret: github_token
     commands:
+      - export GITHUB_TOKEN=$(cat "$CI_WORKSPACE/.ci-token")
       - apk add --no-cache bash ca-certificates git github-cli
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh)
