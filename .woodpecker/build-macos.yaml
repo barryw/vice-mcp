@@ -137,9 +137,18 @@ steps:
   - name: upload
     image: bash
     environment:
-      GITHUB_TOKEN:
-        from_secret: github_token
+      GH_APP_ID:
+        from_secret: gh_app_id
+      GH_APP_INSTALLATION_ID:
+        from_secret: gh_app_installation_id
+      GH_APP_PRIVATE_KEY:
+        from_secret: gh_app_private_key
     commands:
+      # WAL-74: mint a single-repo, ~1h GitHub App token (contents=write) on the
+      # macOS local backend in place of the shared admin PAT. Vendored minter
+      # (bash+openssl+curl, no jq) — the go plugin image can't execute here. gh
+      # reads the token via GITHUB_TOKEN.
+      - export GITHUB_TOKEN=$(bash ci/mint-token.sh)
       - git fetch --tags
       - VERSION=$$(bash scripts/compute-version.sh --current)
       - |
