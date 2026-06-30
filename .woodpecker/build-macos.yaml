@@ -3,7 +3,7 @@ when:
     branch: main
 
 depends_on:
-  - create-release
+  - release
 
 labels:
   platform: darwin/arm64
@@ -82,7 +82,7 @@ steps:
       - DEPS_PREFIX=$$(brew --prefix) make bindistzip
       - cd ../..
       - git fetch --tags
-      - VERSION=$$(bash scripts/compute-version.sh --current)
+      - VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
       - |
         cd vice/build-gui
         DMG_FILE=$$(ls *.dmg 2>/dev/null | head -1 || true)
@@ -128,7 +128,7 @@ steps:
       - make DESTDIR=$${PWD}/install-tree install-strip
       - cd ../..
       - git fetch --tags
-      - VERSION=$$(bash scripts/compute-version.sh --current)
+      - VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
       - cd vice/build-headless/install-tree
       - find . -type f -exec shasum -a 256 {} + > SHA256SUMS
       - zip -r "../../../$${VERSION}-macos-arm64-headless.zip" .
@@ -150,7 +150,7 @@ steps:
       # reads the token via GITHUB_TOKEN.
       - export GITHUB_TOKEN=$(bash ci/mint-token.sh)
       - git fetch --tags
-      - VERSION=$$(bash scripts/compute-version.sh --current)
+      - VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
       - |
         for f in $${VERSION}-macos-arm64-*.dmg $${VERSION}-macos-arm64-*.zip; do
           [ -f "$${f}" ] && gh release upload "$${VERSION}" "$${f}" --repo "$${CI_REPO}" --clobber

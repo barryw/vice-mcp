@@ -1,0 +1,49 @@
+# Cocogitto configuration for semantic versioning
+# https://docs.cocogitto.io/
+#
+# Walker Heavy Industries Build & Release Standard (ADR 0003 / WAL-32).
+# Versions are produced by `cog bump --auto` on push to main; tags are vX.Y.Z.
+# This replaces the retired scripts/compute-version.sh and the vice-mcp-* tag
+# prefix. The latest `v` tag / GitHub Release is the single source of truth for
+# the product version.
+
+from_latest_tag = true
+ignore_merge_commits = true
+branch_whitelist = ["main"]
+tag_prefix = "v"
+skip_ci = "[skip ci]"
+skip_untracked = false
+
+pre_bump_hooks = []
+post_bump_hooks = []
+
+[changelog]
+path = "CHANGELOG.md"
+template = "remote"
+remote = "github.com"
+repository = "vice-mcp"
+owner = "barryw"
+authors = [
+    { signature = "Paperclip", username = "barryw" }
+]
+
+[commit_types]
+feat = { changelog_title = "Features" }
+fix = { changelog_title = "Bug Fixes" }
+docs = { changelog_title = "Documentation" }
+refactor = { changelog_title = "Refactoring" }
+test = { changelog_title = "Tests" }
+chore = { changelog_title = "Miscellaneous" }
+perf = { changelog_title = "Performance" }
+style = { changelog_title = "Style" }
+ci = { changelog_title = "CI/CD" }
+build = { changelog_title = "Build" }
+# WHI custom type: brand/marketing/endorsement changes (used across the portfolio,
+# e.g. brand(WAL-40) on main). Required so `cog check --from-latest-tag` accepts it.
+brand = { changelog_title = "Branding" }
+
+[git_hooks.commit-msg]
+script = """#!/bin/sh
+set -e
+cog verify --file $1
+"""

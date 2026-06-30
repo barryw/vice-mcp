@@ -940,6 +940,21 @@ and modern AI tooling. Contributions from either world (or both) are welcome.
 
 The MCP server is entirely contained in `vice/src/mcp/`. Start there.
 
+### Versioning & releases
+
+This repo follows the Walker Heavy Industries Build & Release Standard:
+
+- **Conventional Commits** are required. Versioning is automated with
+  [Cocogitto](https://docs.cocogitto.io/) — `feat:` bumps the minor, `fix:` the
+  patch, and a `!`/`BREAKING CHANGE` bumps the major. Install the local commit
+  hook once with `cog install-hook --all` (CI also validates commits).
+- On every push to `main`, CI runs `cog bump --auto`, which tags the next
+  `vX.Y.Z`, updates `CHANGELOG.md`, and publishes a GitHub Release with the
+  generated changelog notes.
+- The multi-OS build matrix (Linux/macOS/Windows) attaches its artifacts to that
+  Release. The latest `v` tag / Release is the single source of truth for the
+  version — there is no `compute-version.sh` and no `vice-mcp-*` tag prefix.
+
 ## License
 
 VICE is released under the GNU General Public License v2. The MCP server additions

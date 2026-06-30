@@ -3,7 +3,7 @@ when:
     branch: main
 
 depends_on:
-  - create-release
+  - release
 
 labels:
   platform: linux/amd64
