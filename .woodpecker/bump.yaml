@@ -40,9 +40,23 @@ steps:
   - name: bump-version
     image: ghcr.io/cocogitto/cog:latest
     commands:
-      - export GITHUB_TOKEN=$(cat "$CI_WORKSPACE/.ci-token")
+      - git config --global --add safe.directory "$CI_WORKSPACE"
       - git config user.name "Woodpecker CI"
       - git config user.email "ci@walkerheavy.com"
+      - GITHUB_TOKEN=$(cat "$CI_WORKSPACE/.ci-token")
+      - rm -f "$CI_WORKSPACE/.ci-token"
       - git remote set-url origin "https://x-access-token:$GITHUB_TOKEN@github.com/${CI_REPO}.git"
-      - cog bump --auto && git push --follow-tags || echo "No version bump needed"
+      # Bump, then push the commit AND tag explicitly to main. Two gotchas:
+      #  - the CI checkout has no upstream tracking, so a bare `git push` fatals
+      #    ("current branch main has no upstream branch") -> push `HEAD:main`.
+      #  - cog creates LIGHTWEIGHT tags, which `--follow-tags` refuses to push;
+      #    the tag then never reaches the remote and every subsequent run re-bumps
+      #    the same version forever. Push tags explicitly with `--tags`.
+      # A real push failure now fails the step instead of being masked by `|| echo`.
+      - |
+        if cog bump --auto; then
+          git push origin HEAD:main --tags
+        else
+          echo "No bump-worthy commits since last tag; skipping."
+        fi
       - echo "Current version:" && cog get-version
