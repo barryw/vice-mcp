@@ -1,18 +1,29 @@
+# Create the published GitHub Release for the current v tag.
+#
+# Runs after bump.yaml. Generates release notes from the cog CHANGELOG for the
+# latest version and creates a PUBLISHED (not draft) GitHub Release. The per-OS
+# build pipelines depend on this and attach their artifacts to the same Release.
 when:
   - event: push
     branch: main
 
 depends_on:
-  - build-linux
-  - build-macos
-  - build-windows
+  - bump
 
 labels:
   platform: linux/amd64
 
+clone:
+  git:
+    image: woodpeckerci/plugin-git
+    settings:
+      tags: true
+      depth: 0
+
 steps:
   # WAL-72/WAL-70: mint a short-lived GitHub App installation token (product-ci
-  # profile) in place of the shared admin PAT. See create-release.yaml.
+  # profile: contents=write) in place of the shared admin PAT. Consumed by the
+  # create-release step below.
   - name: mint-token
     image: ghcr.io/barryw/woodpecker-release:go
     pull: true
@@ -27,12 +38,42 @@ steps:
       - /plugin/mint-installation-token.sh --profile product-ci > "$CI_WORKSPACE/.ci-token"
       - 'test -s "$CI_WORKSPACE/.ci-token" || { echo "FATAL: empty minted token"; exit 1; }'
 
-  - name: publish-release
+  # Generate changelog notes for the latest version using cog.
+  # NB: cog bump tags the chore(version) commit it creates, so we resolve the
+  # version by highest semver tag name rather than `git describe` (which, on the
+  # pushed pre-bump SHA, would resolve to the previous tag).
+  - name: changelog-notes
+    image: ghcr.io/cocogitto/cog:latest
+    commands:
+      - git fetch --tags
+      - VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+      - echo "Release version $${VERSION}"
+      # Scope notes to this version. Do not fall back to a full-history changelog:
+      # the upstream VICE history contains non-conventional commits cog can't parse.
+      - cog changelog --at "$${VERSION}" > release-notes.md || echo "Release $${VERSION}" > release-notes.md
+      - cat release-notes.md
+
+  # Create the published GitHub Release (idempotent) with the cog notes.
+  - name: create-release
     image: alpine:3.19
     commands:
       - export GITHUB_TOKEN=$(cat "$CI_WORKSPACE/.ci-token")
       - apk add --no-cache bash ca-certificates git github-cli
       - git fetch --tags
-      - VERSION=$$(bash scripts/compute-version.sh --current)
-      - echo "Publishing release $${VERSION}"
-      - gh release edit "$${VERSION}" --draft=false --prerelease=false --latest=false --repo "$${CI_REPO}"
+      - VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+      # Clean up any orphaned draft releases left by the retired draft flow.
+      - |
+        for tag in $$(gh release list --repo "$${CI_REPO}" --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName'); do
+          echo "Deleting orphaned draft: $${tag}"
+          gh release delete "$${tag}" --repo "$${CI_REPO}" --yes 2>/dev/null || true
+        done
+      - |
+        if gh release view "$${VERSION}" --repo "$${CI_REPO}" >/dev/null 2>&1; then
+          echo "Release $${VERSION} exists; refreshing notes"
+          gh release edit "$${VERSION}" --repo "$${CI_REPO}" \
+            --draft=false --prerelease=false \
+            --title "$${VERSION}" --notes-file release-notes.md
+        else
+          gh release create "$${VERSION}" --repo "$${CI_REPO}" \
+            --title "$${VERSION}" --notes-file release-notes.md
+        fi

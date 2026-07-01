@@ -1,0 +1,48 @@
+# Bump version on push to main (Walker Heavy Industries Build & Release Standard)
+#
+# Runs cog bump --auto: inspects conventional commits since the latest v tag,
+# computes the next vX.Y.Z, updates CHANGELOG.md, commits, tags, and pushes.
+# This is the single source of truth for the product version — it replaces the
+# retired scripts/compute-version.sh and the vice-mcp-* tag prefix.
+when:
+  - event: push
+    branch: main
+
+labels:
+  platform: linux/amd64
+
+clone:
+  git:
+    image: woodpeckerci/plugin-git
+    settings:
+      tags: true
+      depth: 0
+
+steps:
+  # WAL-72/WAL-70: mint a short-lived, down-scoped GitHub App installation token
+  # (product-ci profile: contents=write) in place of the shared admin PAT. Used
+  # by bump-version to push the version commit + v tag. Keeps this pipeline on the
+  # same App-token footing as release/build-* (no `github_token` PAT dependency).
+  - name: mint-token
+    image: ghcr.io/barryw/woodpecker-release:go
+    pull: true
+    environment:
+      GH_APP_ID:
+        from_secret: gh_app_id
+      GH_APP_INSTALLATION_ID:
+        from_secret: gh_app_installation_id
+      GH_APP_PRIVATE_KEY:
+        from_secret: gh_app_private_key
+    commands:
+      - /plugin/mint-installation-token.sh --profile product-ci > "$CI_WORKSPACE/.ci-token"
+      - 'test -s "$CI_WORKSPACE/.ci-token" || { echo "FATAL: empty minted token"; exit 1; }'
+
+  - name: bump-version
+    image: ghcr.io/cocogitto/cog:latest
+    commands:
+      - export GITHUB_TOKEN=$(cat "$CI_WORKSPACE/.ci-token")
+      - git config user.name "Woodpecker CI"
+      - git config user.email "ci@walkerheavy.com"
+      - git remote set-url origin "https://x-access-token:$GITHUB_TOKEN@github.com/${CI_REPO}.git"
+      - cog bump --auto && git push --follow-tags || echo "No version bump needed"
+      - echo "Current version:" && cog get-version

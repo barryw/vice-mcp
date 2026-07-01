@@ -78,7 +78,7 @@ case "$ACTION" in
     package|package-gui)
         cd "$REPO_ROOT"
         git fetch --tags
-        VERSION=$(bash "$REPO_ROOT/scripts/compute-version.sh" --current)
+        VERSION=$(git -C "$REPO_ROOT" tag -l 'v[0-9]*' --sort=-v:refname | head -1)
         cd "$REPO_ROOT/vice/build-gui"
         make bindistzip
         ZIP_FILE=$(ls *.zip 2>/dev/null | head -1)
@@ -107,7 +107,7 @@ case "$ACTION" in
     package-headless)
         cd "$REPO_ROOT"
         git fetch --tags
-        VERSION=$(bash "$REPO_ROOT/scripts/compute-version.sh" --current)
+        VERSION=$(git -C "$REPO_ROOT" tag -l 'v[0-9]*' --sort=-v:refname | head -1)
         cd "$REPO_ROOT/vice/build-headless"
         # Note: VICE disables 'make install' for Windows targets (configure sets
         # MAKE_INSTALL=false). Use bindistzip which calls the headless bindist script.
@@ -127,7 +127,7 @@ case "$ACTION" in
     upload)
         cd "$REPO_ROOT"
         git fetch --tags
-        VERSION=$(bash scripts/compute-version.sh --current)
+        VERSION=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
         for artifact in "${VERSION}-windows-x86_64"-*.zip "${VERSION}-windows-x86_64"-*.sha256; do
             if [ -f "$artifact" ]; then
                 gh release upload "$VERSION" "$artifact" --repo "${CI_REPO}" --clobber
