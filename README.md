@@ -1,5 +1,7 @@
 # VICE MCP - AI Meets the Commodore 64
 
+_**VICE MCP** is a Walker Heavy Industries project._
+
 **An MCP server embedded directly inside VICE**, giving AI agents and modern tools
 full programmatic control over the world's most iconic 8-bit computer.
 
@@ -949,3 +951,11 @@ follow the same license.
   8-bit emulator ever written
 - [Anthropic](https://anthropic.com/) for the Model Context Protocol specification
 - The Commodore 64 community — still going strong after four decades
+
+## Part of the suite
+
+VICE MCP is part of the **Walker Heavy Industries** retro toolchain —
+modern tools for the retro 8- and 16-bit ecosystem.
+
+- **House hub:** https://whi.dev
+- **Siblings:** VICE Mac · VICE MCP · FamiForge · NESBasic · Novus · Miggy Draw · NovaVM
