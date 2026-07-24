@@ -543,7 +543,7 @@ static int parse_joystick_value(cJSON *params, unsigned int *port, uint16_t *val
         }
     }
 
-    *port = parsed_port;
+    *port = parsed_port - 1;
     *value = parsed_value;
     *error_msg = NULL;
     return 0;
@@ -573,7 +573,7 @@ cJSON* mcp_tool_joystick_set(cJSON *params)
     }
 
     cJSON_AddStringToObject(response, "status", "ok");
-    cJSON_AddNumberToObject(response, "port", port);
+    cJSON_AddNumberToObject(response, "port", port + 1);
     cJSON_AddNumberToObject(response, "value", value);
 
     return response;
@@ -628,7 +628,7 @@ cJSON* mcp_tool_joystick_tap(cJSON *params)
     }
 
     cJSON_AddStringToObject(response, "status", "ok");
-    cJSON_AddNumberToObject(response, "port", port);
+    cJSON_AddNumberToObject(response, "port", port + 1);
     cJSON_AddNumberToObject(response, "value", value);
     cJSON_AddNumberToObject(response, "duration_frames", duration_frames);
     if (duration_ms > 0) {
