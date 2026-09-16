@@ -40,6 +40,17 @@ static void mcp_keyboard_schedule_vsync_check(void);
 static int add_pending_vhk_key_release(signed long key_code, int modifiers, int frames);
 static int add_pending_joystick_center(unsigned int port, int frames);
 
+/* The tools take the control port as the user knows it, 1 or 2. VICE's
+ * joystick API takes a zero-based joyport index (JOYPORT_1 == 0), so the
+ * number has to be converted at the boundary. Passing it through unchanged
+ * drove control port 2 when port 1 was asked for, and nothing at all when
+ * port 2 was asked for; since most C64 games read port 2, that mostly hid
+ * behind "ask for port 1 and it works". */
+static unsigned int joyport_index(unsigned int port)
+{
+    return port - 1;
+}
+
 /* =============================================================================
  * Phase 3.1: Input Control
  * =============================================================================
@@ -565,7 +576,7 @@ cJSON* mcp_tool_joystick_set(cJSON *params)
     log_message(mcp_tools_log, "Setting joystick port %u to value 0x%04x", port, value);
 
     /* Set joystick state */
-    joystick_set_value_absolute(port, value);
+    joystick_set_value_absolute(joyport_index(port), value);
 
     response = cJSON_CreateObject();
     if (response == NULL) {
@@ -616,9 +627,9 @@ cJSON* mcp_tool_joystick_tap(cJSON *params)
         }
     }
 
-    joystick_set_value_absolute(port, value);
+    joystick_set_value_absolute(joyport_index(port), value);
     if (add_pending_joystick_center(port, duration_frames) < 0) {
-        joystick_set_value_absolute(port, 0);
+        joystick_set_value_absolute(joyport_index(port), 0);
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to schedule joystick auto-center");
     }
 
@@ -740,7 +751,7 @@ static void mcp_keyboard_vsync_callback(void *unused)
         if (pending_joystick_centers[i].active) {
             pending_joystick_centers[i].frames_remaining--;
             if (pending_joystick_centers[i].frames_remaining <= 0) {
-                joystick_set_value_absolute(pending_joystick_centers[i].port, 0);
+                joystick_set_value_absolute(joyport_index(pending_joystick_centers[i].port), 0);
                 log_message(mcp_tools_log, "Auto-centered joystick port %u",
                            pending_joystick_centers[i].port);
                 pending_joystick_centers[i].active = 0;
