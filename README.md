@@ -822,6 +822,9 @@ Add a memory watchpoint.
 | `address` | string | yes | Address to watch |
 | `size` | number | | Bytes to watch (default: 1) |
 | `type` | string | | `read`, `write`, or `both` (default: `write`) |
+| `load` | boolean | | Alternative to `type`: watch reads, as in `vice.checkpoint.add` |
+| `store` | boolean | | Alternative to `type`: watch writes, as in `vice.checkpoint.add` |
+| `stop` | boolean | | Stop on hit (default: true); `false` counts hits without stopping |
 | `condition` | string | | Condition, e.g. `A == $42` |
 
 #### `vice.backtrace`
