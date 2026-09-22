@@ -310,6 +310,7 @@ typedef struct mcp_trap_request_s {
     pthread_cond_t cond;
     int complete;
     int abandoned;  /* Set by HTTP thread on timeout; trap handler frees req */
+    int taken;      /* Set by the trap handler once it has committed to dispatching */
 } mcp_trap_request_t;
 
 /* Free a heap-allocated trap request */
@@ -348,6 +349,7 @@ static void mcp_trap_handler(uint16_t addr, void *data)
         mcp_trap_request_free(req);
         return;
     }
+    req->taken = 1;
     pthread_mutex_unlock(&req->mutex);
 
     /* Execute tool on main thread - thread safe! */
@@ -456,6 +458,7 @@ static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
         req->response = NULL;
         req->complete = 0;
         req->abandoned = 0;
+        req->taken = 0;
         pthread_mutex_init(&req->mutex, NULL);
         pthread_cond_init(&req->cond, NULL);
 
@@ -492,8 +495,51 @@ static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
 
         pthread_mutex_lock(&req->mutex);
         while (!req->complete) {
-            wait_result = pthread_cond_timedwait(&req->cond, &req->mutex, &timeout);
-            if (wait_result == ETIMEDOUT) {
+            struct timespec slice;
+            int stopped;
+
+            /* Wait in short slices. The machine can stop between the trap
+             * being queued and the trap running: a checkpoint hit, a
+             * completed step, vice.execution.pause from the previous call.
+             * It is then held in mcp_hold_paused(), which yields the
+             * mainlock but runs no traps, so the request would sit in the
+             * queue for the whole timeout and fail, although the tool could
+             * run right now under the mainlock, exactly as it would have had
+             * the stop come first. Notice the stop, and if the handler has
+             * not started, take the request back and dispatch directly; the
+             * trap frees the abandoned request when it eventually runs. */
+            clock_gettime(CLOCK_REALTIME, &slice);
+            slice.tv_nsec += 20L * 1000000L;
+            if (slice.tv_nsec >= 1000000000L) {
+                slice.tv_sec += 1;
+                slice.tv_nsec -= 1000000000L;
+            }
+            if (slice.tv_sec > timeout.tv_sec
+                || (slice.tv_sec == timeout.tv_sec && slice.tv_nsec > timeout.tv_nsec)) {
+                slice = timeout;
+            }
+            wait_result = pthread_cond_timedwait(&req->cond, &req->mutex, &slice);
+            if (req->complete) {
+                break;
+            }
+            stopped = ui_pause_active() || monitor_is_inside_monitor();
+            if (stopped && !req->taken) {
+                int in_monitor = monitor_is_inside_monitor();
+                req->abandoned = 1;
+                pthread_mutex_unlock(&req->mutex);
+                log_message(mcp_transport_log, "Emulator stopped before the trap ran - direct dispatch for: %s", tool_name);
+                if (!in_monitor) {
+                    mainlock_obtain();
+                }
+                response = mcp_tools_dispatch(tool_name, params);
+                if (!in_monitor) {
+                    mainlock_release();
+                }
+                pthread_mutex_unlock(&dispatch_mutex);
+                return response;
+            }
+            if (wait_result == ETIMEDOUT
+                && (slice.tv_sec == timeout.tv_sec && slice.tv_nsec == timeout.tv_nsec)) {
                 /* The trap may have completed in the instant between the
                  * deadline expiring and us re-acquiring the mutex. Then
                  * nobody owns the request any more: the handler has already
@@ -517,8 +563,10 @@ static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
                     pthread_mutex_unlock(&dispatch_mutex);
                     return error;
                 }
-            } else if (wait_result != 0) {
-                /* Unexpected error (EINVAL, etc.) - log and abandon */
+            } else if (wait_result != 0 && wait_result != ETIMEDOUT) {
+                /* Unexpected error (EINVAL, etc.) - log and abandon.
+                 * ETIMEDOUT on a slice short of the deadline is the normal
+                 * case: go round again. */
                 req->abandoned = 1;
                 pthread_mutex_unlock(&req->mutex);
                 log_error(mcp_transport_log, "pthread_cond_timedwait failed with error %d for: %s", wait_result, tool_name);
@@ -1191,6 +1239,7 @@ static mcp_trap_request_t *mcp_transport_test_request_new(const char *tool_name,
     req->response = NULL;
     req->complete = 0;
     req->abandoned = abandoned ? 1 : 0;
+    req->taken = 0;
     pthread_mutex_init(&req->mutex, NULL);
     pthread_cond_init(&req->cond, NULL);
 
