@@ -1073,6 +1073,11 @@ void ui_pause_disable(void)
     test_ui_pause_state = 0;
 }
 
+/* mcp_hold_paused() lives in monitor.c; in tests a hold returns at once */
+void mcp_hold_paused(void)
+{
+}
+
 /* Test helper to reset UI pause state */
 void test_ui_pause_reset(void)
 {
