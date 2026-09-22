@@ -1202,6 +1202,11 @@ void *lib_realloc(void *ptr, size_t size)
 }
 
 /* Mainlock stubs (needed by mcp_transport.o via force_load) */
+/* archdep_tick.h: the step tool waits for the hold with these; in tests a hold returns at once */
+typedef unsigned long tick_t;
+tick_t tick_per_second(void) { return 1000000; }
+void tick_sleep(tick_t delay) { (void)delay; }
+
 void mainlock_obtain(void)
 {
     /* No-op in test environment */

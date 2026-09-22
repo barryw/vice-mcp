@@ -31,6 +31,7 @@
 #include "monitor.h"  /* For mon_instructions_step/next, exit_mon, mcp_hold_paused */
 #include "interrupt.h"  /* For interrupt_maincpu_trigger_trap */
 #include "ui.h"       /* For ui_pause_enable/disable/active */
+#include "archdep_tick.h"  /* For tick_sleep/tick_per_second */
 
 /* mcp_step_active state is defined in monitor.c to avoid a circular link
  * dependency between libmonitor.a and libmcp.a (GNU ld limitation).
@@ -124,6 +125,9 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     cJSON *count_item, *step_over_item;
     int count = 1;
     bool step_over = false;
+    int was_held;
+    int completed = 0;
+    int waited;
 
     log_message(mcp_tools_log, "Handling vice.execution.step");
 
@@ -144,7 +148,7 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     }
 
     /* Set MCP step mode flag - this tells monitor_check_icount() to use
-     * ui_pause_enable() instead of monitor_startup() when stepping completes,
+     * mcp_hold_paused() instead of monitor_startup() when stepping completes,
      * preventing the monitor window from opening during MCP operations. */
     mcp_set_step_active(1);
 
@@ -157,6 +161,25 @@ cJSON* mcp_tool_execution_step(cJSON *params)
         mon_instructions_step(count);
     }
 
+    /* Those only arm the count. A machine stopped by a checkpoint hit, a
+     * completed step, vice.execution.pause or vice.frame.advance is held
+     * on the emulator thread in mcp_hold_paused(), and stays held until
+     * the pause flag drops: without this, the tool reports ok and nothing
+     * moves. Release the hold, give the mainlock up so the emulator thread
+     * can take it, and wait for the hold to take again, so the reply comes
+     * back after the step, with the registers exported and vice.registers.get
+     * truthful. A running machine is left alone: the count stops it. */
+    was_held = ui_pause_active();
+    if (was_held) {
+        ui_pause_disable();
+        mainlock_release();
+        for (waited = 0; waited < 10000 && !ui_pause_active(); waited++) {
+            tick_sleep(tick_per_second() / 5000);   /* 0.2 ms; a step is microseconds */
+        }
+        mainlock_obtain();
+        completed = ui_pause_active();
+    }
+
     response = cJSON_CreateObject();
     if (response == NULL) {
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
@@ -165,6 +188,10 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "instructions", count);
     cJSON_AddBoolToObject(response, "step_over", step_over);
+    if (was_held) {
+        cJSON_AddBoolToObject(response, "completed", completed);
+        cJSON_AddNumberToObject(response, "PC", maincpu_get_pc());
+    }
 
     return response;
 }
