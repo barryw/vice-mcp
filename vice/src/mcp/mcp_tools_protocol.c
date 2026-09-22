@@ -475,6 +475,11 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "stepOver", mcp_prop_boolean("Step over subroutines"));
             schema = mcp_schema_object(props, NULL);
 
+        } else if (strcmp(name, "vice.frame.advance") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "frames", mcp_prop_number("Frames to run before stopping again (default: 1, max: 1000)"));
+            schema = mcp_schema_object(props, NULL);
+
         } else if (strcmp(name, "vice.registers.get") == 0) {
             schema = mcp_schema_empty();
 

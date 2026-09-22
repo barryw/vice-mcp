@@ -303,7 +303,7 @@ TEST(initialize_with_unsupported_version_returns_error)
     /* Should be an error response */
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -516,7 +516,7 @@ TEST(keyboard_type_missing_text_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -535,7 +535,7 @@ TEST(keyboard_type_empty_text_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -551,7 +551,7 @@ TEST(keyboard_type_null_params_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(response);
 }
@@ -569,7 +569,7 @@ TEST(keyboard_type_non_string_text_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -586,7 +586,7 @@ TEST(keyboard_key_press_missing_key_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -602,7 +602,7 @@ TEST(keyboard_key_press_null_params_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(response);
 }
@@ -620,7 +620,7 @@ TEST(keyboard_key_press_invalid_key_name_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -639,7 +639,7 @@ TEST(keyboard_key_press_multi_char_key_name_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -658,7 +658,7 @@ TEST(keyboard_key_press_boolean_key_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -675,7 +675,7 @@ TEST(keyboard_key_release_missing_key_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -691,7 +691,7 @@ TEST(keyboard_key_release_null_params_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(response);
 }
@@ -724,7 +724,7 @@ TEST(joystick_set_port_zero_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -743,7 +743,7 @@ TEST(joystick_set_port_three_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -762,7 +762,7 @@ TEST(joystick_set_invalid_direction_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -1130,6 +1130,54 @@ TEST(execution_run_idempotent)
     ASSERT_INT_EQ(ui_pause_active(), 0);
 
     cJSON_Delete(response);
+}
+
+/* Test: frame.advance refuses to run on a machine that is not stopped */
+TEST(frame_advance_requires_stopped_machine)
+{
+    cJSON *response, *code_item;
+
+    test_ui_pause_reset();
+    response = mcp_tools_dispatch("vice.frame.advance", NULL);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, -32001);  /* MCP_ERROR_EMULATOR_RUNNING */
+
+    cJSON_Delete(response);
+}
+
+/* Test: frame.advance rejects a frame count outside 1..1000 */
+TEST(frame_advance_rejects_bad_frame_count)
+{
+    cJSON *params, *response, *code_item;
+
+    test_ui_pause_set(1);
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "frames", 0);
+    response = mcp_tools_dispatch("vice.frame.advance", params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "frames", 1001);
+    response = mcp_tools_dispatch("vice.frame.advance", params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_ui_pause_reset();
 }
 
 /* Test: full pause/run cycle works correctly */
@@ -1550,7 +1598,7 @@ TEST(tools_call_missing_name_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -1995,7 +2043,7 @@ TEST(symbols_load_missing_path_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -2014,7 +2062,7 @@ TEST(symbols_load_nonexistent_file_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -2171,7 +2219,7 @@ TEST(machine_reset_invalid_mode_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -2228,7 +2276,7 @@ TEST(run_until_requires_params)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(response);
 }
@@ -2346,7 +2394,7 @@ TEST(keyboard_matrix_requires_params)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -2414,7 +2462,7 @@ TEST(keyboard_matrix_hold_frames_invalid)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -2434,7 +2482,7 @@ TEST(keyboard_matrix_hold_ms_invalid)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -2560,7 +2608,7 @@ TEST(watch_add_with_invalid_condition)
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
     ASSERT_TRUE(cJSON_IsNumber(code_item));
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     /* Verify no checkpoint was created (the broken one should have been deleted) */
     /* Note: checkpoint_counter still incremented, but the checkpoint was deleted */
@@ -2788,7 +2836,7 @@ TEST(snapshot_save_rejects_existing_vsf)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
     ASSERT_TRUE(test_snapshot_get_last_saved()[0] == '\0');
 
     remove("/tmp/vice-test-config/mcp_snapshots/existing_snapshot.vsf");
@@ -2945,7 +2993,7 @@ TEST(memory_search_requires_start)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -2965,7 +3013,7 @@ TEST(memory_search_requires_end)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -2985,7 +3033,7 @@ TEST(memory_search_requires_pattern)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3190,7 +3238,7 @@ TEST(memory_search_invalid_range_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3211,7 +3259,7 @@ TEST(memory_search_empty_pattern_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3233,7 +3281,7 @@ TEST(memory_search_mask_length_mismatch_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3280,7 +3328,7 @@ TEST(cycles_stopwatch_requires_action)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3296,7 +3344,7 @@ TEST(cycles_stopwatch_null_params_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(response);
 }
@@ -3314,7 +3362,7 @@ TEST(cycles_stopwatch_invalid_action_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3466,7 +3514,7 @@ TEST(memory_fill_requires_start)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3486,7 +3534,7 @@ TEST(memory_fill_requires_end)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3506,7 +3554,7 @@ TEST(memory_fill_requires_pattern)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3522,7 +3570,7 @@ TEST(memory_fill_null_params_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(response);
 }
@@ -3736,7 +3784,7 @@ TEST(memory_fill_empty_pattern_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3757,7 +3805,7 @@ TEST(memory_fill_invalid_range_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3778,7 +3826,7 @@ TEST(memory_fill_invalid_byte_value_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3833,7 +3881,7 @@ TEST(memory_compare_ranges_requires_mode)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3854,7 +3902,7 @@ TEST(memory_compare_ranges_requires_range1_start)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3875,7 +3923,7 @@ TEST(memory_compare_ranges_requires_range1_end)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3896,7 +3944,7 @@ TEST(memory_compare_ranges_requires_range2_start)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3912,7 +3960,7 @@ TEST(memory_compare_ranges_null_params_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(response);
 }
@@ -3933,7 +3981,7 @@ TEST(memory_compare_invalid_mode_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -3955,7 +4003,7 @@ TEST(memory_compare_ranges_invalid_range1_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4243,7 +4291,7 @@ TEST(memory_compare_snapshot_requires_snapshot_name)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4265,7 +4313,7 @@ TEST(memory_compare_snapshot_requires_start)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4287,7 +4335,7 @@ TEST(memory_compare_snapshot_requires_end)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4309,7 +4357,7 @@ TEST(memory_compare_snapshot_validates_range_order)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4572,7 +4620,7 @@ TEST(checkpoint_group_create_requires_name)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4590,7 +4638,7 @@ TEST(checkpoint_group_create_null_params_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(response);
 }
@@ -4686,7 +4734,7 @@ TEST(checkpoint_group_create_duplicate_name_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4710,7 +4758,7 @@ TEST(checkpoint_group_add_requires_group)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4740,7 +4788,7 @@ TEST(checkpoint_group_add_requires_checkpoint_ids)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4808,7 +4856,7 @@ TEST(checkpoint_group_add_nonexistent_group_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4830,7 +4878,7 @@ TEST(checkpoint_group_toggle_requires_group)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4860,7 +4908,7 @@ TEST(checkpoint_group_toggle_requires_enabled)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -4927,7 +4975,7 @@ TEST(checkpoint_group_toggle_nonexistent_group_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(params);
     cJSON_Delete(response);
@@ -6576,7 +6624,7 @@ TEST(sprite_inspect_requires_sprite_number)
     ASSERT_NOT_NULL(response);
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
     cJSON_Delete(response);
 
     /* Empty params should return error */
@@ -6585,7 +6633,7 @@ TEST(sprite_inspect_requires_sprite_number)
     ASSERT_NOT_NULL(response);
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
     cJSON_Delete(response);
     cJSON_Delete(params);
 }
@@ -6602,7 +6650,7 @@ TEST(sprite_inspect_validates_sprite_number_range)
     ASSERT_NOT_NULL(response);
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
     cJSON_Delete(response);
     cJSON_Delete(params);
 
@@ -6613,7 +6661,7 @@ TEST(sprite_inspect_validates_sprite_number_range)
     ASSERT_NOT_NULL(response);
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
     cJSON_Delete(response);
     cJSON_Delete(params);
 }
@@ -6818,7 +6866,7 @@ TEST(sprite_inspect_invalid_format_returns_error)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
 
     cJSON_Delete(response);
     cJSON_Delete(params);
@@ -7288,7 +7336,7 @@ TEST(config_set_requires_resources)
     ASSERT_NOT_NULL(response);
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
     cJSON_Delete(response);
     test_setup_c64_defaults();
 }
@@ -7302,7 +7350,7 @@ TEST(config_set_rejects_empty_params)
     ASSERT_NOT_NULL(response);
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
     cJSON_Delete(params);
     cJSON_Delete(response);
     test_setup_c64_defaults();
@@ -7318,7 +7366,7 @@ TEST(config_set_rejects_non_object_resources)
     ASSERT_NOT_NULL(response);
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
     cJSON_Delete(params);
     cJSON_Delete(response);
     test_setup_c64_defaults();
@@ -7688,7 +7736,7 @@ TEST(memory_write_validates_payload_before_writing)
 
     code_item = cJSON_GetObjectItem(response, "code");
     ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
     ASSERT_INT_EQ(test_memory_get_byte(0x2000), 0xAA);
     ASSERT_INT_EQ(test_memory_get_byte(0x2001), 0x00);
 
@@ -8272,6 +8320,8 @@ int main(void)
     RUN_TEST(ping_reports_running_when_not_paused);
     RUN_TEST(execution_pause_idempotent);
     RUN_TEST(execution_run_idempotent);
+    RUN_TEST(frame_advance_requires_stopped_machine);
+    RUN_TEST(frame_advance_rejects_bad_frame_count);
     RUN_TEST(execution_pause_run_cycle);
     RUN_TEST(commands_work_while_paused);
     RUN_TEST(registers_readable_while_paused);

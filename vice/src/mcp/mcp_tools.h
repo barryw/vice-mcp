@@ -109,6 +109,7 @@ extern cJSON* mcp_tool_ping(cJSON *params);
 extern cJSON* mcp_tool_execution_run(cJSON *params);
 extern cJSON* mcp_tool_execution_pause(cJSON *params);
 extern cJSON* mcp_tool_execution_step(cJSON *params);
+extern cJSON* mcp_tool_frame_advance(cJSON *params);
 extern cJSON* mcp_tool_registers_get(cJSON *params);
 extern cJSON* mcp_tool_registers_set(cJSON *params);
 extern cJSON* mcp_tool_memory_read(cJSON *params);

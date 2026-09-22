@@ -30,6 +30,12 @@
 #include "mos6510.h"
 #include "monitor.h"  /* For mon_instructions_step/next, exit_mon, mcp_hold_paused */
 #include "interrupt.h"  /* For interrupt_maincpu_trigger_trap */
+#include "mainlock.h"   /* For mainlock_obtain/release */
+#include "vsync.h"      /* For vsync_on_vsync_do */
+
+#include <errno.h>
+#include <pthread.h>
+#include <time.h>
 #include "ui.h"       /* For ui_pause_enable/disable/active */
 
 /* mcp_step_active state is defined in monitor.c to avoid a circular link
@@ -165,6 +171,146 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "instructions", count);
     cJSON_AddBoolToObject(response, "step_over", step_over);
+
+    return response;
+}
+
+/* =========================================================================
+ * Frame Advance
+ * ========================================================================= */
+
+#define MCP_FRAME_ADVANCE_MAX 1000
+
+/* Shared between the tool (HTTP thread) and the callbacks (emulator
+ * thread). Tool dispatch is serialised, so there is one advance at a time. */
+static struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    int active;     /* the tool is waiting for a frame boundary */
+    int stopped;    /* the emulator thread has taken hold */
+} frame_advance = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0 };
+
+/* Trap: runs on the emulator thread at the first instruction boundary
+ * after the vsync, with the registers exported. Raise the pause flag so
+ * the transport switches to mainlock dispatch, wake the tool, hold. */
+static void mcp_frame_advance_trap(uint16_t addr, void *data)
+{
+    (void)addr;
+    (void)data;
+
+    pthread_mutex_lock(&frame_advance.mutex);
+    if (!frame_advance.active) {
+        /* The tool gave up waiting; do not stop a machine nobody asked to. */
+        pthread_mutex_unlock(&frame_advance.mutex);
+        return;
+    }
+    ui_pause_enable();
+    frame_advance.stopped = 1;
+    pthread_cond_signal(&frame_advance.cond);
+    pthread_mutex_unlock(&frame_advance.mutex);
+
+    mcp_hold_paused();
+}
+
+/* Vsync callback: the frame is over, stop at the next instruction. Not
+ * re-armed from here for a frame count: callbacks queued during a vsync
+ * run in that same vsync (execute_vsync_callbacks loops until the queue
+ * is empty), so counting frames is done in the tool, one wait per frame. */
+static void mcp_frame_advance_vsync(void *param)
+{
+    (void)param;
+    interrupt_maincpu_trigger_trap(mcp_frame_advance_trap, NULL);
+}
+
+/* Run to the next frame boundary and stop there. Called with the machine
+ * in UI pause and the mainlock held by this thread; gives the lock up
+ * while the frame runs. Returns 0 when the emulator thread is holding
+ * again, -1 if it did not get there within the timeout. */
+static int mcp_frame_advance_one(void)
+{
+    struct timespec deadline;
+    int rc = 0;
+    int stopped;
+
+    pthread_mutex_lock(&frame_advance.mutex);
+    frame_advance.active = 1;
+    frame_advance.stopped = 0;
+    pthread_mutex_unlock(&frame_advance.mutex);
+
+    vsync_on_vsync_do(mcp_frame_advance_vsync, NULL);
+    ui_pause_disable();
+
+    /* CLOCK_REALTIME: pthread_cond_timedwait takes an absolute deadline on
+     * that clock by default, as in mcp_transport.c. Two seconds is far
+     * beyond one frame at any speed short of a stopped machine. */
+    mainlock_release();
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += 2;
+    pthread_mutex_lock(&frame_advance.mutex);
+    while (!frame_advance.stopped && rc == 0) {
+        rc = pthread_cond_timedwait(&frame_advance.cond, &frame_advance.mutex, &deadline);
+    }
+    stopped = frame_advance.stopped;
+    frame_advance.active = 0;
+    pthread_mutex_unlock(&frame_advance.mutex);
+    mainlock_obtain();
+
+    return stopped ? 0 : -1;
+}
+
+cJSON* mcp_tool_frame_advance(cJSON *params)
+{
+    cJSON *response, *frames_item;
+    int frames = 1;
+    int done = 0;
+
+    log_message(mcp_tools_log, "Handling vice.frame.advance");
+
+    if (params != NULL) {
+        frames_item = cJSON_GetObjectItem(params, "frames");
+        if (frames_item != NULL) {
+            if (!cJSON_IsNumber(frames_item) || frames_item->valueint < 1
+                || frames_item->valueint > MCP_FRAME_ADVANCE_MAX) {
+                return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                                 "frames must be a number from 1 to 1000");
+            }
+            frames = frames_item->valueint;
+        }
+    }
+
+    if (!ui_pause_active()) {
+        return mcp_error(MCP_ERROR_EMULATOR_RUNNING,
+            "Emulator is not stopped. Stop it first with vice.execution.pause, "
+            "a stopping checkpoint or vice.execution.step");
+    }
+
+    while (done < frames) {
+        if (mcp_frame_advance_one() < 0) {
+            break;
+        }
+        done++;
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "frames", done);
+    cJSON_AddNumberToObject(response, "PC", maincpu_get_pc());
+    if (done == frames) {
+        cJSON_AddStringToObject(response, "message", "Stopped at the frame boundary");
+    } else if (ui_pause_active()) {
+        cJSON_AddBoolToObject(response, "stopped_early", true);
+        cJSON_AddStringToObject(response, "message",
+            "Something else stopped the machine before the frame boundary "
+            "(a checkpoint?); it is paused there");
+    } else {
+        cJSON_AddBoolToObject(response, "stopped_early", true);
+        cJSON_AddStringToObject(response, "message",
+            "The frame boundary was not reached within the timeout; the machine is running");
+    }
 
     return response;
 }

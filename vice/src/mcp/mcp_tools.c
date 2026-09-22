@@ -57,6 +57,7 @@ const mcp_tool_t tool_registry[] = {
     { "vice.execution.run", "Resume execution", mcp_tool_execution_run },
     { "vice.execution.pause", "Pause execution", mcp_tool_execution_pause },
     { "vice.execution.step", "Step one or more instructions", mcp_tool_execution_step },
+    { "vice.frame.advance", "Run N frames from a stopped machine and stop again", mcp_tool_frame_advance },
     { "vice.registers.get", "Get CPU registers", mcp_tool_registers_get },
     { "vice.registers.set", "Set CPU register value", mcp_tool_registers_set },
     { "vice.memory.read", "Read memory range (with optional bank selection)", mcp_tool_memory_read },
