@@ -459,9 +459,28 @@ static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
         pthread_mutex_init(&req->mutex, NULL);
         pthread_cond_init(&req->cond, NULL);
 
-        /* Queue trap to execute on main thread */
+        /* Queue trap to execute on main thread.
+         *
+         * interrupt_maincpu_trigger_trap() manipulates the CPU's trap queue
+         * (traps_count, traps_next and a lib_realloc'd function/data array)
+         * with no lock of its own. Every other caller in VICE runs on the
+         * emulator thread, so upstream never needed one - but we are the
+         * HTTP thread, and interrupt_do_trap() may be walking that very
+         * array right now. Racing it hands the dispatcher a stale function
+         * pointer or a stale data pointer, which then lands in
+         * mcp_trap_request_free() as a bogus lib_free(): heap abort, or a
+         * segfault inside mcp_trap_handler, or - once the free list is
+         * damaged - an abort in some later, innocent allocation.
+         *
+         * The mainlock is VICE's own answer to "another thread needs to
+         * touch emulator state": the emulator thread holds it while running
+         * and yields it periodically. Hold it just for the enqueue, and
+         * release it BEFORE waiting on the condition - otherwise the
+         * emulator cannot run the trap we are waiting for. */
         log_message(mcp_transport_log, "Queuing trap dispatch for: %s", tool_name);
+        mainlock_obtain();
         interrupt_maincpu_trigger_trap(mcp_trap_handler, req);
+        mainlock_release();
 
         /* Wait for trap to complete with timeout (5 seconds).
          * CLOCK_REALTIME is required here because pthread_cond_timedwait()
@@ -475,6 +494,14 @@ static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
         while (!req->complete) {
             wait_result = pthread_cond_timedwait(&req->cond, &req->mutex, &timeout);
             if (wait_result == ETIMEDOUT) {
+                /* The trap may have completed in the instant between the
+                 * deadline expiring and us re-acquiring the mutex. Then
+                 * nobody owns the request any more: the handler has already
+                 * returned without freeing (it saw abandoned == 0), and we
+                 * would walk away from it. Re-check before giving up. */
+                if (req->complete) {
+                    break;
+                }
                 /* Timeout - mark abandoned so trap handler frees req */
                 req->abandoned = 1;
                 pthread_mutex_unlock(&req->mutex);
