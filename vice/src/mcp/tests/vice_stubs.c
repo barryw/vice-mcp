@@ -231,6 +231,12 @@ void joystick_set_value_absolute(unsigned int joyport, uint16_t value)
     (void)value;
 }
 
+void joystick_set_value_absolute_now(unsigned int joyport, uint16_t value)
+{
+    (void)joyport;
+    (void)value;
+}
+
 /* Phase 2.4: Disk management stubs */
 int file_system_attach_disk(unsigned int unit, unsigned int drive, const char *filename)
 {
