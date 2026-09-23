@@ -2314,6 +2314,32 @@ TEST(run_until_with_symbol)
     remove(test_file);
 }
 
+/* Test: run_until resumes a machine that is in UI pause */
+TEST(run_until_resumes_paused_machine)
+{
+    cJSON *params, *response, *status_item;
+
+    test_checkpoint_reset();
+    test_ui_pause_set(1);
+    ASSERT_INT_EQ(ui_pause_active(), 1);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "address", "$1000");
+    response = mcp_tools_dispatch("vice.run_until", params);
+    ASSERT_NOT_NULL(response);
+
+    status_item = cJSON_GetObjectItem(response, "status");
+    ASSERT_NOT_NULL(status_item);
+    ASSERT_STR_EQ(status_item->valuestring, "ok");
+
+    /* The pause must be released, or the target is never reached */
+    ASSERT_INT_EQ(ui_pause_active(), 0);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
 /* Test: keyboard_matrix with key name */
 TEST(keyboard_matrix_with_key_name)
 {
@@ -8406,6 +8432,7 @@ int main(void)
     RUN_TEST(run_until_requires_params);
     RUN_TEST(run_until_with_address);
     RUN_TEST(run_until_with_symbol);
+    RUN_TEST(run_until_resumes_paused_machine);
     RUN_TEST(keyboard_matrix_with_key_name);
     RUN_TEST(keyboard_matrix_with_row_col);
     RUN_TEST(keyboard_matrix_requires_params);

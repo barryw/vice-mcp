@@ -29,6 +29,7 @@
 #include "maincpu.h"
 #include "mem.h"
 #include "monitor.h"
+#include "ui.h"       /* For ui_pause_active/disable */
 #include "monitor/mon_breakpoint.h"
 #include "monitor/mon_disassemble.h"
 
@@ -822,6 +823,12 @@ cJSON* mcp_tool_run_until(cJSON *params)
      * A proper implementation would need to hook into VICE's cycle counter. */
 
     /* Resume execution */
+    /* A machine stopped by vice.execution.pause, a completed step or a
+     * checkpoint hit is in UI pause, not in the monitor. Clearing exit_mon
+     * alone leaves it stopped, and the temporary breakpoint never fires. */
+    if (ui_pause_active()) {
+        ui_pause_disable();
+    }
     exit_mon = exit_mon_continue;
 
     response = cJSON_CreateObject();
