@@ -64,7 +64,7 @@ and consistent parameter naming.
 | **Disk** | `vice.disk.attach` `vice.disk.detach` `vice.disk.list` `vice.disk.read_sector` | Mount D64/D71/D81 images, browse directories, read raw sectors |
 | **Machine** | `vice.machine.reset` `vice.machine.config.get` `vice.machine.config.set` `vice.autostart` | Hard/soft reset, resource control (warp, speed, model), program loading |
 | **Display** | `vice.display.screenshot` `vice.display.get_dimensions` | Screen capture to file or base64, display geometry |
-| **Input** | `vice.keyboard.type` `vice.keyboard.key_press` `vice.keyboard.key_release` `vice.keyboard.restore` `vice.keyboard.matrix` `vice.joystick.set` | Keyboard and joystick — text typing, individual keys, direct matrix, RESTORE/NMI |
+| **Input** | `vice.keyboard.type` `vice.keyboard.key_press` `vice.keyboard.key_release` `vice.keyboard.restore` `vice.keyboard.matrix` `vice.joystick.set` `vice.joystick.tap` | Keyboard and joystick — text typing, individual keys, direct matrix, RESTORE/NMI |
 | **Debug** | `vice.disassemble` `vice.symbols.load` `vice.symbols.lookup` `vice.watch.add` `vice.backtrace` `vice.cycles.stopwatch` | Disassembly, symbol files, call stack, cycle-accurate timing |
 | **Snapshots** | `vice.snapshot.save` `vice.snapshot.load` `vice.snapshot.list` | Full emulator state save/restore with JSON metadata |
 | **Tracing** | `vice.trace.start` `vice.trace.stop` `vice.interrupt.log.start` `vice.interrupt.log.stop` `vice.interrupt.log.read` | Execution recording with PC filtering, IRQ/NMI/BRK event capture |
@@ -788,6 +788,16 @@ Set joystick state.
 | `port` | number | | Port 1 or 2 (default: 1) |
 | `direction` | string | | `up`, `down`, `left`, `right`, `center` |
 | `fire` | boolean | | Fire button (default: false) |
+
+#### `vice.joystick.tap`
+Tap joystick.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `port` | number | | Port 1 or 2 (default: 1) |
+| `direction` | string | | `up`, `down`, `left`, `right`, `center` |
+| `fire` | boolean | | Fire button (default: false) |
+| `duration_frames` | number | | Tap duration in frames (default: 3) |
+| `duration_ms` | number | | Tap duration in ms (default: 0) |
 
 ---
 
