@@ -696,11 +696,20 @@ void alarm_log_too_many_alarms(void)
 /* D3: Trap-based dispatch stubs */
 #include <stdbool.h>
 
+/* The unit tests call mcp_tools_dispatch() directly, so nothing here
+ * depends on the transport's monitor check; default to "not inside the
+ * monitor", which is what a running machine reports. Tests that need the
+ * monitor open switch it. */
+static int test_inside_monitor = 0;
+
+void test_monitor_inside_set(int inside)
+{
+    test_inside_monitor = inside;
+}
+
 bool monitor_is_inside_monitor(void)
 {
-    /* For tests, always return true so direct dispatch is used
-     * (trap-based dispatch requires a running emulator main loop) */
-    return true;
+    return test_inside_monitor ? true : false;
 }
 
 void interrupt_maincpu_trigger_trap(void (*trap_func)(uint16_t, void *data), void *data)

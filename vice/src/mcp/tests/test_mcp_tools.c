@@ -81,6 +81,11 @@ extern void test_stopwatch_reset(void);
 extern void test_stopwatch_set_cycles(unsigned long cycles);
 extern unsigned long test_stopwatch_get_cycles(void);
 
+/* Test UI pause helpers from vice_stubs.c */
+extern void test_ui_pause_reset(void);
+extern void test_ui_pause_set(int paused);
+extern void test_monitor_inside_set(int inside);
+
 /* Test memory helpers from vice_stubs.c */
 extern void test_memory_set(uint16_t addr, const uint8_t *data, size_t len);
 extern void test_memory_set_byte(uint16_t addr, uint8_t value);
@@ -227,6 +232,24 @@ TEST(ping_tool_returns_valid_response)
     ASSERT_NOT_NULL(status_item);
     ASSERT_TRUE(cJSON_IsString(status_item));
     ASSERT_STR_EQ(status_item->valuestring, "ok");
+
+    cJSON_Delete(response);
+}
+
+/* Test: ping reports "running" when nothing has stopped the machine,
+ * including right after boot, before the monitor has ever run */
+TEST(ping_reports_running_when_not_stopped)
+{
+    cJSON *response, *exec_item;
+
+    test_ui_pause_reset();
+    test_monitor_inside_set(0);
+    response = mcp_tool_ping(NULL);
+    ASSERT_NOT_NULL(response);
+
+    exec_item = cJSON_GetObjectItem(response, "execution");
+    ASSERT_NOT_NULL(exec_item);
+    ASSERT_STR_EQ(exec_item->valuestring, "running");
 
     cJSON_Delete(response);
 }
@@ -8210,6 +8233,7 @@ int main(void)
 
     /* Core functionality tests */
     RUN_TEST(ping_tool_returns_valid_response);
+    RUN_TEST(ping_reports_running_when_not_stopped);
     RUN_TEST(invalid_tool_name_returns_error);
     RUN_TEST(null_tool_name_returns_error);
     RUN_TEST(empty_tool_name_returns_error);

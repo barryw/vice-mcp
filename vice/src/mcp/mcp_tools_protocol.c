@@ -27,7 +27,7 @@
 #include "mcp_tools_internal.h"
 
 #include "machine.h"
-#include "monitor.h"  /* For exit_mon */
+#include "monitor.h"  /* For monitor_is_inside_monitor */
 #include "ui.h"       /* For ui_pause_active */
 #include "version.h"
 
@@ -74,22 +74,14 @@ cJSON* mcp_tool_ping(cJSON *params)
     /* Report execution state based on UI pause state AND monitor state.
      * The emulator can be paused in two ways:
      * 1. UI pause - controlled by ui_pause_enable/disable
-     * 2. Monitor mode - controlled by exit_mon variable
-     * We report "paused" if either is active. */
-    if (ui_pause_active()) {
+     * 2. Monitor mode - the emulator thread is inside monitor_startup()
+     * We report "paused" if either is active. exit_mon is not a state:
+     * it is 0 (exit_mon_no) from boot until the monitor has run once, so
+     * reading it here reported "paused" for a machine that was running. */
+    if (ui_pause_active() || monitor_is_inside_monitor()) {
         exec_state = "paused";
     } else {
-        switch (exit_mon) {
-            case 0:  /* exit_mon_no - in monitor */
-                exec_state = "paused";
-                break;
-            case 1:  /* exit_mon_continue - running */
-                exec_state = "running";
-                break;
-            default:
-                exec_state = "transitioning";
-                break;
-        }
+        exec_state = "running";
     }
     cJSON_AddStringToObject(response, "execution", exec_state);
 
