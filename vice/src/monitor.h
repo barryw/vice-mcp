@@ -269,6 +269,10 @@ void monitor_memmap_store(unsigned int addr, unsigned int type);
 int mcp_is_step_active(void);
 void mcp_clear_step_active(void);
 void mcp_set_step_active(int active);
+
+/* Hold the emulator thread where it is until an MCP client resumes it
+ * with ui_pause_disable(). Must be called on the emulator thread. */
+void mcp_hold_paused(void);
 #endif
 
 /* HACK to enable fetch/load separation */
