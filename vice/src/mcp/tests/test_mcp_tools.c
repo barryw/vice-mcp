@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/stat.h>
 
 #include "cJSON.h"
