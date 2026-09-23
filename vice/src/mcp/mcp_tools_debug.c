@@ -502,9 +502,11 @@ cJSON* mcp_tool_symbols_lookup(cJSON *params)
 cJSON* mcp_tool_watch_add(cJSON *params)
 {
     cJSON *response, *addr_item, *type_item, *size_item, *condition_item;
+    cJSON *stop_item, *load_item, *store_item;
     uint16_t address;
     uint16_t end_address;
     int size = 1;
+    bool stop = true;
     MEMORY_OP op = 0;
     const char *watch_type = "write";
     const char *condition_str = NULL;
@@ -542,10 +544,35 @@ cJSON* mcp_tool_watch_add(cJSON *params)
     }
     end_address = address + size - 1;
 
-    /* Get type (optional: "read", "write", or "both", default "write") */
+    /* Get type (optional: "read", "write", or "both", default "write").
+     * The load/store booleans of vice.checkpoint.add are accepted as an
+     * alternative spelling: a client that sent {"load": true} used to get
+     * a write watchpoint and no error, which reads as "never read". */
     type_item = cJSON_GetObjectItem(params, "type");
+    load_item = cJSON_GetObjectItem(params, "load");
+    store_item = cJSON_GetObjectItem(params, "store");
     if (type_item != NULL && cJSON_IsString(type_item)) {
         watch_type = type_item->valuestring;
+    } else if ((load_item != NULL && cJSON_IsBool(load_item)) ||
+               (store_item != NULL && cJSON_IsBool(store_item))) {
+        bool want_load = load_item != NULL && cJSON_IsTrue(load_item);
+        bool want_store = store_item != NULL && cJSON_IsTrue(store_item);
+        if (want_load && want_store) {
+            watch_type = "both";
+        } else if (want_load) {
+            watch_type = "read";
+        } else if (want_store) {
+            watch_type = "write";
+        } else {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "At least one of load or store must be true");
+        }
+    }
+
+    /* Get stop (optional, default true). stop=false counts hits without
+     * stopping, which is what a measurement wants. */
+    stop_item = cJSON_GetObjectItem(params, "stop");
+    if (stop_item != NULL && cJSON_IsBool(stop_item)) {
+        stop = cJSON_IsTrue(stop_item);
     }
 
     if (strcmp(watch_type, "read") == 0) {
@@ -568,7 +595,7 @@ cJSON* mcp_tool_watch_add(cJSON *params)
     checkpoint_num = mon_breakpoint_add_checkpoint(
         (MON_ADDR)address,
         (MON_ADDR)end_address,
-        true,   /* stop */
+        stop,
         op,
         false,  /* is_temp */
         true    /* do_print */
@@ -609,6 +636,7 @@ cJSON* mcp_tool_watch_add(cJSON *params)
     cJSON_AddNumberToObject(response, "address", address);
     cJSON_AddNumberToObject(response, "size", size);
     cJSON_AddStringToObject(response, "type", watch_type);
+    cJSON_AddBoolToObject(response, "stop", stop);
 
     /* Include condition in response if one was provided */
     if (condition_str != NULL) {

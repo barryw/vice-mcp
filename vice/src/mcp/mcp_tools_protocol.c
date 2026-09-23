@@ -646,6 +646,9 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "address", mcp_prop_string("Address: number, hex string ($1000), or symbol name"));
             cJSON_AddItemToObject(props, "size", mcp_prop_number("Number of bytes to watch (default: 1)"));
             cJSON_AddItemToObject(props, "type", mcp_prop_string("Watch type: 'read', 'write', or 'both' (default: 'write')"));
+            cJSON_AddItemToObject(props, "load", mcp_prop_boolean("Alternative to type: watch reads (as in vice.checkpoint.add)"));
+            cJSON_AddItemToObject(props, "store", mcp_prop_boolean("Alternative to type: watch writes (as in vice.checkpoint.add)"));
+            cJSON_AddItemToObject(props, "stop", mcp_prop_boolean("Stop on hit (default: true); false counts hits without stopping"));
             cJSON_AddItemToObject(props, "condition", mcp_prop_string(
                 "Condition expression for conditional watchpoint. "
                 "Supported: 'A == $xx', 'X == $xx', 'Y == $xx', 'PC == $xxxx', 'SP == $xx'. "

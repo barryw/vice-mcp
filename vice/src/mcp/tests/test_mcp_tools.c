@@ -96,6 +96,8 @@ extern uint8_t test_memory_get_byte(uint16_t addr);
 extern void test_checkpoint_reset(void);
 extern int test_checkpoint_get_last_num(void);
 extern int test_checkpoint_has_condition(void);
+extern int test_checkpoint_last_stop(void);
+extern int test_checkpoint_last_ops(void);
 
 /* Checkpoint group tool declarations */
 extern cJSON* mcp_tool_checkpoint_group_create(cJSON *params);
@@ -7961,6 +7963,51 @@ TEST(watch_add_rejects_overflow_range)
     cJSON_Delete(response);
 }
 
+/* Test: watch.add with load:true makes a read watchpoint, as checkpoint.add would */
+TEST(watch_add_load_flag_makes_read_watch)
+{
+    cJSON *params, *response, *type_item;
+
+    test_checkpoint_reset();
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "address", "$1000");
+    cJSON_AddBoolToObject(params, "load", true);
+    response = mcp_tools_dispatch("vice.watch.add", params);
+    ASSERT_NOT_NULL(response);
+
+    type_item = cJSON_GetObjectItem(response, "type");
+    ASSERT_NOT_NULL(type_item);
+    ASSERT_STR_EQ(type_item->valuestring, "read");
+    ASSERT_INT_EQ(test_checkpoint_last_ops(), 1);   /* load only */
+    ASSERT_INT_EQ(test_checkpoint_last_stop(), 1);  /* default still stops */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* Test: watch.add with stop:false creates a counting watchpoint */
+TEST(watch_add_stop_false_counts_without_stopping)
+{
+    cJSON *params, *response, *stop_item;
+
+    test_checkpoint_reset();
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "address", "$1000");
+    cJSON_AddStringToObject(params, "type", "both");
+    cJSON_AddBoolToObject(params, "stop", false);
+    response = mcp_tools_dispatch("vice.watch.add", params);
+    ASSERT_NOT_NULL(response);
+
+    stop_item = cJSON_GetObjectItem(response, "stop");
+    ASSERT_NOT_NULL(stop_item);
+    ASSERT_TRUE(cJSON_IsFalse(stop_item));
+    ASSERT_INT_EQ(test_checkpoint_last_stop(), 0);
+    ASSERT_INT_EQ(test_checkpoint_last_ops(), 3);   /* load and store */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 /* --- run_until Cycles-Only Error Test --- */
 
 TEST(run_until_cycles_only_returns_not_implemented)
@@ -8605,6 +8652,8 @@ int main(void)
     RUN_TEST(sid_get_state_reads_voices);
     RUN_TEST(cia_get_state_reads_registers);
     RUN_TEST(watch_add_rejects_overflow_range);
+    RUN_TEST(watch_add_load_flag_makes_read_watch);
+    RUN_TEST(watch_add_stop_false_counts_without_stopping);
     RUN_TEST(run_until_cycles_only_returns_not_implemented);
     RUN_TEST(snapshot_save_returns_error_not_null_on_oom);
     RUN_TEST(snapshot_load_rejects_special_chars_in_name);

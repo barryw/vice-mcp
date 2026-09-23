@@ -434,6 +434,25 @@ int test_checkpoint_get_last_num(void)
 }
 
 /* Check if last checkpoint has a condition set */
+/* Flags of the most recently added checkpoint */
+int test_checkpoint_last_stop(void)
+{
+    int idx = test_checkpoint_last_num - 1;
+    return (idx >= 0 && idx < MAX_TEST_CHECKPOINTS) ? test_checkpoints[idx].stop : -1;
+}
+
+/* Operation bits of the most recently added checkpoint: 1 load, 2 store, 4 exec */
+int test_checkpoint_last_ops(void)
+{
+    int idx = test_checkpoint_last_num - 1;
+    if (idx < 0 || idx >= MAX_TEST_CHECKPOINTS) {
+        return -1;
+    }
+    return (test_checkpoints[idx].check_load ? 1 : 0)
+         | (test_checkpoints[idx].check_store ? 2 : 0)
+         | (test_checkpoints[idx].check_exec ? 4 : 0);
+}
+
 int test_checkpoint_has_condition(void)
 {
     return test_checkpoint_last_has_condition;
