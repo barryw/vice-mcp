@@ -417,7 +417,7 @@ is structured to export cleanly as unified diffs for SVN submission.
 ## Tool Reference
 
 <details>
-<summary><strong>Click to expand full reference for all 64 tools</strong></summary>
+<summary><strong>Click to expand full reference for all 60 tools</strong></summary>
 
 ### Execution Control
 
