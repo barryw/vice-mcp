@@ -83,8 +83,9 @@ constexpr Spline::Point opamp_voltage[OPAMP_SIZE] =
   { 10.31,  0.81 },  // Approximate end of actual range
 };
 
-constexpr double CAPS_OLD = 2200e-12; // ASSY 326298 uses 2200pF caps
-constexpr double CAPS_NEW =  470e-12; // Standard 470pF caps used on other ASSY
+constexpr double CAPS_OLD    = 2200e-12; // ASSY 326298 uses 2200pF caps
+constexpr double CAPS_NEW    =  470e-12; // Standard 470pF caps used on other ASSY
+constexpr double CAPS_GALWAY =  330e-12; // Non-standard 330pF caps
 
 std::unique_ptr<FilterModelConfig6581> FilterModelConfig6581::instance(nullptr);
 
@@ -117,12 +118,12 @@ void FilterModelConfig6581::setFilterRange(double adjustment)
     updateParams();
 }
 
-void FilterModelConfig6581::enableOldCaps(bool enable)
+void FilterModelConfig6581::setCaps(CapsType type)
 {
-    if (m_oldCaps == enable)
+    if (m_capsType == type)
         return;
 
-    m_oldCaps = enable;
+    m_capsType = type;
     updateParams();
 }
 
@@ -131,11 +132,23 @@ void FilterModelConfig6581::updateParams()
     calcCurrFactorCoeff();
     vcr_mult = uCox;
 
-    if (m_oldCaps)
+    switch (m_capsType)
     {
+    case CAPS2200: {
         constexpr double caps_mult = CAPS_NEW/CAPS_OLD;
         currFactorCoeff *= caps_mult;
         vcr_mult *= caps_mult;
+        break;
+    }
+    case CAPS470:
+        // keep parameters unchanged
+        break;
+    case CAPS330: {
+        constexpr double caps_mult = CAPS_NEW/CAPS_GALWAY;
+        currFactorCoeff *= caps_mult;
+        vcr_mult *= caps_mult;
+        break;
+    }
     }
 }
 
@@ -154,7 +167,7 @@ FilterModelConfig6581::FilterModelConfig6581() :
     dac_zero(7.15),
     dac_scale(2.63),
     dac(DAC_BITS),
-    m_oldCaps(false)
+    m_capsType(CAPS470)
 {
     updateParams();
 
@@ -198,7 +211,7 @@ FilterModelConfig6581::FilterModelConfig6581() :
             vmin,
             vmax);
 
-        buildMixerTable(opampModel, 8.0 / 6.0);
+        buildMixerTable(opampModel, 8.0 / (6.0 * VF_TR_RATIO));
     };
 
     auto filterGain = [this]
@@ -242,7 +255,7 @@ FilterModelConfig6581::FilterModelConfig6581() :
         {
             // The table index is right-shifted 16 times in order to fit in
             // 16 bits; the argument to sqrt is thus multiplied by (1 << 16).
-            vcr_nVg[i] = to_ushort(nVddt - std::sqrt(static_cast<double>(i << 16)));
+            vcr_nVg[i] = to_uint16(nVddt - std::sqrt(static_cast<double>(i << 16)));
         }
     };
 
@@ -298,11 +311,11 @@ FilterModelConfig6581::FilterModelConfig6581() :
 #endif
 }
 
-unsigned short* FilterModelConfig6581::getDAC(double adjustment) const
+uint16_t* FilterModelConfig6581::getDAC(double adjustment) const
 {
     const double new_dac_zero = getDacZero(adjustment);
 
-    unsigned short* f0_dac = new unsigned short[1 << DAC_BITS];
+    uint16_t* f0_dac = new uint16_t[1 << DAC_BITS];
 
     for (unsigned int i = 0; i < (1 << DAC_BITS); i++)
     {

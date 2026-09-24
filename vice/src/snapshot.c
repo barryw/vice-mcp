@@ -271,7 +271,7 @@ static int snapshot_read_dword(FILE *f, uint32_t *dw_return)
         return -1;
     }
 
-    *dw_return = lo | (hi << 16);
+    *dw_return = lo | ((uint32_t)hi << 16);
     return 0;
 }
 
@@ -861,6 +861,42 @@ fail:
     fclose(f);
     archdep_remove(filename);
     return NULL;
+}
+
+int snapshot_probe(const char *filename)
+{
+    char magic[SNAPSHOT_MAGIC_LEN];
+    uint8_t minor_version_return;
+    uint8_t major_version_return;
+    int res = 0;
+    FILE *f;
+
+    f = zfile_fopen(filename, MODE_READ);
+    if (f == NULL) {
+        return 0;
+    }
+
+    /* Magic string.  */
+    if (snapshot_read_byte_array(f, (uint8_t *)magic, SNAPSHOT_MAGIC_LEN) < 0
+        || memcmp(magic, snapshot_magic_string, SNAPSHOT_MAGIC_LEN) != 0) {
+        goto fail;
+    }
+
+    /* Version number.  */
+    if (snapshot_read_byte(f, &major_version_return) < 0
+        || snapshot_read_byte(f, &minor_version_return) < 0) {
+        goto fail;
+    }
+
+    /* Machine.  */
+    if (snapshot_read_byte_array(f, (uint8_t *)read_name, SNAPSHOT_MACHINE_NAME_LEN) < 0) {
+        goto fail;
+    }
+
+    res = 1;
+fail:
+    fclose(f);
+    return res;
 }
 
 /* informal only, used by the error message created below */

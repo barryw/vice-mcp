@@ -52,6 +52,7 @@ typedef struct ci_state_s {
     GtkWidget  *flush;          /**< GtkButton to flush the image */
     GtkWidget  *save;           /**< GtkButton to save the image */
     GtkWidget  *checks_grid;    /**< GtkGrid for the optional check buttons */
+    GtkWidget  *filename_check; /**< check button requiring an image filename */
     int         checks_count;   /**< number of check buttons in \a checks_grid */
     int         cart_id;        /**< cartridge ID according to cartridge.h */
     char       *cart_name;      /**< cartridge name according to cartridge.h */
@@ -64,6 +65,7 @@ typedef struct ci_state_s {
 static GtkWidget *open_dialog_new(ci_state_t *state);
 static GtkWidget *save_dialog_new(ci_state_t *state);
 static gboolean   update_resource(ci_state_t *state, const char *filename);
+static void       update_filename_check_sensitivity(const ci_state_t *state);
 
 /** \brief  Default image tags
  *
@@ -144,6 +146,10 @@ static void on_save_response(GtkDialog *self, gint response, gpointer data)
             case CART_IMAGE_SECONDARY:
                 result = cartridge_save_secondary_image(state->cart_id, filename);
                 break;
+            case CART_IMAGE_TERTIARY:
+                result = cartridge_save_tertiary_image(state->cart_id, filename);
+                break;
+
             default:
                 log_error(LOG_DEFAULT,
                           "%s(): saving of %s cartridge image is not implemented.",
@@ -184,9 +190,21 @@ static void on_save_response(GtkDialog *self, gint response, gpointer data)
 static void on_save_clicked(GtkButton *self, gpointer data)
 {
     GtkWidget *dialog;
+    ci_state_t *state = data;
+    const char *path;
 
-    dialog = save_dialog_new(data);
+    dialog = save_dialog_new(state);
     lastdir_set(dialog, &last_dir, &last_file);
+    path = mediator_get_resource_string(state->mediator);
+    if (path != NULL && *path != '\0') {
+        char *dirname = g_path_get_dirname(path);
+        char *basename = g_path_get_basename(path);
+
+        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(dialog), dirname);
+        gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dialog), basename);
+        g_free(dirname);
+        g_free(basename);
+    }
     gtk_widget_show(dialog);
 }
 
@@ -207,6 +225,10 @@ static void on_flush_clicked(GtkButton *self, gpointer data)
         case CART_IMAGE_SECONDARY:
             result = cartridge_flush_secondary_image(state->cart_id);
             break;
+        case CART_IMAGE_TERTIARY:
+            result = cartridge_flush_tertiary_image(state->cart_id);
+            break;
+
         default:
             log_error(LOG_DEFAULT,
                       "%s(): flushing of %s cartridge image is not implemented.",
@@ -333,6 +355,7 @@ static ci_state_t *ci_state_new(int         cart_id,
     state->flush        = NULL;
     state->save         = NULL;
     state->checks_grid  = NULL;
+    state->filename_check = NULL;
     state->checks_count = 0;
     state->cart_id      = cart_id;
     state->cart_name    = g_strdup(cart_name);
@@ -394,8 +417,13 @@ static void update_buttons_sensitivity(const ci_state_t *state)
             can_save  = (gboolean)cartridge_can_save_secondary_image(state->cart_id);
             can_flush = (gboolean)cartridge_can_flush_secondary_image(state->cart_id);
             break;
+        case CART_IMAGE_TERTIARY:
+            can_save  = (gboolean)cartridge_can_save_tertiary_image(state->cart_id);
+            can_flush = (gboolean)cartridge_can_flush_tertiary_image(state->cart_id);
+            break;
+
         default:
-            /* no support for tertiary/quaternary images yet */
+            /* no support for quaternary images yet */
             can_save  = FALSE;
             can_flush = FALSE;
     }
@@ -408,6 +436,22 @@ static void update_buttons_sensitivity(const ci_state_t *state)
     }
     if (state->save != NULL) {
         gtk_widget_set_sensitive(state->save, can_save);
+    }
+}
+
+
+/** \brief  Update sensitivity of a check button requiring an image filename */
+static void update_filename_check_sensitivity(const ci_state_t *state)
+{
+    if (state->filename_check != NULL) {
+        const char *path = mediator_get_resource_string(state->mediator);
+        gboolean has_filename = path != NULL && *path != '\0';
+
+        if (!has_filename) {
+            gtk_toggle_button_set_active(
+                GTK_TOGGLE_BUTTON(state->filename_check), FALSE);
+        }
+        gtk_widget_set_sensitive(state->filename_check, has_filename);
     }
 }
 
@@ -445,6 +489,7 @@ static gboolean update_resource(ci_state_t *state, const char *filename)
                                 filename, state->image_tag);
     }
     update_buttons_sensitivity(state);
+    update_filename_check_sensitivity(state);
     return result;
 }
 
@@ -734,6 +779,47 @@ GtkWidget *cart_image_widget_append_check(GtkWidget  *widget,
         return check;
     }
     return NULL;
+}
+
+
+/** \brief  Append a check button that requires an image filename
+ *
+ * The check button is disabled while the image filename resource is empty.
+ */
+GtkWidget *cart_image_widget_append_filename_check(GtkWidget *widget,
+                                                   const char *resource,
+                                                   const char *text)
+{
+    GtkWidget *check = cart_image_widget_append_check(widget, resource, text);
+    mediator_t *mediator = mediator_for_widget(widget);
+
+    if (check != NULL && mediator != NULL) {
+        ci_state_t *state = mediator_get_data(mediator);
+
+        state->filename_check = check;
+        update_filename_check_sensitivity(state);
+    }
+    return check;
+}
+
+
+/** \brief  Change the label of the save-image button
+ *
+ * \param[in]   widget  cartridge image widget
+ * \param[in]   text    new button label
+ */
+void cart_image_widget_set_save_button_label(GtkWidget *widget,
+                                             const char *text)
+{
+    mediator_t *mediator = mediator_for_widget(widget);
+
+    if (mediator != NULL) {
+        ci_state_t *state = mediator_get_data(mediator);
+
+        if (state->save != NULL) {
+            gtk_button_set_label(GTK_BUTTON(state->save), text);
+        }
+    }
 }
 
 

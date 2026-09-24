@@ -46,7 +46,7 @@ without leaving your editor:
 - Capture screen states for documentation
 - Replay and analyze historical software
 
-## 63 Tools Across 14 Categories
+## 60 Tools Across 13 Categories
 
 Every tool follows MCP conventions with full JSON Schema validation, meaningful errors,
 and consistent parameter naming.
@@ -56,7 +56,7 @@ and consistent parameter naming.
 | **Execution** | `vice.execution.run` `vice.execution.pause` `vice.execution.step` `vice.run_until` | Control the CPU — resume, halt, single-step, run to address or cycle count |
 | **Registers** | `vice.registers.get` `vice.registers.set` | Read/write all 6502 registers (A, X, Y, SP, PC, status flags) |
 | **Memory** | `vice.memory.read` `vice.memory.write` `vice.memory.banks` `vice.memory.search` `vice.memory.fill` `vice.memory.compare` | Full memory access with bank selection, pattern search with wildcards |
-| **Checkpoints** | `vice.checkpoint.add` `vice.checkpoint.delete` `vice.checkpoint.list` `vice.checkpoint.toggle` `vice.checkpoint.set_condition` `vice.checkpoint.set_ignore_count` `vice.checkpoint.group.*` `vice.checkpoint.set_auto_snapshot` `vice.checkpoint.clear_auto_snapshot` | Breakpoints, watchpoints, tracepoints — with conditions, groups, and auto-snapshots |
+| **Checkpoints** | `vice.checkpoint.add` `vice.checkpoint.delete` `vice.checkpoint.list` `vice.checkpoint.toggle` `vice.checkpoint.set_condition` `vice.checkpoint.set_ignore_count` `vice.checkpoint.group.*` | Breakpoints, watchpoints, tracepoints — with conditions and groups |
 | **Sprites** | `vice.sprite.get` `vice.sprite.set` `vice.sprite.inspect` | Read/write sprite state, ASCII art bitmap visualization |
 | **VIC-II** | `vice.vicii.get_state` `vice.vicii.set_state` | Full access to the C64's video chip — raster, colors, scroll, bank |
 | **SID** | `vice.sid.get_state` `vice.sid.set_state` | The legendary sound chip — voices, filters, ADSR, waveforms |
@@ -64,10 +64,9 @@ and consistent parameter naming.
 | **Disk** | `vice.disk.attach` `vice.disk.detach` `vice.disk.list` `vice.disk.read_sector` | Mount D64/D71/D81 images, browse directories, read raw sectors |
 | **Machine** | `vice.machine.reset` `vice.machine.config.get` `vice.machine.config.set` `vice.autostart` | Hard/soft reset, resource control (warp, speed, model), program loading |
 | **Display** | `vice.display.screenshot` `vice.display.get_dimensions` | Screen capture to file or base64, display geometry |
-| **Input** | `vice.keyboard.type` `vice.keyboard.key_press` `vice.keyboard.key_release` `vice.keyboard.restore` `vice.keyboard.matrix` `vice.joystick.set` | Keyboard and joystick — text typing, individual keys, direct matrix, RESTORE/NMI |
+| **Input** | `vice.keyboard.type` `vice.keyboard.petscii` `vice.keyboard.key_press` `vice.keyboard.key_release` `vice.keyboard.restore` `vice.keyboard.matrix` `vice.keyboard.chord` `vice.joystick.set` `vice.joystick.tap` | Keyboard and joystick — text typing, individual keys, direct matrix, RESTORE/NMI |
 | **Debug** | `vice.disassemble` `vice.symbols.load` `vice.symbols.lookup` `vice.watch.add` `vice.backtrace` `vice.cycles.stopwatch` | Disassembly, symbol files, call stack, cycle-accurate timing |
 | **Snapshots** | `vice.snapshot.save` `vice.snapshot.load` `vice.snapshot.list` | Full emulator state save/restore with JSON metadata |
-| **Tracing** | `vice.trace.start` `vice.trace.stop` `vice.interrupt.log.start` `vice.interrupt.log.stop` `vice.interrupt.log.read` | Execution recording with PC filtering, IRQ/NMI/BRK event capture |
 
 ## Architecture
 
@@ -261,7 +260,7 @@ configure HTTP headers, do not use a token for local-only `127.0.0.1` sessions.
 
 | Platform | Install |
 |---|---|
-| **Debian/Ubuntu** | `apt install build-essential autoconf automake pkg-config libmicrohttpd-dev libgtk-3-dev xa65 flex byacc` |
+| **Debian/Ubuntu** | `apt install build-essential autoconf automake pkg-config libmicrohttpd-dev libgtk-3-dev libglew-dev libevdev-dev libcurl4-openssl-dev libpulse-dev xa65 flex byacc dos2unix` |
 | **macOS** | `brew install autoconf automake pkg-config libmicrohttpd gtk+3 xa lame` |
 | **Windows (MSYS2)** | `pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-libmicrohttpd mingw-w64-x86_64-gtk3 autoconf automake pkg-config` |
 
@@ -418,7 +417,7 @@ is structured to export cleanly as unified diffs for SVN submission.
 ## Tool Reference
 
 <details>
-<summary><strong>Click to expand full reference for all 64 tools</strong></summary>
+<summary><strong>Click to expand full reference for all 60 tools</strong></summary>
 
 ### Execution Control
 
@@ -581,20 +580,6 @@ Enable or disable all checkpoints in a group.
 #### `vice.checkpoint.group.list`
 List all checkpoint groups. No parameters.
 
-#### `vice.checkpoint.set_auto_snapshot`
-Auto-save a snapshot when a checkpoint is hit.
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `checkpoint_id` | number | yes | Checkpoint ID |
-| `snapshot_prefix` | string | yes | Filename prefix (e.g. `crash_repro`) |
-| `max_snapshots` | number | | Ring buffer size (default: 10) |
-| `include_disks` | boolean | | Include disk state (default: false) |
-
-#### `vice.checkpoint.clear_auto_snapshot`
-Remove auto-snapshot from a checkpoint.
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `checkpoint_id` | number | yes | Checkpoint ID |
 
 ---
 
@@ -789,6 +774,16 @@ Set joystick state.
 | `direction` | string | | `up`, `down`, `left`, `right`, `center` |
 | `fire` | boolean | | Fire button (default: false) |
 
+#### `vice.joystick.tap`
+Tap joystick.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `port` | number | | Port 1 or 2 (default: 1) |
+| `direction` | string | | `up`, `down`, `left`, `right`, `center` |
+| `fire` | boolean | | Fire button (default: false) |
+| `duration_frames` | number | | Tap duration in frames (default: 3) |
+| `duration_ms` | number | | Tap duration in ms (default: 0) |
+
 ---
 
 ### Advanced Debugging
@@ -822,6 +817,9 @@ Add a memory watchpoint.
 | `address` | string | yes | Address to watch |
 | `size` | number | | Bytes to watch (default: 1) |
 | `type` | string | | `read`, `write`, or `both` (default: `write`) |
+| `load` | boolean | | Alternative to `type`: watch reads, as in `vice.checkpoint.add` |
+| `store` | boolean | | Alternative to `type`: watch writes, as in `vice.checkpoint.add` |
+| `stop` | boolean | | Stop on hit (default: true); `false` counts hits without stopping |
 | `condition` | string | | Condition, e.g. `A == $42` |
 
 #### `vice.backtrace`
@@ -858,56 +856,12 @@ Restore emulator state from a snapshot.
 #### `vice.snapshot.list`
 List all snapshots with metadata. No parameters.
 
----
-
-### Execution Tracing
-
-#### `vice.trace.start`
-Start recording executed instructions.
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `output_file` | string | yes | Path to output file |
-| `pc_filter_start` | number | | Filter start address (default: 0) |
-| `pc_filter_end` | number | | Filter end address (default: 65535) |
-| `max_instructions` | number | | Max to record (default: 10000) |
-| `include_registers` | boolean | | Include register state (default: false) |
-
-#### `vice.trace.stop`
-Stop tracing and get statistics.
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `trace_id` | string | yes | Trace ID from `vice.trace.start` |
-
----
-
-### Interrupt Logging
-
-#### `vice.interrupt.log.start`
-Start logging IRQ, NMI, and BRK events.
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `types` | string[] | | Filter: `irq`, `nmi`, `brk` (default: all) |
-| `max_entries` | number | | Max entries (default: 1000, max: 10000) |
-
-#### `vice.interrupt.log.stop`
-Stop logging and retrieve all entries.
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `log_id` | string | yes | Log ID from `vice.interrupt.log.start` |
-
-#### `vice.interrupt.log.read`
-Read entries without stopping the log.
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `log_id` | string | yes | Log ID |
-| `since_index` | number | | Return entries from this index onwards |
-
 </details>
 
 ## Project Status
 
 This is active, working software. The MCP server compiles and runs on Linux, macOS,
-and Windows. All 64 tools are implemented and tested. CI produces binaries for all
+and Windows. All 60 tools are implemented and tested. CI produces binaries for all
 three platforms on every push.
 
 **What's solid:**

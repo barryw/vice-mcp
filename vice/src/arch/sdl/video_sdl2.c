@@ -105,7 +105,9 @@ static Uint32 rmask = 0, gmask = 0, bmask = 0, amask = 0;
 static int texformat = 0;
 static int recreate_textures = 0;
 
-uint8_t *draw_buffer_vsid = NULL;
+/* KLUDGES: pointer to remember draw buffer for VSID */
+void *draw_buffer_vsid = NULL;
+
 /* ------------------------------------------------------------------------- */
 /* Video-related resources.  */
 
@@ -536,10 +538,14 @@ int video_init(void)
 
 void video_shutdown(void)
 {
+    struct draw_buffer_s *draw_buffer = (struct draw_buffer_s*)draw_buffer_vsid;
+
     DBG(("%s", __func__));
 
-    if (draw_buffer_vsid) {
-        lib_free(draw_buffer_vsid);
+    if (draw_buffer) {
+        lib_free(draw_buffer->draw_buffer);
+        lib_free(draw_buffer);
+        draw_buffer_vsid = NULL;
     }
 
     sdl_active_canvas = NULL;
@@ -1246,12 +1252,15 @@ void video_canvas_destroy(struct video_canvas_s *canvas)
                     sdl_canvaslist[i ^ 1]->container = NULL;
                 }
             }
-            sdl_container_destroy(sdl_canvaslist[i]->container);
-            sdl_canvaslist[i]->container = NULL;
+            if (sdl_canvaslist[i]->container) {
+                sdl_container_destroy(sdl_canvaslist[i]->container);
+                sdl_canvaslist[i]->container = NULL;
+            }
 #endif
-
-            SDL_FreeSurface(sdl_canvaslist[i]->screen);
-            sdl_canvaslist[i]->screen = NULL;
+            if (sdl_canvaslist[i]->screen) {
+                SDL_FreeSurface(sdl_canvaslist[i]->screen);
+                sdl_canvaslist[i]->screen = NULL;
+            }
         }
     }
 

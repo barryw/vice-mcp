@@ -3097,12 +3097,18 @@ void monitor_check_watchpoints(MEMSPACE mem, unsigned int lastpc, unsigned int p
 {
     while (watch_load_count[mem]) {
         if (watchpoints_check_loads(mem, lastpc, pc)) {
+#ifdef HAVE_MCP_SERVER
+            mcp_mark_checkpoint_if_active();
+#endif
             monitor_startup(mem);
         }
     }
 
     while (watch_store_count[mem]) {
         if (watchpoints_check_stores(mem, lastpc, pc)) {
+#ifdef HAVE_MCP_SERVER
+            mcp_mark_checkpoint_if_active();
+#endif
             monitor_startup(mem);
         }
     }

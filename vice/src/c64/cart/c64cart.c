@@ -104,6 +104,7 @@
 #include "ltkernal.h"
 #include "mach5.h"
 #include "magicdesk.h"
+#include "magicdeskplus.h"
 #include "magicdesk16.h"
 #include "magicformel.h"
 #include "magicvoice.h"
@@ -145,9 +146,9 @@
 #include "zippcode48.h"
 #undef CARTRIDGE_INCLUDE_PRIVATE_API
 
-#define DEBUGCART
+/* #define DEBUG_CART */
 
-#ifdef DEBUGCART
+#ifdef DEBUG_CART
 #define DBG(x)  log_printf x
 #else
 #define DBG(x)
@@ -292,6 +293,8 @@ static cartridge_info_t cartlist[] = {
     { CARTRIDGE_NAME_LT_KERNAL,           CARTRIDGE_LT_KERNAL,           CARTRIDGE_GROUP_UTIL },
     { CARTRIDGE_NAME_MACH5,               CARTRIDGE_MACH5,               CARTRIDGE_GROUP_UTIL },
     { CARTRIDGE_NAME_MAGIC_DESK,          CARTRIDGE_MAGIC_DESK,          CARTRIDGE_GROUP_UTIL },
+    { CARTRIDGE_NAME_MAGIC_DESK_16,       CARTRIDGE_MAGIC_DESK_16,       CARTRIDGE_GROUP_UTIL },
+    { CARTRIDGE_NAME_MAGIC_DESK_PLUS,     CARTRIDGE_MAGIC_DESK_PLUS,     CARTRIDGE_GROUP_UTIL },
     { CARTRIDGE_NAME_MAGIC_FORMEL,        CARTRIDGE_MAGIC_FORMEL,        CARTRIDGE_GROUP_FREEZER },
     { CARTRIDGE_NAME_MAGIC_VOICE,         CARTRIDGE_MAGIC_VOICE,         CARTRIDGE_GROUP_UTIL },
     { CARTRIDGE_NAME_MAX_BASIC,           CARTRIDGE_MAX_BASIC,           CARTRIDGE_GROUP_UTIL },
@@ -477,6 +480,7 @@ static int set_cartridge_type(int val, void *param)
         case CARTRIDGE_KCS_POWER:
         case CARTRIDGE_MACH5:
         case CARTRIDGE_MAGIC_DESK:
+        case CARTRIDGE_MAGIC_DESK_PLUS:
         case CARTRIDGE_MAGIC_DESK_16:
         case CARTRIDGE_MAGIC_FORMEL:
         case CARTRIDGE_MAGIC_VOICE:
@@ -671,6 +675,23 @@ int cartridge_cmdline_options_init(void)
 
 /* ------------------------------------------------------------------------- */
 
+
+/* return filetype of cart with given crtid
+   (CARTRIDGE_FILETYPE_BIN, CARTRIDGE_FILETYPE_CRT, CARTRIDGE_FILETYPE_CRT, CARTRIDGE_FILETYPE_NONE) */
+/* FIXME: what about CARTRIDGE_FILETYPE_SNAPSHOT ? */
+/* FIXME: only works for main slot right now */
+int cartridge_get_filetype(int crtid)
+{
+    if (cart_getid_slotmain() == crtid) {
+        if (c64cart_type == CARTRIDGE_CRT) {
+            return CARTRIDGE_FILETYPE_CRT;
+        }
+        return CARTRIDGE_FILETYPE_BIN;
+    }
+    /* FIXME: this is not entirely correct :) */
+    return CARTRIDGE_FILETYPE_NONE;
+}
+
 /*
     returns ID of cart in "Main Slot"
 */
@@ -700,6 +721,7 @@ const char *cartridge_get_filename_by_type(int type)
     }
     return cart_get_filename_by_type(type);
 }
+
 
 /*
     returns 1 if the cartridge of the given type is enabled
@@ -913,6 +935,9 @@ static int crt_attach(const char *filename, uint8_t *rawcart)
                 break;
             case CARTRIDGE_MAGIC_DESK:
                 rc = magicdesk_crt_attach(fd, rawcart);
+                break;
+            case CARTRIDGE_MAGIC_DESK_PLUS:
+                rc = magicdeskplus_crt_attach(fd, rawcart, header.subtype);
                 break;
             case CARTRIDGE_MAGIC_DESK_16:
                 rc = magicdesk16_crt_attach(fd, rawcart);
@@ -1324,8 +1349,8 @@ void cartridge_unset_default(void)
 
 int cartridge_save_image(int type, const char *filename)
 {
-    char *ext = util_get_extension(filename);
-    if (ext != NULL && !strcmp(ext, "crt")) {
+    const char *ext = util_get_extension(filename);
+    if ((ext != NULL) && !strcmp(ext, "crt")) {
         return cartridge_crt_save(type, filename);
     }
     return cartridge_bin_save(type, filename);

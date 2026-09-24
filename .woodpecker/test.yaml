@@ -1,0 +1,62 @@
+# Build + MCP unit tests on every pull request and every push to main.
+#
+# The build-* pipelines only fire on push to main and never run the unit
+# suite, so PRs had no checks at all. This one is deliberately small: a
+# headless x64sc build (catches core compile breaks, not just MCP ones)
+# followed by vice/src/mcp/tests.
+when:
+  - event: pull_request
+  - event: push
+    branch: main
+
+labels:
+  platform: linux/amd64
+
+steps:
+  - name: build-and-test
+    image: debian:12
+    backend_options:
+      kubernetes:
+        node_selector:
+          ci-role: linux
+    commands:
+      - apt-get update
+      - >-
+        apt-get install -y --no-install-recommends
+        autoconf
+        automake
+        build-essential
+        ca-certificates
+        bison
+        byacc
+        dos2unix
+        flex
+        libmicrohttpd-dev
+        pkg-config
+        xa65
+        zlib1g-dev
+      - cd vice
+      - ./src/buildtools/genvicedate_h.sh
+      # Same autotools regeneration + timestamp fixup as build-linux.yaml
+      - ./autogen.sh
+      - sleep 1 && find . -name aclocal.m4 -exec touch {} +
+      - sleep 1 && find . -name configure -exec touch {} + && find . -name config.h.in -exec touch {} +
+      - find . -name Makefile.in -exec touch {} +
+      - bison -d -o src/monitor/mon_parse.c src/monitor/mon_parse.y
+      # not "build": that name is taken by vice/build/ (platform packaging)
+      - mkdir -p build-headless && cd build-headless
+      - >-
+        ../configure
+        --enable-option-checking=fatal
+        --enable-headlessui
+        --enable-mcp-server
+        --disable-arch
+        --disable-pdf-docs
+        --disable-html-docs
+        --without-alsa
+        --without-pulse
+        --without-libcurl
+        --without-png
+      - make -j$$(nproc) -s
+      - cd ../src/mcp/tests
+      - make test TOP_BUILDDIR=../../../build-headless

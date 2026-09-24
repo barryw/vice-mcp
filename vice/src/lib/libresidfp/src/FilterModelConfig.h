@@ -54,44 +54,10 @@ public:
     };
 
 protected:
-    static inline unsigned short to_ushort_dither(double x, double d_noise)
+    static inline uint16_t to_uint16(double x)
     {
-        const int tmp = static_cast<int>(x + d_noise);
-        assert((tmp >= 0) && (tmp <= USHRT_MAX));
-        return static_cast<unsigned short>(tmp);
+        return static_cast<uint16_t>(x);
     }
-
-    static inline unsigned short to_ushort(double x)
-    {
-        return to_ushort_dither(x, 0.5);
-    }
-
-private:
-    /*
-     * Hack to add quick dither when converting values from float to int
-     * and avoid quantization noise.
-     * Hopefully this can be removed the day we move all the analog part
-     * processing to floats.
-     *
-     * Not sure about the effect of using such small buffer of numbers
-     * since the random sequence repeats every 1024 values but for
-     * now it seems to do the job.
-     */
-    class Randomnoise
-    {
-    private:
-        double buffer[1024];
-        mutable int index = 0;
-    public:
-        Randomnoise()
-        {
-            std::uniform_real_distribution<double> unif(0., 1.);
-            std::default_random_engine re;
-            for (int i=0; i<1024; i++)
-                buffer[i] = unif(re);
-        }
-        double getNoise() const { index = (index + 1) & 0x3ff; return buffer[index]; }
-    };
 
 protected:
     /// Capacitor value.
@@ -125,23 +91,20 @@ protected:
 
     /// Lookup tables for gain and summer op-amps in output stage / filter.
     //@{
-    unsigned short* mixer;          //-V730_NOINIT this is initialized in the derived class constructor
-    unsigned short* summer;         //-V730_NOINIT this is initialized in the derived class constructor
-    unsigned short* volume;         //-V730_NOINIT this is initialized in the derived class constructor
-    unsigned short* resonance;      //-V730_NOINIT this is initialized in the derived class constructor
+    uint16_t* mixer;          //-V730_NOINIT this is initialized in the derived class constructor
+    uint16_t* summer;         //-V730_NOINIT this is initialized in the derived class constructor
+    uint16_t* volume;         //-V730_NOINIT this is initialized in the derived class constructor
+    uint16_t* resonance;      //-V730_NOINIT this is initialized in the derived class constructor
     //@}
 
     /// Reverse op-amp transfer function.
-    unsigned short opamp_rev[1 << 16]; //-V730_NOINIT this is initialized in the derived class constructor
-
-private:
-    Randomnoise rnd;
+    uint16_t opamp_rev[1 << 16]; //-V730_NOINIT this is initialized in the derived class constructor
 
 private:
     FilterModelConfig(const FilterModelConfig&) = delete;
     FilterModelConfig& operator= (const FilterModelConfig&) = delete;
 
-    inline double getVoiceVoltage(float value, unsigned int env) const
+    inline double getVoiceVoltage(float value, uint8_t env) const
     {
         return value * voice_voltage_range + getVoiceDC(env);
     }
@@ -170,7 +133,7 @@ protected:
 
     void calcCurrFactorCoeff();
 
-    virtual double getVoiceDC(unsigned int env) const = 0;
+    virtual double getVoiceDC(uint8_t env) const = 0;
 
     /**
      * The filter summer operates at n ~ 1, and has 5 fundamentally different
@@ -283,36 +246,36 @@ protected:
     }
 
 public:
-    unsigned short* getVolume() { return volume; }
-    unsigned short* getResonance() { return resonance; }
-    unsigned short* getSummer() { return summer; }
-    unsigned short* getMixer() { return mixer; }
+    uint16_t* getVolume() const { return volume; }
+    uint16_t* getResonance() const { return resonance; }
+    uint16_t* getSummer() const { return summer; }
+    uint16_t* getMixer() const { return mixer; }
 
-    inline unsigned short getOpampRev(int i) const { return opamp_rev[i]; }
+    inline uint16_t getOpampRev(int i) const { return opamp_rev[i]; }
     inline double getVddt() const { return Vddt; }
     inline double getVth() const { return Vth; }
 
     // helper functions
 
-    inline unsigned short getNormalizedValue(double value) const
+    inline uint16_t getNormalizedValue(double value) const
     {
-        return to_ushort_dither(N16 * (value - vmin), rnd.getNoise());
+        return to_uint16(N16 * (value - vmin));
     }
 
     template<int N>
-    inline unsigned short getNormalizedCurrentFactor(double wl) const
+    inline uint16_t getNormalizedCurrentFactor(double wl) const
     {
-        return to_ushort((1 << N) * currFactorCoeff * wl);
+        return to_uint16((1 << N) * currFactorCoeff * wl);
     }
 
-    inline unsigned short getNVmin() const
+    inline uint16_t getNVmin() const
     {
-        return to_ushort(N16 * vmin);
+        return to_uint16(N16 * vmin);
     }
 
-    inline int getNormalizedVoice(float value, unsigned int env) const
+    inline int32_t getNormalizedVoice(float value, uint8_t env) const
     {
-        return static_cast<int>(getNormalizedValue(getVoiceVoltage(value, env)));
+        return static_cast<int32_t>(getNormalizedValue(getVoiceVoltage(value, env)));
     }
 };
 

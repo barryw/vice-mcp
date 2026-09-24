@@ -37,8 +37,11 @@
 #include "attach.h"
 #include "autostart.h"
 #include "cartridge.h"
+#include "crt.h"
 #include "drive.h"
 #include "tape.h"
+#include "t64.h"
+#include "tap.h"
 #include "debug_gtk3.h"
 #include "contentpreviewwidget.h"
 #include "diskcontents.h"
@@ -142,6 +145,10 @@ static void do_autostart(GtkWidget *dialog, int index, int autostart)
  */
 static int try_attach_disk(int unit_number, int drive_number, char *filename_locale)
 {
+    if (!probe_disk_image(filename_locale)) {
+        /* not a disk image */
+        return -1;
+    }
 
     if (file_system_attach_disk(unit_number, drive_number, filename_locale) < 0) {
         /* failed */
@@ -175,6 +182,33 @@ static int try_attach_disk(int unit_number, int drive_number, char *filename_loc
         }
     }
     return 0;
+}
+
+static int try_attach_tape(unsigned int unit, char *filename_locale)
+{
+    if (!tape_image_probe(filename_locale)) {
+        /* not a tape image */
+        return -1;
+    }
+    return tape_image_attach(unit, filename_locale);
+}
+
+static int try_attach_cartridge(char *filename_locale)
+{
+    if (!crt_probe(filename_locale)) {
+        /* not a crt image */
+        return -1;
+    }
+    return cartridge_attach_image(CARTRIDGE_CRT, filename_locale);
+}
+
+static int try_attach_snapshot(char *filename_locale)
+{
+    if (!snapshot_probe(filename_locale)) {
+        /* not a vice snapshot */
+        return -1;
+    }
+    return autostart_snapshot(filename_locale, NULL);
 }
 
 /** \brief  try attach a Tapecart image, change tape port device if needed
@@ -246,10 +280,10 @@ static void do_smart_attach(GtkWidget *widget, gpointer data)
             || (machine_class == VICE_MACHINE_C128)
             || (machine_class == VICE_MACHINE_PLUS4)) {
         if (try_attach_disk(DRIVE_UNIT_DEFAULT, 0, filename_locale) < 0
-                && tape_image_attach(1, filename_locale) < 0
-                && autostart_snapshot(filename_locale, NULL) < 0
+                && try_attach_tape(1, filename_locale) < 0
+                && try_attach_snapshot(filename_locale) < 0
                 && try_attach_tapecart(filename_locale) < 0
-                && cartridge_attach_image(CARTRIDGE_CRT, filename_locale) < 0
+                && try_attach_cartridge(filename_locale) < 0
                 && autostart_prg(filename_locale, AUTOSTART_MODE_LOAD) < 0) {
             /* failed */
             log_error(LOG_DEFAULT, "smart attach failed for '%s' failed", filename);
@@ -258,10 +292,11 @@ static void do_smart_attach(GtkWidget *widget, gpointer data)
             || (machine_class == VICE_MACHINE_CBM5x0)
             || (machine_class == VICE_MACHINE_CBM6x0)) {
         if (try_attach_disk(DRIVE_UNIT_DEFAULT, 0, filename_locale) < 0
-                && tape_image_attach(1, filename_locale) < 0
-                && autostart_snapshot(filename_locale, NULL) < 0
+                && try_attach_tape(1, filename_locale) < 0
+                && try_attach_snapshot(filename_locale) < 0
+                /* && try_attach_tapecart(filename_locale) < 0 */
                 /* && autostart_prg(filename_locale, AUTOSTART_MODE_LOAD) < 0 */
-                && cartridge_attach_image(CARTRIDGE_CRT, filename_locale) < 0) {
+                && try_attach_cartridge(filename_locale) < 0) {
             /* failed */
             log_error(LOG_DEFAULT, "smart attach failed for '%s' failed", filename);
         }
@@ -270,8 +305,8 @@ static void do_smart_attach(GtkWidget *widget, gpointer data)
             * as a cartidge, it'll result in false positives
             */
         if (try_attach_disk(DRIVE_UNIT_DEFAULT, 0, filename_locale) < 0
-                && tape_image_attach(1, filename_locale) < 0
-                && autostart_snapshot(filename_locale, NULL) < 0)
+                && try_attach_tape(1, filename_locale) < 0
+                && try_attach_snapshot(filename_locale) < 0)
         {
             log_error(LOG_DEFAULT, "Failed to smart attach '%s'",
                     filename_locale);
@@ -504,14 +539,40 @@ static GtkWidget *create_extra_widget(GtkWidget *parent)
 static image_contents_t *read_contents_wrapper(const char *path)
 {
     image_contents_t *content;
+    size_t length;
+
+    /* first do a quick check:
+       - try if the given file(name) can be opened for reading
+       - check if the file is long enough to even justify trying to preview it
+    */
+    FILE *fd = fopen(path, MODE_READ);
+    if (fd == NULL) {
+        return NULL;
+    }
+    length = archdep_file_size(fd);
+    fclose(fd);
+
+    if (length < 0x20) {
+        return NULL;
+    }
 
     /* try disk contents first */
-    content = diskcontents_filesystem_read(path);
-    if (content == NULL) {
-        /* fall back to tape */
-        content = tapecontents_read(path);
+    if (probe_disk_image(path)) {
+        content = diskcontents_filesystem_read(path);
+        if (content != NULL) {
+            return content;
+        }
     }
-    return content;
+
+    /* fall back to tape */
+    if (tape_image_probe(path)) {
+        content = tapecontents_read(path);
+        if (content != NULL) {
+            return content;
+        }
+    }
+
+    return NULL;
 }
 
 
