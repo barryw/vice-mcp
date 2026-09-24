@@ -31,7 +31,7 @@
 #include "monitor.h"  /* For mon_instructions_step/next, exit_mon, mcp_hold_paused */
 #include "interrupt.h"  /* For interrupt_maincpu_trigger_trap */
 #include "ui.h"       /* For ui_pause_enable/disable/active */
-#include "archdep_tick.h"  /* For tick_sleep/tick_per_second */
+#include "archdep_tick.h"  /* For tick_now/tick_now_delta/tick_sleep/tick_per_second */
 
 /* mcp_step_active state is defined in monitor.c to avoid a circular link
  * dependency between libmonitor.a and libmcp.a (GNU ld limitation).
@@ -120,12 +120,14 @@ cJSON* mcp_tool_execution_pause(cJSON *params)
 }
 
 /* A step on a held machine is waited for, polling every 0.2 ms for up to
- * about 2 s. The count is capped to stay well inside that at any speed
- * near normal (running further is what a checkpoint and
- * vice.execution.run are for). A step over a subroutine counts as one
- * instruction however long the subroutine runs; only the wait bounds it. */
-#define MCP_STEP_COUNT_MAX 10000
-#define MCP_STEP_POLLS     10000
+ * 2 s by the clock: a count of polls would stretch with every oversleep of
+ * tick_sleep(), to tens of seconds on Windows. The count is capped to stay
+ * well inside that at any speed near normal (running further is what a
+ * checkpoint and vice.execution.run are for). A step over a subroutine
+ * counts as one instruction however long the subroutine runs; only the
+ * wait bounds it. */
+#define MCP_STEP_COUNT_MAX  10000
+#define MCP_STEP_TIMEOUT_S  2
 
 cJSON* mcp_tool_execution_step(cJSON *params)
 {
@@ -137,7 +139,7 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     int completed = 0;
     int stopped_early = 0;
     int timed_out = 0;
-    int waited;
+    tick_t start;
 
     log_message(mcp_tools_log, "Handling vice.execution.step");
 
@@ -188,7 +190,9 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     if (was_held) {
         ui_pause_disable();
         mainlock_release();
-        for (waited = 0; waited < MCP_STEP_POLLS && !ui_pause_active(); waited++) {
+        start = tick_now();
+        while (!ui_pause_active()
+               && tick_now_delta(start) < MCP_STEP_TIMEOUT_S * tick_per_second()) {
             tick_sleep(tick_per_second() / 5000);   /* 0.2 ms; a step is microseconds */
         }
         mainlock_obtain();

@@ -1252,14 +1252,28 @@ void *lib_realloc(void *ptr, size_t size)
     return realloc(ptr, size);
 }
 
-/* archdep_tick.h: the step tool polls for the hold with these. The sleep
- * is real, so that a test can stop the machine from another thread while
- * the tool waits, and a step that nothing stops runs out its budget. */
+/* archdep_tick.h: the step tool polls for the hold with these, against
+ * the clock. The sleep is real, so that a test can stop the machine from
+ * another thread while the tool waits, and a step that nothing stops runs
+ * out its budget. */
 typedef uint32_t tick_t;
 
 tick_t tick_per_second(void)
 {
     return 1000000;
+}
+
+tick_t tick_now(void)
+{
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (tick_t)((uint64_t)now.tv_sec * 1000000u + (uint64_t)now.tv_nsec / 1000u);
+}
+
+tick_t tick_now_delta(tick_t previous_tick)
+{
+    return tick_now() - previous_tick;
 }
 
 void tick_sleep(tick_t delay)
