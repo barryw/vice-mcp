@@ -33,8 +33,8 @@
 #include "mainlock.h"   /* For mainlock_obtain/release */
 #include "vsync.h"      /* For vsync_on_vsync_do */
 
-#include <errno.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <time.h>
 #include "ui.h"       /* For ui_pause_enable/disable/active */
 
@@ -181,86 +181,195 @@ cJSON* mcp_tool_execution_step(cJSON *params)
 
 #define MCP_FRAME_ADVANCE_MAX 1000
 
+/* How long the tool waits for a frame to end before it gives up (far
+ * beyond a frame at any speed short of a stopped machine), and how often
+ * it looks for a stop that did not come from its own trap. */
+#define MCP_FRAME_ADVANCE_TIMEOUT_MS 2000
+#define MCP_FRAME_ADVANCE_POLL_MS    2
+
+/* How an advance ended */
+typedef enum {
+    MCP_FRAME_BOUNDARY,     /* stopped at the boundary after the last frame */
+    MCP_FRAME_STOPPED,      /* something else stopped the machine first */
+    MCP_FRAME_TIMED_OUT     /* a frame did not end within the timeout */
+} mcp_frame_end_t;
+
 /* Shared between the tool (HTTP thread) and the callbacks (emulator
- * thread). Tool dispatch is serialised, so there is one advance at a time. */
+ * thread). Tool dispatch is serialised, so there is one advance at a time,
+ * but a callback queued for an earlier advance can still be pending:
+ * nothing cancels the vsync callback of an advance that a checkpoint cut
+ * short or that timed out. Each advance takes a new sequence number and
+ * hands it to its callbacks, and the trap acts only for the current one. */
 static struct {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
-    int active;     /* the tool is waiting for a frame boundary */
-    int stopped;    /* the emulator thread has taken hold */
-} frame_advance = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0 };
+    unsigned int seq;   /* the current advance */
+    int active;         /* the tool is waiting for it */
+    int frames;         /* frames it runs */
+    int done;           /* frames that have ended */
+    int stopped;        /* the emulator thread has taken hold after the last */
+} frame_advance = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0, 0, 0 };
+
+static void mcp_frame_advance_vsync(void *param);
 
 /* Trap: runs on the emulator thread at the first instruction boundary
- * after the vsync, with the registers exported. Raise the pause flag so
- * the transport switches to mainlock dispatch, wake the tool, hold. */
+ * after a vsync, with the registers exported. Count the frame. After the
+ * last one, raise the pause flag so the transport switches to mainlock
+ * dispatch, wake the tool, and hold; before it, keep running. */
 static void mcp_frame_advance_trap(uint16_t addr, void *data)
 {
+    int last;
+
     (void)addr;
-    (void)data;
 
     pthread_mutex_lock(&frame_advance.mutex);
-    if (!frame_advance.active) {
-        /* The tool gave up waiting; do not stop a machine nobody asked to. */
+    if (!frame_advance.active || frame_advance.seq != (unsigned int)(uintptr_t)data) {
+        /* Queued for an advance that has ended. Stopping here would park
+         * a machine nobody is waiting for, or end the current advance
+         * before its frames have run. */
         pthread_mutex_unlock(&frame_advance.mutex);
         return;
     }
-    ui_pause_enable();
-    frame_advance.stopped = 1;
-    pthread_cond_signal(&frame_advance.cond);
+    frame_advance.done++;
+    last = frame_advance.done >= frame_advance.frames;
+    if (last) {
+        ui_pause_enable();
+        frame_advance.stopped = 1;
+        pthread_cond_signal(&frame_advance.cond);
+    }
     pthread_mutex_unlock(&frame_advance.mutex);
 
-    mcp_hold_paused();
+    if (last) {
+        mcp_hold_paused();
+    } else {
+        /* Count the next frame. Queued here, after the vsync, the callback
+         * waits for the next one; queued from the vsync callback it would
+         * run again in the same vsync (execute_vsync_callbacks loops until
+         * the queue is empty). */
+        vsync_on_vsync_do(mcp_frame_advance_vsync, data);
+    }
 }
 
-/* Vsync callback: the frame is over, stop at the next instruction. Not
- * re-armed from here for a frame count: callbacks queued during a vsync
- * run in that same vsync (execute_vsync_callbacks loops until the queue
- * is empty), so counting frames is done in the tool, one wait per frame. */
+/* Vsync callback: a frame is over, count it at the next instruction. The
+ * parameter is the sequence number of the advance that queued it. */
 static void mcp_frame_advance_vsync(void *param)
 {
-    (void)param;
-    interrupt_maincpu_trigger_trap(mcp_frame_advance_trap, NULL);
+    interrupt_maincpu_trigger_trap(mcp_frame_advance_trap, param);
 }
 
-/* Run to the next frame boundary and stop there. Called with the machine
- * in UI pause and the mainlock held by this thread; gives the lock up
- * while the frame runs. Returns 0 when the emulator thread is holding
- * again, -1 if it did not get there within the timeout. */
-static int mcp_frame_advance_one(void)
+/* t += ms, for the absolute deadlines pthread_cond_timedwait takes */
+static void mcp_timespec_add_ms(struct timespec *t, long ms)
 {
-    struct timespec deadline;
-    int rc = 0;
-    int stopped;
+    t->tv_sec += ms / 1000;
+    t->tv_nsec += (ms % 1000) * 1000000L;
+    if (t->tv_nsec >= 1000000000L) {
+        t->tv_sec++;
+        t->tv_nsec -= 1000000000L;
+    }
+}
+
+static int mcp_timespec_before(const struct timespec *a, const struct timespec *b)
+{
+    return a->tv_sec < b->tv_sec || (a->tv_sec == b->tv_sec && a->tv_nsec < b->tv_nsec);
+}
+
+/* Run `frames` frames and stop at the first instruction boundary after the
+ * last. Called with the machine in UI pause and the mainlock held by this
+ * thread; gives the lock up while the frames run and holds it again on
+ * return, with the machine stopped, or on MCP_FRAME_TIMED_OUT asked to
+ * stop at the next instruction boundary. *done is set to the number of
+ * frames that ended. */
+static mcp_frame_end_t mcp_frame_advance_run(int frames, int *done)
+{
+    struct timespec deadline, now, wake;
+    mcp_frame_end_t result;
+    unsigned int seq;
+    int seen = 0;
 
     pthread_mutex_lock(&frame_advance.mutex);
+    seq = ++frame_advance.seq;
     frame_advance.active = 1;
+    frame_advance.frames = frames;
+    frame_advance.done = 0;
     frame_advance.stopped = 0;
     pthread_mutex_unlock(&frame_advance.mutex);
 
-    vsync_on_vsync_do(mcp_frame_advance_vsync, NULL);
+    /* One release for all the frames: the trap counts them. Stopping and
+     * releasing the machine between frames races the emulator thread
+     * where the mainlock does nothing (builds without USE_VICE_THREAD,
+     * such as the headless UI): the pause flag, dropped for the next frame
+     * before the trap has reached mcp_hold_paused(), is raised again there
+     * and the machine held, and the next frame ends before it starts. */
+    vsync_on_vsync_do(mcp_frame_advance_vsync, (void *)(uintptr_t)seq);
     ui_pause_disable();
+    mainlock_release();
 
     /* CLOCK_REALTIME: pthread_cond_timedwait takes an absolute deadline on
-     * that clock by default, as in mcp_transport.c. Two seconds is far
-     * beyond one frame at any speed short of a stopped machine. */
-    mainlock_release();
+     * that clock by default, as in mcp_transport.c. */
     clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += 2;
+    mcp_timespec_add_ms(&deadline, MCP_FRAME_ADVANCE_TIMEOUT_MS);
+
     pthread_mutex_lock(&frame_advance.mutex);
-    while (!frame_advance.stopped && rc == 0) {
-        rc = pthread_cond_timedwait(&frame_advance.cond, &frame_advance.mutex, &deadline);
+    for (;;) {
+        if (frame_advance.stopped) {
+            result = MCP_FRAME_BOUNDARY;
+            break;
+        }
+        /* Anything else that stops the machine raises the pause flag too,
+         * and knows nothing of this advance: a stopping checkpoint or
+         * watchpoint, which the monitor holds in mcp_hold_paused(), or a
+         * pause from the UI. Look for it between short waits, as the
+         * transport does for queued traps, rather than sleep out the
+         * timeout with every other MCP call queued behind this one. */
+        if (ui_pause_active()) {
+            result = MCP_FRAME_STOPPED;
+            break;
+        }
+        clock_gettime(CLOCK_REALTIME, &now);
+        if (frame_advance.done != seen) {
+            /* The timeout is per frame */
+            seen = frame_advance.done;
+            deadline = now;
+            mcp_timespec_add_ms(&deadline, MCP_FRAME_ADVANCE_TIMEOUT_MS);
+        } else if (!mcp_timespec_before(&now, &deadline)) {
+            result = MCP_FRAME_TIMED_OUT;
+            break;
+        }
+        wake = now;
+        mcp_timespec_add_ms(&wake, MCP_FRAME_ADVANCE_POLL_MS);
+        if (mcp_timespec_before(&deadline, &wake)) {
+            wake = deadline;
+        }
+        pthread_cond_timedwait(&frame_advance.cond, &frame_advance.mutex, &wake);
     }
-    stopped = frame_advance.stopped;
     frame_advance.active = 0;
+    *done = frame_advance.done;
     pthread_mutex_unlock(&frame_advance.mutex);
+
     mainlock_obtain();
 
-    return stopped ? 0 : -1;
+    if (result == MCP_FRAME_TIMED_OUT) {
+        if (ui_pause_active()) {
+            /* Stopped in the instant after the deadline */
+            result = MCP_FRAME_STOPPED;
+        } else {
+            /* Leave the machine stopped, as the call found it, the way
+             * vice.execution.pause does. Clearing active above keeps the
+             * pending callback from stopping it again later. */
+            log_message(mcp_tools_log, "vice.frame.advance: no frame boundary within %d ms, pausing",
+                        MCP_FRAME_ADVANCE_TIMEOUT_MS);
+            ui_pause_enable();
+            interrupt_maincpu_trigger_trap(mcp_pause_trap, NULL);
+        }
+    }
+
+    return result;
 }
 
 cJSON* mcp_tool_frame_advance(cJSON *params)
 {
     cJSON *response, *frames_item;
+    mcp_frame_end_t result;
     int frames = 1;
     int done = 0;
 
@@ -269,10 +378,13 @@ cJSON* mcp_tool_frame_advance(cJSON *params)
     if (params != NULL) {
         frames_item = cJSON_GetObjectItem(params, "frames");
         if (frames_item != NULL) {
-            if (!cJSON_IsNumber(frames_item) || frames_item->valueint < 1
-                || frames_item->valueint > MCP_FRAME_ADVANCE_MAX) {
+            /* valueint truncates: 1.9 would run one frame */
+            if (!cJSON_IsNumber(frames_item)
+                || frames_item->valuedouble < 1
+                || frames_item->valuedouble > MCP_FRAME_ADVANCE_MAX
+                || frames_item->valuedouble != (double)frames_item->valueint) {
                 return mcp_error(MCP_ERROR_INVALID_PARAMS,
-                                 "frames must be a number from 1 to 1000");
+                                 "frames must be a whole number from 1 to 1000");
             }
             frames = frames_item->valueint;
         }
@@ -284,12 +396,7 @@ cJSON* mcp_tool_frame_advance(cJSON *params)
             "a stopping checkpoint or vice.execution.step");
     }
 
-    while (done < frames) {
-        if (mcp_frame_advance_one() < 0) {
-            break;
-        }
-        done++;
-    }
+    result = mcp_frame_advance_run(frames, &done);
 
     response = cJSON_CreateObject();
     if (response == NULL) {
@@ -298,18 +405,23 @@ cJSON* mcp_tool_frame_advance(cJSON *params)
 
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "frames", done);
-    cJSON_AddNumberToObject(response, "PC", maincpu_get_pc());
-    if (done == frames) {
+    if (result == MCP_FRAME_BOUNDARY) {
+        cJSON_AddNumberToObject(response, "PC", maincpu_get_pc());
         cJSON_AddStringToObject(response, "message", "Stopped at the frame boundary");
-    } else if (ui_pause_active()) {
+    } else if (result == MCP_FRAME_STOPPED) {
+        cJSON_AddNumberToObject(response, "PC", maincpu_get_pc());
         cJSON_AddBoolToObject(response, "stopped_early", true);
         cJSON_AddStringToObject(response, "message",
             "Something else stopped the machine before the frame boundary "
             "(a checkpoint?); it is paused there");
     } else {
+        /* No PC: the machine stops at the next instruction boundary, after
+         * this reply has gone. */
         cJSON_AddBoolToObject(response, "stopped_early", true);
+        cJSON_AddBoolToObject(response, "timed_out", true);
         cJSON_AddStringToObject(response, "message",
-            "The frame boundary was not reached within the timeout; the machine is running");
+            "A frame did not end within 2 s; the machine has been paused "
+            "at the next instruction boundary");
     }
 
     return response;

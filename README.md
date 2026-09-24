@@ -438,18 +438,21 @@ Step one or more instructions.
 | `stepOver` | boolean | | Step over subroutines |
 
 #### `vice.frame.advance`
-Run whole frames from a stopped machine and stop again. Each frame runs
-to the next vertical sync and stops at the first instruction boundary
-after it, with registers exported. Joystick and keyboard state set while
+Run whole frames from a stopped machine and stop again, at the first
+instruction boundary after the vertical sync that ends the last frame,
+with registers exported. Joystick and keyboard state set while
 stopped is held while the frames run, which makes a frame-by-frame input
 loop possible: set input, advance one frame, read memory, repeat. The
 machine must already be stopped (by `vice.execution.pause`, a stopping
 checkpoint or `vice.execution.step`); otherwise the call returns error
 -32001. If a checkpoint stops the machine before the boundary, the reply
-carries `stopped_early: true` and the number of whole frames that ran.
+carries `stopped_early: true` and the number of whole frames that ran. A
+frame that has not ended after 2 seconds is abandoned: the machine is
+paused at the next instruction boundary and the reply also carries
+`timed_out: true`.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `frames` | number | | Frames to run before stopping again (default: 1, max: 1000) |
+| `frames` | number | | Whole frames to run before stopping again (default: 1, max: 1000) |
 
 #### `vice.run_until`
 Run until address or for N cycles with timeout.

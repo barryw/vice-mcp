@@ -15,6 +15,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <pthread.h>
+#include <time.h>
 
 #include "cJSON.h"
 
@@ -85,6 +87,14 @@ extern unsigned long test_stopwatch_get_cycles(void);
 extern void test_ui_pause_reset(void);
 extern void test_ui_pause_set(int paused);
 extern void test_monitor_inside_set(int inside);
+extern int ui_pause_active(void);
+extern void ui_pause_enable(void);
+extern int test_ui_pause_disable_count(void);
+
+/* Test vsync helpers from vice_stubs.c */
+extern int test_vsync_pending(void);
+extern void test_vsync_run_oldest(void);
+extern void test_vsync_reset(void);
 
 /* Test memory helpers from vice_stubs.c */
 extern void test_memory_set(uint16_t addr, const uint8_t *data, size_t len);
@@ -1204,6 +1214,281 @@ TEST(frame_advance_rejects_bad_frame_count)
 
     cJSON_Delete(params);
     cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* Test: frame.advance rejects a frame count that is not a whole number,
+ * rather than truncating 1.9 to one frame */
+TEST(frame_advance_rejects_fractional_frame_count)
+{
+    cJSON *params, *response, *code_item;
+
+    test_ui_pause_set(1);
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "frames", 1.9);
+    response = mcp_tools_dispatch("vice.frame.advance", params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "frames", "2");
+    response = mcp_tools_dispatch("vice.frame.advance", params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* vice.frame.advance lets the machine go and blocks until the emulator
+ * thread stops it again. These tests play the emulator thread from a
+ * second thread: wait until the tool is waiting (its vsync callback
+ * queued, the pause flag down), then end frames by running the vsync,
+ * stop the machine the way a checkpoint hold does, or both. */
+typedef enum {
+    TEST_EMU_END_FRAMES,    /* run the vsync for each of `frames` frames */
+    TEST_EMU_CHECKPOINT,    /* raise the pause flag mid-frame, as mcp_hold_paused() does */
+    TEST_EMU_STALE_FIRST    /* run a callback left by an earlier call, then this call's */
+} test_emu_action_t;
+
+typedef struct {
+    test_emu_action_t action;
+    int frames;             /* TEST_EMU_END_FRAMES */
+    int released;           /* the tool let the machine go */
+    int stale_stopped;      /* TEST_EMU_STALE_FIRST: the old callback stopped the machine */
+} test_emu_t;
+
+static void test_sleep_ms(long ms)
+{
+    struct timespec ts;
+
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+}
+
+static long test_elapsed_ms(const struct timespec *since)
+{
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (long)(now.tv_sec - since->tv_sec) * 1000L
+        + (now.tv_nsec - since->tv_nsec) / 1000000L;
+}
+
+/* Wait up to 5 s for at least `pending` vsync callbacks to be queued,
+ * with the pause flag down if `released` */
+static int test_emu_wait(int pending, int released)
+{
+    int i;
+
+    for (i = 0; i < 5000; i++) {
+        if ((!released || !ui_pause_active()) && test_vsync_pending() >= pending) {
+            return 1;
+        }
+        test_sleep_ms(1);
+    }
+    return 0;
+}
+
+static void *test_emu_thread(void *arg)
+{
+    test_emu_t *emu = (test_emu_t *)arg;
+    int i;
+
+    switch (emu->action) {
+        case TEST_EMU_END_FRAMES:
+            if (!test_emu_wait(1, 1)) {
+                break;
+            }
+            emu->released = 1;
+            for (i = 0; i < emu->frames; i++) {
+                /* the trap queues the next frame's callback itself */
+                if (!test_emu_wait(1, 0)) {
+                    break;
+                }
+                test_vsync_run_oldest();    /* vsync, then the trap */
+            }
+            break;
+        case TEST_EMU_CHECKPOINT:
+            if (test_emu_wait(1, 1)) {
+                emu->released = 1;
+                ui_pause_enable();
+            }
+            break;
+        case TEST_EMU_STALE_FIRST:
+            if (test_emu_wait(2, 1)) {
+                emu->released = 1;
+                test_vsync_run_oldest();    /* the earlier call's */
+                test_sleep_ms(20);
+                emu->stale_stopped = ui_pause_active();
+                test_vsync_run_oldest();    /* this call's */
+            }
+            break;
+    }
+    return NULL;
+}
+
+/* Call vice.frame.advance with the emulator thread played as `emu` does,
+ * or not at all when emu is NULL. Returns the reply. */
+static cJSON *test_frame_advance(int frames, test_emu_t *emu, long *elapsed_ms)
+{
+    pthread_t thread;
+    struct timespec start;
+    cJSON *params, *response;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "frames", frames);
+    if (emu != NULL) {
+        pthread_create(&thread, NULL, test_emu_thread, emu);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    response = mcp_tools_dispatch("vice.frame.advance", params);
+    if (elapsed_ms != NULL) {
+        *elapsed_ms = test_elapsed_ms(&start);
+    }
+    if (emu != NULL) {
+        pthread_join(thread, NULL);
+    }
+    cJSON_Delete(params);
+    return response;
+}
+
+/* Test: frame.advance runs the frames it was asked for and stops at the
+ * boundary after the last, letting the machine go once: the trap counts
+ * the frames, so the pause flag is not dropped again between them while
+ * the emulator thread may still be on its way into the hold */
+TEST(frame_advance_stops_after_the_last_frame)
+{
+    test_emu_t emu = { TEST_EMU_END_FRAMES, 3, 0, 0 };
+    cJSON *response, *item;
+    int disables;
+
+    test_vsync_reset();
+    test_ui_pause_set(1);
+    disables = test_ui_pause_disable_count();
+    response = test_frame_advance(3, &emu, NULL);
+    ASSERT_NOT_NULL(response);
+    ASSERT_INT_EQ(emu.released, 1);
+    ASSERT_INT_EQ(test_ui_pause_disable_count() - disables, 1);
+
+    item = cJSON_GetObjectItem(response, "frames");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 3);
+    ASSERT_NOT_NULL(cJSON_GetObjectItem(response, "PC"));
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "stopped_early") == NULL);
+    ASSERT_TRUE(ui_pause_active());
+    ASSERT_INT_EQ(test_vsync_pending(), 0);
+
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* Test: a checkpoint that stops the machine mid-frame ends the call at
+ * once, instead of after the 2 s frame timeout */
+TEST(frame_advance_returns_when_a_checkpoint_stops_the_machine)
+{
+    test_emu_t emu = { TEST_EMU_CHECKPOINT, 0, 0, 0 };
+    cJSON *response, *item;
+    long elapsed_ms;
+
+    test_vsync_reset();
+    test_ui_pause_set(1);
+    response = test_frame_advance(5, &emu, &elapsed_ms);
+    ASSERT_NOT_NULL(response);
+    ASSERT_INT_EQ(emu.released, 1);
+    ASSERT_TRUE(elapsed_ms < 1000);
+
+    item = cJSON_GetObjectItem(response, "frames");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 0);
+    ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "stopped_early")));
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "timed_out") == NULL);
+    ASSERT_NOT_NULL(cJSON_GetObjectItem(response, "PC"));
+    ASSERT_TRUE(ui_pause_active());
+
+    cJSON_Delete(response);
+    test_vsync_reset();
+    test_ui_pause_reset();
+}
+
+/* Test: the vsync callback of a frame a checkpoint cut short stays queued;
+ * when it runs during the next call, it must not end that call's frame */
+TEST(frame_advance_ignores_callback_of_an_earlier_frame)
+{
+    test_emu_t checkpoint = { TEST_EMU_CHECKPOINT, 0, 0, 0 };
+    test_emu_t stale = { TEST_EMU_STALE_FIRST, 0, 0, 0 };
+    cJSON *response, *item;
+
+    test_vsync_reset();
+    test_ui_pause_set(1);
+    response = test_frame_advance(1, &checkpoint, NULL);
+    ASSERT_NOT_NULL(response);
+    ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "stopped_early")));
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(test_vsync_pending(), 1);
+
+    response = test_frame_advance(1, &stale, NULL);
+    ASSERT_NOT_NULL(response);
+    ASSERT_INT_EQ(stale.released, 1);
+    ASSERT_INT_EQ(stale.stale_stopped, 0);
+
+    item = cJSON_GetObjectItem(response, "frames");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 1);
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "stopped_early") == NULL);
+    ASSERT_TRUE(ui_pause_active());
+
+    cJSON_Delete(response);
+    test_vsync_reset();
+    test_ui_pause_reset();
+}
+
+/* Test: a frame that never ends times out after 2 s with the machine
+ * paused again, and its callback, still queued, does not end the next
+ * call's frame */
+TEST(frame_advance_timeout_pauses_and_disarms_the_frame)
+{
+    test_emu_t stale = { TEST_EMU_STALE_FIRST, 0, 0, 0 };
+    cJSON *response, *item;
+    long elapsed_ms;
+
+    test_vsync_reset();
+    test_ui_pause_set(1);
+    response = test_frame_advance(1, NULL, &elapsed_ms);
+    ASSERT_NOT_NULL(response);
+    ASSERT_TRUE(elapsed_ms >= 1900);
+
+    item = cJSON_GetObjectItem(response, "frames");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 0);
+    ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "stopped_early")));
+    ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "timed_out")));
+    ASSERT_TRUE(ui_pause_active());
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(test_vsync_pending(), 1);
+
+    response = test_frame_advance(1, &stale, NULL);
+    ASSERT_NOT_NULL(response);
+    ASSERT_INT_EQ(stale.stale_stopped, 0);
+
+    item = cJSON_GetObjectItem(response, "frames");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 1);
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "timed_out") == NULL);
+
+    cJSON_Delete(response);
+    test_vsync_reset();
     test_ui_pause_reset();
 }
 
@@ -8421,6 +8706,11 @@ int main(void)
     RUN_TEST(execution_run_idempotent);
     RUN_TEST(frame_advance_requires_stopped_machine);
     RUN_TEST(frame_advance_rejects_bad_frame_count);
+    RUN_TEST(frame_advance_rejects_fractional_frame_count);
+    RUN_TEST(frame_advance_stops_after_the_last_frame);
+    RUN_TEST(frame_advance_returns_when_a_checkpoint_stops_the_machine);
+    RUN_TEST(frame_advance_ignores_callback_of_an_earlier_frame);
+    RUN_TEST(frame_advance_timeout_pauses_and_disarms_the_frame);
     RUN_TEST(execution_pause_run_cycle);
     RUN_TEST(commands_work_while_paused);
     RUN_TEST(registers_readable_while_paused);
