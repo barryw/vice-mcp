@@ -15,6 +15,7 @@
 #include <string.h>
 #include <strings.h>
 #include <dirent.h>
+#include <pthread.h>
 
 /* Forward declarations - avoid including VICE headers */
 typedef signed int log_t;
@@ -212,13 +213,70 @@ void keyboard_key_released(signed long key, int mod)
     (void)mod;
 }
 
-/* Vsync callback stub - used for keyboard auto-release */
+/* Vsync callback stub - used for keyboard auto-release and frame advance.
+ * Nothing runs the callbacks on its own: they are queued, and the frame
+ * advance tests run the vsync themselves with test_vsync_run_oldest(),
+ * from a thread standing in for the emulator's. */
 typedef void (*vsync_callback_func_t)(void *param);
+
+#define TEST_VSYNC_QUEUE_MAX 64
+
+static struct {
+    vsync_callback_func_t func;
+    void *param;
+} test_vsync_queue[TEST_VSYNC_QUEUE_MAX];
+static int test_vsync_queued = 0;
+static pthread_mutex_t test_vsync_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 void vsync_on_vsync_do(vsync_callback_func_t callback_func, void *callback_param)
 {
-    (void)callback_func;
-    (void)callback_param;
-    /* In tests, we don't actually call the callback - just record that it was scheduled */
+    pthread_mutex_lock(&test_vsync_mutex);
+    if (test_vsync_queued < TEST_VSYNC_QUEUE_MAX) {
+        test_vsync_queue[test_vsync_queued].func = callback_func;
+        test_vsync_queue[test_vsync_queued].param = callback_param;
+        test_vsync_queued++;
+    }
+    pthread_mutex_unlock(&test_vsync_mutex);
+}
+
+/* Test helper: number of callbacks queued and not yet run */
+int test_vsync_pending(void)
+{
+    int pending;
+
+    pthread_mutex_lock(&test_vsync_mutex);
+    pending = test_vsync_queued;
+    pthread_mutex_unlock(&test_vsync_mutex);
+    return pending;
+}
+
+/* Test helper: run the oldest queued callback, as a vsync would */
+void test_vsync_run_oldest(void)
+{
+    vsync_callback_func_t func;
+    void *param;
+
+    pthread_mutex_lock(&test_vsync_mutex);
+    if (test_vsync_queued == 0) {
+        pthread_mutex_unlock(&test_vsync_mutex);
+        return;
+    }
+    func = test_vsync_queue[0].func;
+    param = test_vsync_queue[0].param;
+    test_vsync_queued--;
+    memmove(&test_vsync_queue[0], &test_vsync_queue[1],
+            (size_t)test_vsync_queued * sizeof(test_vsync_queue[0]));
+    pthread_mutex_unlock(&test_vsync_mutex);
+
+    func(param);
+}
+
+/* Test helper: drop every queued callback */
+void test_vsync_reset(void)
+{
+    pthread_mutex_lock(&test_vsync_mutex);
+    test_vsync_queued = 0;
+    pthread_mutex_unlock(&test_vsync_mutex);
 }
 
 /* Vsync warp mode stubs - WarpMode is not a VICE resource, uses vsync API */
@@ -1103,9 +1161,18 @@ void ui_pause_enable(void)
     test_ui_pause_state = 1;
 }
 
+static int test_ui_pause_disables = 0;
+
 void ui_pause_disable(void)
 {
     test_ui_pause_state = 0;
+    test_ui_pause_disables++;
+}
+
+/* Test helper: how many times the pause flag has been dropped */
+int test_ui_pause_disable_count(void)
+{
+    return test_ui_pause_disables;
 }
 
 /* mcp_hold_paused() lives in monitor.c; in tests a hold returns at once */

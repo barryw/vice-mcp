@@ -46,14 +46,14 @@ without leaving your editor:
 - Capture screen states for documentation
 - Replay and analyze historical software
 
-## 60 Tools Across 13 Categories
+## 61 Tools Across 13 Categories
 
 Every tool follows MCP conventions with full JSON Schema validation, meaningful errors,
 and consistent parameter naming.
 
 | Category | Tools | What They Do |
 |---|---|---|
-| **Execution** | `vice.execution.run` `vice.execution.pause` `vice.execution.step` `vice.run_until` | Control the CPU — resume, halt, single-step, run to address or cycle count |
+| **Execution** | `vice.execution.run` `vice.execution.pause` `vice.execution.step` `vice.frame.advance` `vice.run_until` | Control the CPU — resume, halt, single-step, advance whole frames, run to address or cycle count |
 | **Registers** | `vice.registers.get` `vice.registers.set` | Read/write all 6502 registers (A, X, Y, SP, PC, status flags) |
 | **Memory** | `vice.memory.read` `vice.memory.write` `vice.memory.banks` `vice.memory.search` `vice.memory.fill` `vice.memory.compare` | Full memory access with bank selection, pattern search with wildcards |
 | **Checkpoints** | `vice.checkpoint.add` `vice.checkpoint.delete` `vice.checkpoint.list` `vice.checkpoint.toggle` `vice.checkpoint.set_condition` `vice.checkpoint.set_ignore_count` `vice.checkpoint.group.*` | Breakpoints, watchpoints, tracepoints — with conditions and groups |
@@ -417,7 +417,7 @@ is structured to export cleanly as unified diffs for SVN submission.
 ## Tool Reference
 
 <details>
-<summary><strong>Click to expand full reference for all 60 tools</strong></summary>
+<summary><strong>Click to expand full reference for all 61 tools</strong></summary>
 
 ### Execution Control
 
@@ -442,6 +442,23 @@ dropped. On a running machine the call arms the step and returns at once.
 |---|---|---|---|
 | `count` | number | | Instructions to step (default: 1, max: 10000) |
 | `stepOver` | boolean | | Step over subroutines |
+
+#### `vice.frame.advance`
+Run whole frames from a stopped machine and stop again, at the first
+instruction boundary after the vertical sync that ends the last frame,
+with registers exported. Joystick and keyboard state set while
+stopped is held while the frames run, which makes a frame-by-frame input
+loop possible: set input, advance one frame, read memory, repeat. The
+machine must already be stopped (by `vice.execution.pause`, a stopping
+checkpoint or `vice.execution.step`); otherwise the call returns error
+-32001. If a checkpoint stops the machine before the boundary, the reply
+carries `stopped_early: true` and the number of whole frames that ran. A
+frame that has not ended after 2 seconds is abandoned: the machine is
+paused at the next instruction boundary and the reply also carries
+`timed_out: true`.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `frames` | number | | Whole frames to run before stopping again (default: 1, max: 1000) |
 
 #### `vice.run_until`
 Run until address or for N cycles with timeout.
@@ -867,7 +884,7 @@ List all snapshots with metadata. No parameters.
 ## Project Status
 
 This is active, working software. The MCP server compiles and runs on Linux, macOS,
-and Windows. All 60 tools are implemented and tested. CI produces binaries for all
+and Windows. All 61 tools are implemented and tested. CI produces binaries for all
 three platforms on every push.
 
 **What's solid:**
