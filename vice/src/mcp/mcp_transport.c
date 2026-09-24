@@ -65,6 +65,7 @@
 
 #include "mcp_transport.h"
 #include "mcp_tools.h"
+#include "mcp_tools_internal.h"  /* For mcp_tool_name_matches */
 #include "cJSON.h"
 #include "log.h"
 #include "lib.h"
@@ -371,6 +372,18 @@ static void mcp_trap_handler(uint16_t addr, void *data)
     pthread_mutex_unlock(&req->mutex);
 }
 
+/* The tool a request runs: the "name" of a tools/call, else the method */
+static const char *mcp_requested_tool(const char *method, cJSON *params)
+{
+    cJSON *name_item;
+
+    if (strcmp(method, "tools/call") != 0) {
+        return method;
+    }
+    name_item = cJSON_GetObjectItem(params, "name");
+    return cJSON_IsString(name_item) ? name_item->valuestring : NULL;
+}
+
 /* Dispatch tool via trap mechanism for thread safety
  *
  * If emulator is running: queue trap, wait for execution on main thread
@@ -379,6 +392,32 @@ static void mcp_trap_handler(uint16_t addr, void *data)
 static cJSON* mcp_dispatch_via_trap(const char *tool_name, cJSON *params)
 {
     cJSON *serialized_response;
+    const char *requested = mcp_requested_tool(tool_name, params);
+
+    /* vice.execution.step and vice.frame.advance hold the dispatch slot
+     * while they wait, up to 2 s, for the machine to stop. Two calls must
+     * not queue behind them: vice.ping, to see that the server is alive,
+     * and vice.execution.pause, to cut the wait short (the waiting tool
+     * sees the pause flag and reports stopped_early). Neither needs the
+     * slot. ping only reads flags. pause needs the mainlock, which the
+     * waiting tool has given up, and takes it as the UI-pause path below
+     * does; inside the monitor the emulator thread holds it, and the
+     * monitor path below dispatches without it too. */
+    if (mcp_tool_name_matches("vice.ping", requested)) {
+        return mcp_tools_dispatch(tool_name, params);
+    }
+    if (mcp_tool_name_matches("vice.execution.pause", requested)) {
+        int in_monitor = monitor_is_inside_monitor();
+
+        if (!in_monitor) {
+            mainlock_obtain();
+        }
+        serialized_response = mcp_tools_dispatch(tool_name, params);
+        if (!in_monitor) {
+            mainlock_release();
+        }
+        return serialized_response;
+    }
 
     log_message(mcp_transport_log, "Waiting for MCP dispatch slot: %s", tool_name);
     pthread_mutex_lock(&dispatch_mutex);
@@ -1289,6 +1328,135 @@ int mcp_transport_test_active_trap_dispatches_once(void)
     test_trap_dispatch_count = 0;
 
     return complete && has_response && dispatch_count == 1;
+}
+
+/* One dispatch on its own thread, as an HTTP connection thread makes it */
+typedef struct {
+    const char *method;
+    cJSON *params;
+    cJSON *response;
+    int done;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+} mcp_transport_test_call_t;
+
+static void *mcp_transport_test_call_thread(void *arg)
+{
+    mcp_transport_test_call_t *call = (mcp_transport_test_call_t *)arg;
+    cJSON *response = mcp_dispatch_via_trap(call->method, call->params);
+
+    pthread_mutex_lock(&call->mutex);
+    call->response = response;
+    call->done = 1;
+    pthread_cond_signal(&call->cond);
+    pthread_mutex_unlock(&call->mutex);
+    return NULL;
+}
+
+/* Start `method` (tools/call of `tool` when tool is not NULL) and wait up
+ * to ms for it. Returns whether it finished; *call is left for
+ * mcp_transport_test_call_finish(). */
+static int mcp_transport_test_call_start(mcp_transport_test_call_t *call,
+                                         pthread_t *thread,
+                                         const char *method,
+                                         const char *tool, long ms)
+{
+    struct timespec deadline;
+    int done;
+
+    call->method = method;
+    call->params = cJSON_CreateObject();
+    if (tool != NULL) {
+        cJSON_AddStringToObject(call->params, "name", tool);
+        cJSON_AddItemToObject(call->params, "arguments", cJSON_CreateObject());
+    }
+    call->response = NULL;
+    call->done = 0;
+    pthread_mutex_init(&call->mutex, NULL);
+    pthread_cond_init(&call->cond, NULL);
+    pthread_create(thread, NULL, mcp_transport_test_call_thread, call);
+
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_nsec += ms * 1000000L;
+    deadline.tv_sec += deadline.tv_nsec / 1000000000L;
+    deadline.tv_nsec %= 1000000000L;
+
+    pthread_mutex_lock(&call->mutex);
+    while (!call->done) {
+        if (pthread_cond_timedwait(&call->cond, &call->mutex, &deadline) == ETIMEDOUT) {
+            break;
+        }
+    }
+    done = call->done;
+    pthread_mutex_unlock(&call->mutex);
+    return done;
+}
+
+/* Join the thread (the slot must be free by now) and say whether the call
+ * answered with a result rather than an error */
+static int mcp_transport_test_call_finish(mcp_transport_test_call_t *call,
+                                          pthread_t thread)
+{
+    int ok;
+
+    pthread_join(thread, NULL);
+    ok = call->response != NULL
+         && cJSON_GetObjectItem(call->response, "error") == NULL
+         && cJSON_GetObjectItem(call->response, "code") == NULL;
+    cJSON_Delete(call->response);
+    cJSON_Delete(call->params);
+    pthread_mutex_destroy(&call->mutex);
+    pthread_cond_destroy(&call->cond);
+    return ok;
+}
+
+/* #28: with the slot held, as a waiting step or frame advance holds it,
+ * vice.ping (by method, by name and by client name) and vice.execution.pause
+ * still answer */
+int mcp_transport_test_ping_and_pause_skip_dispatch_slot(void)
+{
+    static const struct { const char *method; const char *tool; } calls[] = {
+        { "vice.ping", NULL },
+        { "tools/call", "vice.ping" },
+        { "tools/call", "vice_ping" },
+        { "tools/call", "vice.execution.pause" },
+    };
+    size_t i;
+    int all_ok = 1;
+
+    pthread_mutex_lock(&dispatch_mutex);
+    for (i = 0; i < sizeof(calls) / sizeof(calls[0]); i++) {
+        mcp_transport_test_call_t call;
+        pthread_t thread;
+        int done = mcp_transport_test_call_start(&call, &thread, calls[i].method,
+                                                 calls[i].tool, 1000);
+
+        if (!done) {
+            /* Queued behind the slot: let it through to join it */
+            pthread_mutex_unlock(&dispatch_mutex);
+            mcp_transport_test_call_finish(&call, thread);
+            return 0;
+        }
+        all_ok = mcp_transport_test_call_finish(&call, thread) && all_ok;
+    }
+    pthread_mutex_unlock(&dispatch_mutex);
+    return all_ok;
+}
+
+/* Every other tool still waits for the slot */
+int mcp_transport_test_other_tools_wait_for_dispatch_slot(void)
+{
+    mcp_transport_test_call_t call;
+    pthread_t thread;
+    int early;
+
+    pthread_mutex_lock(&dispatch_mutex);
+    early = mcp_transport_test_call_start(&call, &thread, "tools/call",
+                                          "vice.registers.get", 100);
+    pthread_mutex_unlock(&dispatch_mutex);
+
+    /* finish joins, so the call has run once the slot came free */
+    return !early && mcp_transport_test_call_finish(&call, thread);
 }
 
 int mcp_transport_test_all_interfaces_without_token_starts(void)

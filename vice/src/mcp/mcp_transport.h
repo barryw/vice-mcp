@@ -82,6 +82,8 @@ extern int mcp_transport_sse_send_event(const char *event_type, const char *data
 extern int mcp_transport_test_dispatch_mutex_serializes(void);
 extern int mcp_transport_test_abandoned_trap_skips_dispatch(void);
 extern int mcp_transport_test_active_trap_dispatches_once(void);
+extern int mcp_transport_test_ping_and_pause_skip_dispatch_slot(void);
+extern int mcp_transport_test_other_tools_wait_for_dispatch_slot(void);
 extern int mcp_transport_test_all_interfaces_without_token_starts(void);
 extern int mcp_transport_test_cors_without_token_rejected(void);
 
