@@ -2,6 +2,19 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v3.13.0](https://github.com/barryw/vice-mcp/compare/962d86c0e5fe9ca0baaf928602d20080537fbb88..v3.13.0) - 2026-09-24
+#### Features
+- (**mcp**) add vice.frame.advance, run N frames from a stopped machine - ([962d86c](https://github.com/barryw/vice-mcp/commit/962d86c0e5fe9ca0baaf928602d20080537fbb88)) - Aaron Bell
+#### Bug Fixes
+- (**mcp**) bound the step wait by the clock, not a count of polls - ([cdc1aec](https://github.com/barryw/vice-mcp/commit/cdc1aec1a9adbba9081b014fc03f2d44c9c057ca)) - Aaron Bell, Claude Opus 5.5
+- (**mcp**) stop a step that runs long, drop one a checkpoint cuts short - ([79c7204](https://github.com/barryw/vice-mcp/commit/79c7204a326746b168d2d6b3fbff12d3fcce49e4)) - Aaron Bell, Claude Opus 5.5
+- (**mcp**) end vice.frame.advance at a checkpoint and disarm stale frames - ([849f661](https://github.com/barryw/vice-mcp/commit/849f6611a1a7590b4b3cf35d56daeeab7ba59c34)) - Aaron Bell, Claude Opus 5.5
+- (**mcp**) make vice.execution.step run on a held machine and reply after it - ([ab6f88d](https://github.com/barryw/vice-mcp/commit/ab6f88d19194006b802b3890025edd6d0d4a9790)) - Aaron Bell, Claude Fable 5.1
+#### CI/CD
+- build and run MCP unit tests on pull requests - ([bd11bd0](https://github.com/barryw/vice-mcp/commit/bd11bd0a28401e8b635fc577d322072633ac592f)) - Barry Walker, Claude Opus 5.5 (1M context)
+
+- - -
+
 ## [v3.12.1](https://github.com/barryw/vice-mcp/compare/6b433ec0a5b34f50d9a519ca2ba54ff640e73df6..v3.12.1) - 2026-09-24
 #### Bug Fixes
 - (**charset**) stop PETSCII->UTF-8 conversion writing past its buffer - ([df646f2](https://github.com/barryw/vice-mcp/commit/df646f2a0216e58d76f4a86c0f9d5f4cfa402e8e)) - Barry Walker, Claude Opus 5.5 (1M context)
