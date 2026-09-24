@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v3.12.1](https://github.com/barryw/vice-mcp/compare/6b433ec0a5b34f50d9a519ca2ba54ff640e73df6..v3.12.1) - 2026-09-24
+#### Bug Fixes
+- (**charset**) stop PETSCII->UTF-8 conversion writing past its buffer - ([df646f2](https://github.com/barryw/vice-mcp/commit/df646f2a0216e58d76f4a86c0f9d5f4cfa402e8e)) - Barry Walker, Claude Opus 5.5 (1M context)
+#### Documentation
+- (**readme**) fix remaining tool count in reference summary - ([8ac000c](https://github.com/barryw/vice-mcp/commit/8ac000c5e6097713ae1a9f1d5c9fd586b7a8205d)) - Barry Walker, Claude Opus 5.5 (1M context)
+- (**readme**) drop unregistered tools, complete Debian deps - ([ed02d7f](https://github.com/barryw/vice-mcp/commit/ed02d7f453d76bfc1860fc94e3e203d5b78615e9)) - Barry Walker, Claude Opus 5.5 (1M context)
+
+- - -
+
 ## [v3.12.0](https://github.com/barryw/vice-mcp/compare/dd8ce547e266ad6afb060f63ea0de56c4d9996f4..v3.12.0) - 2026-09-23
 #### Features
 - (**mcp**) let vice.watch.add take stop, load and store like checkpoint.add - ([90e5ee4](https://github.com/barryw/vice-mcp/commit/90e5ee45c27fe91ae965370f24d29afbf067175c)) - Aaron Bell
