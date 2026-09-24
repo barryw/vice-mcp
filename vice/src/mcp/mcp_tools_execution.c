@@ -31,6 +31,7 @@
 #include "monitor.h"  /* For mon_instructions_step/next, exit_mon, mcp_hold_paused */
 #include "interrupt.h"  /* For interrupt_maincpu_trigger_trap */
 #include "ui.h"       /* For ui_pause_enable/disable/active */
+#include "archdep_tick.h"  /* For tick_now/tick_now_delta/tick_sleep/tick_per_second */
 
 /* mcp_step_active state is defined in monitor.c to avoid a circular link
  * dependency between libmonitor.a and libmcp.a (GNU ld limitation).
@@ -118,12 +119,27 @@ cJSON* mcp_tool_execution_pause(cJSON *params)
     return response;
 }
 
+/* A step on a held machine is waited for, polling every 0.2 ms for up to
+ * 2 s by the clock: a count of polls would stretch with every oversleep of
+ * tick_sleep(), to tens of seconds on Windows. The count is capped to stay
+ * well inside that at any speed near normal (running further is what a
+ * checkpoint and vice.execution.run are for). A step over a subroutine
+ * counts as one instruction however long the subroutine runs; only the
+ * wait bounds it. */
+#define MCP_STEP_COUNT_MAX  10000
+#define MCP_STEP_TIMEOUT_S  2
+
 cJSON* mcp_tool_execution_step(cJSON *params)
 {
     cJSON *response;
     cJSON *count_item, *step_over_item;
     int count = 1;
     bool step_over = false;
+    int was_held;
+    int completed = 0;
+    int stopped_early = 0;
+    int timed_out = 0;
+    tick_t start;
 
     log_message(mcp_tools_log, "Handling vice.execution.step");
 
@@ -135,6 +151,11 @@ cJSON* mcp_tool_execution_step(cJSON *params)
             if (count < 1) {
                 count = 1;
             }
+            if (count > MCP_STEP_COUNT_MAX) {
+                return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                                 "count must be at most 10000; to run further, "
+                                 "stop at a checkpoint with vice.execution.run");
+            }
         }
 
         step_over_item = cJSON_GetObjectItem(params, "stepOver");
@@ -144,7 +165,7 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     }
 
     /* Set MCP step mode flag - this tells monitor_check_icount() to use
-     * ui_pause_enable() instead of monitor_startup() when stepping completes,
+     * mcp_hold_paused() instead of monitor_startup() when stepping completes,
      * preventing the monitor window from opening during MCP operations. */
     mcp_set_step_active(1);
 
@@ -157,6 +178,46 @@ cJSON* mcp_tool_execution_step(cJSON *params)
         mon_instructions_step(count);
     }
 
+    /* Those only arm the count. A machine stopped by a checkpoint hit, a
+     * completed step, vice.execution.pause or vice.frame.advance is held
+     * on the emulator thread in mcp_hold_paused(), and stays held until
+     * the pause flag drops: without this, the tool reports ok and nothing
+     * moves. Release the hold, give the mainlock up so the emulator thread
+     * can take it, and wait for the hold to take again, so the reply comes
+     * back after the step, with the registers exported and vice.registers.get
+     * truthful. A running machine is left alone: the count stops it. */
+    was_held = ui_pause_active();
+    if (was_held) {
+        ui_pause_disable();
+        mainlock_release();
+        start = tick_now();
+        while (!ui_pause_active()
+               && tick_now_delta(start) < MCP_STEP_TIMEOUT_S * tick_per_second()) {
+            tick_sleep(tick_per_second() / 5000);   /* 0.2 ms; a step is microseconds */
+        }
+        mainlock_obtain();
+        if (!ui_pause_active()) {
+            /* Still running: a step over a subroutine that takes its time,
+             * or a count the machine's speed does not get through. Do not
+             * leave it running on a reply that says the step is over: drop
+             * the rest of the step and stop the machine where it is, the
+             * way vice.execution.pause does. */
+            timed_out = 1;
+            mcp_cancel_step();
+            ui_pause_enable();
+            interrupt_maincpu_trigger_trap(mcp_pause_trap, NULL);
+        } else if (mcp_is_step_active()) {
+            /* Held, but not by the step, which clears the flag before it
+             * holds (monitor_check_icount()): a checkpoint got there first.
+             * Drop the rest of the step, or it stops the machine again
+             * after the next resume. */
+            stopped_early = 1;
+            mcp_cancel_step();
+        } else {
+            completed = 1;
+        }
+    }
+
     response = cJSON_CreateObject();
     if (response == NULL) {
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
@@ -165,6 +226,27 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddNumberToObject(response, "instructions", count);
     cJSON_AddBoolToObject(response, "step_over", step_over);
+    if (was_held) {
+        cJSON_AddBoolToObject(response, "completed", completed);
+    }
+    if (completed || stopped_early) {
+        cJSON_AddNumberToObject(response, "PC", maincpu_get_pc());
+    }
+    if (stopped_early) {
+        cJSON_AddBoolToObject(response, "stopped_early", true);
+        cJSON_AddStringToObject(response, "message",
+            "Something else stopped the machine before the step finished "
+            "(a checkpoint?); the rest of the step was dropped and the "
+            "machine is paused there");
+    }
+    if (timed_out) {
+        /* No PC: the machine stops at the next instruction boundary, after
+         * this reply has gone. */
+        cJSON_AddBoolToObject(response, "timed_out", true);
+        cJSON_AddStringToObject(response, "message",
+            "The step did not finish within 2 s; the rest of it was dropped "
+            "and the machine has been paused at the next instruction boundary");
+    }
 
     return response;
 }

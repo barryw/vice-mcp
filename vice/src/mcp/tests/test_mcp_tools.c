@@ -15,6 +15,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <pthread.h>
+#include <time.h>
 
 #include "cJSON.h"
 
@@ -948,6 +950,7 @@ TEST(execution_step_default_params)
 {
     cJSON *response, *status_item, *instructions_item;
 
+    test_ui_pause_reset();  /* running: the step is armed and the call returns */
     response = mcp_tool_execution_step(NULL);
     ASSERT_NOT_NULL(response);
 
@@ -968,6 +971,7 @@ TEST(execution_step_with_count)
 {
     cJSON *response, *params, *instructions_item;
 
+    test_ui_pause_reset();
     params = cJSON_CreateObject();
     cJSON_AddNumberToObject(params, "count", 10);
 
@@ -987,6 +991,7 @@ TEST(execution_step_with_step_over)
 {
     cJSON *response, *params, *step_over_item;
 
+    test_ui_pause_reset();
     params = cJSON_CreateObject();
     cJSON_AddBoolToObject(params, "stepOver", 1);
 
@@ -1006,6 +1011,7 @@ TEST(execution_step_dispatch_works)
 {
     cJSON *response;
 
+    test_ui_pause_reset();
     response = mcp_tools_dispatch("vice.execution.step", NULL);
     ASSERT_NOT_NULL(response);
 
@@ -1013,6 +1019,162 @@ TEST(execution_step_dispatch_works)
     ASSERT_TRUE(cJSON_GetObjectItem(response, "code") == NULL);
 
     cJSON_Delete(response);
+}
+
+extern int mcp_is_step_active(void);
+extern void mcp_clear_step_active(void);
+
+/* Test: execution.step refuses a count above 10000 rather than wait on it */
+TEST(execution_step_rejects_count_above_max)
+{
+    cJSON *params, *response, *code_item;
+
+    mcp_clear_step_active();
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "count", 10001);
+    response = mcp_tools_dispatch("vice.execution.step", params);
+    ASSERT_NOT_NULL(response);
+
+    code_item = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code_item);
+    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(mcp_is_step_active(), 0);
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
+/* On a held machine execution.step lets it go and polls until it is held
+ * again. These tests hold it from a second thread, as the emulator thread
+ * would: the step finishing (monitor_check_icount() clears the step flag,
+ * then holds) or a checkpoint (holds, with the flag still set). */
+extern int ui_pause_active(void);
+extern void ui_pause_enable(void);
+extern int test_step_cancel_count(void);
+
+typedef struct {
+    int finish;     /* 1: the step finishes; 0: a checkpoint stops it first */
+    int released;   /* the tool let the machine go */
+} test_step_emu_t;
+
+static void *test_step_emu_thread(void *arg)
+{
+    test_step_emu_t *emu = (test_step_emu_t *)arg;
+    struct timespec ms = { 0, 1000000L };
+    int i;
+
+    for (i = 0; i < 5000 && ui_pause_active(); i++) {
+        nanosleep(&ms, NULL);
+    }
+    if (ui_pause_active()) {
+        return NULL;
+    }
+    emu->released = 1;
+    if (emu->finish) {
+        mcp_clear_step_active();
+    }
+    ui_pause_enable();
+    return NULL;
+}
+
+/* Step a held machine, held again as `emu` says, or not at all when emu
+ * is NULL. Returns the reply; *elapsed_ms is how long the call took. */
+static cJSON *test_step_held(cJSON *params, test_step_emu_t *emu, long *elapsed_ms)
+{
+    pthread_t thread;
+    struct timespec start, end;
+    cJSON *response;
+
+    test_ui_pause_set(1);
+    if (emu != NULL) {
+        pthread_create(&thread, NULL, test_step_emu_thread, emu);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    response = mcp_tools_dispatch("vice.execution.step", params);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    if (emu != NULL) {
+        pthread_join(thread, NULL);
+    }
+    if (elapsed_ms != NULL) {
+        *elapsed_ms = (long)(end.tv_sec - start.tv_sec) * 1000L
+            + (end.tv_nsec - start.tv_nsec) / 1000000L;
+    }
+    return response;
+}
+
+/* Test: execution.step on a held machine replies after the step, with
+ * completed and the PC */
+TEST(execution_step_held_replies_after_the_step)
+{
+    test_step_emu_t emu = { 1, 0 };
+    cJSON *response;
+    int cancels = test_step_cancel_count();
+
+    response = test_step_held(NULL, &emu, NULL);
+    ASSERT_NOT_NULL(response);
+    ASSERT_INT_EQ(emu.released, 1);
+    ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "completed")));
+    ASSERT_NOT_NULL(cJSON_GetObjectItem(response, "PC"));
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "stopped_early") == NULL);
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "timed_out") == NULL);
+    ASSERT_INT_EQ(test_step_cancel_count(), cancels);
+    ASSERT_TRUE(ui_pause_active());
+
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* Test: a checkpoint that stops the machine before the step finishes is
+ * not reported as the step completing, and the rest of the step is
+ * dropped, so that it cannot stop the machine after the next resume */
+TEST(execution_step_held_stopped_by_checkpoint)
+{
+    test_step_emu_t emu = { 0, 0 };
+    cJSON *params, *response;
+    int cancels = test_step_cancel_count();
+
+    params = cJSON_CreateObject();
+    cJSON_AddBoolToObject(params, "stepOver", 1);
+    response = test_step_held(params, &emu, NULL);
+    ASSERT_NOT_NULL(response);
+    ASSERT_INT_EQ(emu.released, 1);
+    ASSERT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(response, "completed")));
+    ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "stopped_early")));
+    ASSERT_NOT_NULL(cJSON_GetObjectItem(response, "PC"));
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "timed_out") == NULL);
+    ASSERT_INT_EQ(test_step_cancel_count(), cancels + 1);
+    ASSERT_INT_EQ(mcp_is_step_active(), 0);
+    ASSERT_TRUE(ui_pause_active());
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* Test: a step on a held machine that does not finish within the budget
+ * is dropped and the machine paused again, not left running under a
+ * reply that says ok */
+TEST(execution_step_held_times_out_paused)
+{
+    cJSON *params, *response;
+    long elapsed_ms;
+    int cancels = test_step_cancel_count();
+
+    params = cJSON_CreateObject();
+    cJSON_AddBoolToObject(params, "stepOver", 1);
+    response = test_step_held(params, NULL, &elapsed_ms);
+    ASSERT_NOT_NULL(response);
+    ASSERT_TRUE(elapsed_ms >= 1900);
+    ASSERT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(response, "completed")));
+    ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "timed_out")));
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "PC") == NULL);
+    ASSERT_INT_EQ(test_step_cancel_count(), cancels + 1);
+    ASSERT_INT_EQ(mcp_is_step_active(), 0);
+    ASSERT_TRUE(ui_pause_active());
+
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_ui_pause_reset();
 }
 
 /* ===================================================================
@@ -1436,7 +1598,9 @@ TEST(execution_pause_doesnt_affect_step_mode)
     /* Step mode should still be inactive */
     ASSERT_INT_EQ(mcp_is_step_active(), 0);
 
-    /* Now set step mode */
+    /* Now set step mode, on a running machine, where the step is armed
+     * and the call returns (on a held one it waits for the step) */
+    test_ui_pause_reset();
     response = mcp_tool_execution_step(NULL);
     ASSERT_NOT_NULL(response);
     cJSON_Delete(response);
@@ -8363,6 +8527,10 @@ int main(void)
     RUN_TEST(execution_step_with_count);
     RUN_TEST(execution_step_with_step_over);
     RUN_TEST(execution_step_dispatch_works);
+    RUN_TEST(execution_step_rejects_count_above_max);
+    RUN_TEST(execution_step_held_replies_after_the_step);
+    RUN_TEST(execution_step_held_stopped_by_checkpoint);
+    RUN_TEST(execution_step_held_times_out_paused);
 
     /* UI Pause state tests (critical for pause without monitor popup) */
     RUN_TEST(execution_pause_enables_ui_pause);

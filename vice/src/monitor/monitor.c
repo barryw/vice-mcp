@@ -3063,6 +3063,26 @@ void monitor_check_icount(uint16_t pc)
     monitor_startup(e_default_space);
 }
 
+#ifdef HAVE_MCP_SERVER
+/* Drop a step that has not finished, as monitor_check_icount() does when
+ * one finishes: the MCP client gave up waiting for it, or a checkpoint
+ * stopped the machine first. Left armed, it would stop the machine again
+ * at some later instruction, after the client has moved on. */
+void mcp_cancel_step(void)
+{
+    instruction_count = 0;
+    wait_for_return_level = 0;
+    skip_jsrs = false;
+    if (monitor_mask[default_memspace] & MI_STEP) {
+        monitor_mask[default_memspace] &= ~MI_STEP;
+        if (!monitor_mask[default_memspace]) {
+            interrupt_monitor_trap_off(mon_interfaces[default_memspace]->int_status);
+        }
+    }
+    mcp_clear_step_active();
+}
+#endif
+
 /* called by cpu core */
 void monitor_check_icount_interrupt(void)
 {

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <time.h>
 #include <string.h>
 #include <strings.h>
 #include <dirent.h>
@@ -1112,6 +1113,22 @@ void mcp_hold_paused(void)
 {
 }
 
+/* mcp_cancel_step() lives in monitor.c; here it drops the step flag, as
+ * the real one does with the rest of the step, and counts the call */
+static int test_step_cancels = 0;
+
+void mcp_cancel_step(void)
+{
+    test_mcp_step_active = 0;
+    test_step_cancels++;
+}
+
+/* Test helper: how many times a step has been dropped */
+int test_step_cancel_count(void)
+{
+    return test_step_cancels;
+}
+
 /* Test helper to reset UI pause state */
 void test_ui_pause_reset(void)
 {
@@ -1233,6 +1250,39 @@ void *lib_calloc(size_t nmemb, size_t size)
 void *lib_realloc(void *ptr, size_t size)
 {
     return realloc(ptr, size);
+}
+
+/* archdep_tick.h: the step tool polls for the hold with these, against
+ * the clock. The sleep is real, so that a test can stop the machine from
+ * another thread while the tool waits, and a step that nothing stops runs
+ * out its budget. */
+typedef uint32_t tick_t;
+
+tick_t tick_per_second(void)
+{
+    return 1000000;
+}
+
+tick_t tick_now(void)
+{
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (tick_t)((uint64_t)now.tv_sec * 1000000u + (uint64_t)now.tv_nsec / 1000u);
+}
+
+tick_t tick_now_delta(tick_t previous_tick)
+{
+    return tick_now() - previous_tick;
+}
+
+void tick_sleep(tick_t delay)
+{
+    struct timespec ts;
+
+    ts.tv_sec = (time_t)(delay / 1000000);
+    ts.tv_nsec = (long)(delay % 1000000) * 1000L;
+    nanosleep(&ts, NULL);
 }
 
 /* Mainlock stubs (needed by mcp_transport.o via force_load) */
