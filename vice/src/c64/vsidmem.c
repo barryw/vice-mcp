@@ -446,13 +446,13 @@ void mem_read_base_set(unsigned int base, unsigned int index, uint8_t *mem_ptr)
 {
     mem_read_base_tab[base][index] = mem_ptr;
 }
-
+#if 0
 /* add actual pointer */
 void mem_read_addr_set(unsigned int base, unsigned int index, uintptr_t addr)
 {
     mem_read_base_tab[base][index] += addr;
 }
-
+#endif
 
 void mem_read_limit_set(unsigned int base, unsigned int index, uint32_t limit)
 {
@@ -511,7 +511,7 @@ void mem_initialize_memory(void)
 
     /* Setup character generator ROM at $D000-$DFFF (memory configs 1, 2, 3, 9, 10, 11, 25, 26, 27).  */
     for (i = 0xd0; i <= 0xdf; i++) {
-        uintptr_t addr = 0 - 0xd000;
+        /*uintptr_t addr = 0 - 0xd000;*/
 
         mem_read_tab[1][i] = chargen_read;
         mem_read_tab[2][i] = chargen_read;
@@ -522,16 +522,16 @@ void mem_initialize_memory(void)
         mem_read_tab[25][i] = chargen_read;
         mem_read_tab[26][i] = chargen_read;
         mem_read_tab[27][i] = chargen_read;
-#if 0
-        mem_read_base_tab[1][i] = (uint8_t *)(mem_chargen_rom - (uint8_t *)0xd000);
-        mem_read_base_tab[2][i] = (uint8_t *)(mem_chargen_rom - (uint8_t *)0xd000);
-        mem_read_base_tab[3][i] = (uint8_t *)(mem_chargen_rom - (uint8_t *)0xd000);
-        mem_read_base_tab[9][i] = (uint8_t *)(mem_chargen_rom - (uint8_t *)0xd000);
-        mem_read_base_tab[10][i] = (uint8_t *)(mem_chargen_rom - (uint8_t *)0xd000);
-        mem_read_base_tab[11][i] = (uint8_t *)(mem_chargen_rom - (uint8_t *)0xd000);
-        mem_read_base_tab[25][i] = (uint8_t *)(mem_chargen_rom - (uint8_t *)0xd000);
-        mem_read_base_tab[26][i] = (uint8_t *)(mem_chargen_rom - (uint8_t *)0xd000);
-        mem_read_base_tab[27][i] = (uint8_t *)(mem_chargen_rom - (uint8_t *)0xd000);
+#if 1
+        mem_read_base_tab[1][i] = (uint8_t *)((uintptr_t)mem_chargen_rom - (uintptr_t)0xd000);
+        mem_read_base_tab[2][i] = (uint8_t *)((uintptr_t)mem_chargen_rom - (uintptr_t)0xd000);
+        mem_read_base_tab[3][i] = (uint8_t *)((uintptr_t)mem_chargen_rom - (uintptr_t)0xd000);
+        mem_read_base_tab[9][i] = (uint8_t *)((uintptr_t)mem_chargen_rom - (uintptr_t)0xd000);
+        mem_read_base_tab[10][i] = (uint8_t *)((uintptr_t)mem_chargen_rom - (uintptr_t)0xd000);
+        mem_read_base_tab[11][i] = (uint8_t *)((uintptr_t)mem_chargen_rom - (uintptr_t)0xd000);
+        mem_read_base_tab[25][i] = (uint8_t *)((uintptr_t)mem_chargen_rom - (uintptr_t)0xd000);
+        mem_read_base_tab[26][i] = (uint8_t *)((uintptr_t)mem_chargen_rom - (uintptr_t)0xd000);
+        mem_read_base_tab[27][i] = (uint8_t *)((uintptr_t)mem_chargen_rom - (uintptr_t)0xd000);
 #else
         mem_read_base_set(1, i, (uint8_t*)addr);
         mem_read_base_set(2, i, (uint8_t*)addr);
@@ -999,6 +999,27 @@ mem_ioreg_list_t *mem_ioreg_list_get(void *context)
     }
     if (sid_stereo >= 2) {
         mon_ioreg_add_list(&mem_ioreg_list, "SID3", sid3_address_start, sid3_address_start + 0x1f, sid3_dump, NULL, IO_MIRROR_NONE);
+    }
+    if (sid_stereo >= 3) {
+        mon_ioreg_add_list(&mem_ioreg_list, "SID4", sid4_address_start, sid4_address_start + 0x1f, sid4_dump, NULL, IO_MIRROR_NONE);
+    }
+    if (sid_stereo >= 4) {
+        mon_ioreg_add_list(&mem_ioreg_list, "SID5", sid5_address_start, sid5_address_start + 0x1f, sid5_dump, NULL, IO_MIRROR_NONE);
+    }
+    if (sid_stereo >= 5) {
+        mon_ioreg_add_list(&mem_ioreg_list, "SID6", sid6_address_start, sid6_address_start + 0x1f, sid6_dump, NULL, IO_MIRROR_NONE);
+    }
+    if (sid_stereo >= 6) {
+        mon_ioreg_add_list(&mem_ioreg_list, "SID7", sid7_address_start, sid7_address_start + 0x1f, sid7_dump, NULL, IO_MIRROR_NONE);
+    }
+    if (sid_stereo >= 7) {
+        mon_ioreg_add_list(&mem_ioreg_list, "SID8", sid8_address_start, sid8_address_start + 0x1f, sid8_dump, NULL, IO_MIRROR_NONE);
+    }
+    if (sid_stereo >= 8) {
+        mon_ioreg_add_list(&mem_ioreg_list, "SID9", sid9_address_start, sid9_address_start + 0x1f, sid9_dump, NULL, IO_MIRROR_NONE);
+    }
+    if (sid_stereo >= 9) {
+        mon_ioreg_add_list(&mem_ioreg_list, "SID10", sid10_address_start, sid10_address_start + 0x1f, sid10_dump, NULL, IO_MIRROR_NONE);
     }
     return mem_ioreg_list;
 }

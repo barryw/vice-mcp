@@ -1751,15 +1751,15 @@ The -23 ROM is a revised -19 ROM)
 @file{edit-2-n.901447-24.bin}, the PET3032 editor for graphics keyboards (2 KiB)
 (Commodore ROM image 901447-24)
 @item
-@file{edit-4-40-n-50Hz.901498-01.bi}, the PET4032 editor for graphics keyboards (2 KiB)
+@file{edit-4-40-n-50Hz.901498-01.bin}, the PET4032 editor for graphics keyboards (2 KiB)
 (Commodore ROM image 901498-01)
 @item
 @file{edit-4-40-b-50Hz.ts.bin}, the PET4032 editor for business keyboards (2 KiB)
 (Said to be "901498-01 modified to use a business keyboard on a 50Hz 4032")
 
 @item
-@file{edit-4-80-b-50Hz.901474-04_.bin}, the PET8032 editor for business keyboards (2 KiB)
-(Commodore ROM image 901474-04-?)
+@file{edit-4-80-b-50Hz.901474-04.bin}, the PET8032 editor for business keyboards (2 KiB)
+(Commodore ROM image 901474-04)
 
 @item
 @file{characters-1.901447-08.bin}, the character generator ROM (2KiB)
@@ -8907,6 +8907,9 @@ Set the device attached to the second tape port (xpet only, see table below):
 @item 7
 @tab WordCraft dongle
 @tab xpet
+@item 8
+@tab PetSpeed dongle
+@tab xpet (port 1 only)
 @end multitable
 
 @table @code
@@ -10120,6 +10123,8 @@ MACH 5
 @item
 Magic Desk
 @item
+Magic Desk Plus
+@item
 Magic Desk 16
 @item
 Magic Formel
@@ -10565,6 +10570,8 @@ The following cartridge types are valid:
 85: Magic Desk 16
 @item
 86: Protovision "Megabyter"
+@item
+87: Magic Desk Plus
 @end itemize
 
 @vindex CartridgeFile
@@ -10812,6 +10819,31 @@ numeric digits. Default is 87000000. LTK DOS install disks are locked to their
 respective LTK host adapor boot ROM. This setting will override the boot ROM 
 value.  The floppy disk serial number can be changed with a sector editor on 
 track 18, sector 18.
+
+@vindex MagicDeskPlusRevision
+@item MagicDeskPlusRevision
+Integer specifying the Magic Desk Plus hardware revision.
+(0: SRAM + 32KiB EEPROM, 1: SRAM + 8KiB EEPROM, 2: 32KiB EEPROM, 3: 8KiB EEPROM or 4: SRAM only)
+
+@vindex MagicDeskPlusSRAMImage
+@item MagicDeskPlusSRAMImage
+String specifying the filename of the optional 128KiB Magic Desk Plus SRAM
+image. Without an image, SRAM is still emulated, but its contents are temporary.
+
+@vindex MagicDeskPlusSRAMWrite
+@item MagicDeskPlusSRAMWrite
+Boolean specifying whether the Magic Desk Plus SRAM image is saved when the
+cartridge is detached or the emulator exits.
+
+@vindex MagicDeskPlusEEPROMImage
+@item MagicDeskPlusEEPROMImage
+String specifying the filename of the optional 8KiB or 32KiB Magic Desk Plus
+EEPROM image. Without an image, an 8KiB EEPROM is emulated temporarily.
+
+@vindex MagicDeskPlusEEPROMWrite
+@item MagicDeskPlusEEPROMWrite
+Boolean specifying whether the Magic Desk Plus EEPROM image is saved when the
+cartridge is detached or the emulator exits.
 
 @vindex MagicVoiceCartridgeEnabled
 @item MagicVoiceCartridgeEnabled
@@ -11695,6 +11727,39 @@ Set MMC Replay clockport device
 (@code{MMCRClockPort}).
 (0: None, 1: ETH64-II, 2: RRNet, 3: Silver Surfer, 4: MP3@@64, 5: Catweasel MkIII SID)
 
+@findex -cartmdp
+@item -cartmdp <name>
+Attach raw 256/512/1024KiB Magic Desk Plus cartridge image. The revision selected
+by @code{MagicDeskPlusRevision} is used.
+
+@findex -magicdeskplusrevision
+@item -magicdeskplusrevision <revision>
+Specify Magic Desk Plus revision
+(@code{MagicDeskPlusRevision}).
+(0: SRAM + 32KiB EEPROM, 1: SRAM + 8KiB EEPROM, 2: 32KiB EEPROM, 3: 8KiB EEPROM or 4: SRAM only)
+
+@findex -magicdeskplussramimage
+@item -magicdeskplussramimage <filename>
+Specify Magic Desk Plus SRAM image filename
+(@code{MagicDeskPlusSRAMImage}).
+
+@findex -magicdeskplussramwrite, +magicdeskplussramwrite
+@item -magicdeskplussramwrite
+@itemx +magicdeskplussramwrite
+Allow/disallow writes to Magic Desk Plus SRAM image
+(@code{MagicDeskPlusSRAMWrite=1}, @code{MagicDeskPlusSRAMWrite=0}).
+
+@findex -magicdeskpluseepromimage
+@item -magicdeskpluseepromimage <filename>
+Specify Magic Desk Plus EEPROM image filename
+(@code{MagicDeskPlusEEPROMImage}).
+
+@findex -magicdeskpluseepromwrite, +magicdeskpluseepromwrite
+@item -magicdeskpluseepromwrite
+@itemx +magicdeskpluseepromwrite
+Allow/disallow writes to Magic Desk Plus EEPROM image
+(@code{MagicDeskPlusEEPROMWrite=1}, @code{MagicDeskPlusEEPROMWrite=0}).
+
 @findex -cartmv
 @item -cartmv <name>
 Attach raw 16KiB Magic Voice cartridge image.
@@ -12544,7 +12609,8 @@ almost 20kHz).
 @vindex SidStereo
 @item SidStereo
 Integer specifying the amount of emulated extra SIDs.
-(0: off, 1: 1 extra sid, 2: 2 extra sids, 3: three extra sids, 4: four extra sids, 5: five extra sids, 6: six extra sids, 7: seven extra sids)
+(0: off, 1: 1 extra sid, 2: 2 extra sids, 3: three extra sids, 4: four extra sids,
+ 5: five extra sids, 6: six extra sids, 7: seven extra sids, 8: eight extra sids, 9: nine extra sids)
 
 @vindex Sid2AddressStart
 @item Sid2AddressStart
@@ -12645,6 +12711,38 @@ Integer specifying the base address of the seventh SID
 @vindex Sid8AddressStart
 @item Sid8AddressStart
 Integer specifying the base address of the eigth SID
+(x64, x64sc, xscpu64, x128 and vsid only).
+(x128: 0xD420, 0xD440, 0xD460, 0xD480, 0xD4A0, 0xD4C0, 0xD4E0,
+0xD700, 0xD720, 0xD740, 0xD760, 0xD780, 0xD7A0, 0xD7C0, 0xD7E0,
+0xDE00, 0xDE20, 0xDE40, 0xDE60, 0xDE80, 0xDEA0, 0xDEC0, 0xDEE0,
+0xDF00, 0xDF20, 0xDF40, 0xDF60, 0xDF80, 0xDFA0, 0xDFC0, 0xDFE0)
+(x64, x64sc, xscpu64, vsid: 0xD420, 0xD440, 0xD460, 0xD480, 0xD4A0,
+0xD4C0, 0xD4E0, 0xD500, 0xD520, 0xD540, 0xD560, 0xD580, 0xD5A0,
+0xD5C0, 0xD5E0, 0xD600, 0xD620, 0xD640, 0xD660, 0xD680, 0xD6A0,
+0xD6C0, 0xD6E0, 0xD700, 0xD720, 0xD740, 0xD760, 0xD780, 0xD7A0,
+0xD7C0, 0xD7E0, 0xDE00, 0xDE20, 0xDE40, 0xDE60, 0xDE80, 0xDEA0,
+0xDEC0, 0xDEE0, 0xDF00, 0xDF20, 0xDF40, 0xDF60, 0xDF80, 0xDFA0,
+0xDFC0, 0xDFE0)
+
+@vindex Sid9AddressStart
+@item Sid9AddressStart
+Integer specifying the base address of the ninth SID
+(x64, x64sc, xscpu64, x128 and vsid only).
+(x128: 0xD420, 0xD440, 0xD460, 0xD480, 0xD4A0, 0xD4C0, 0xD4E0,
+0xD700, 0xD720, 0xD740, 0xD760, 0xD780, 0xD7A0, 0xD7C0, 0xD7E0,
+0xDE00, 0xDE20, 0xDE40, 0xDE60, 0xDE80, 0xDEA0, 0xDEC0, 0xDEE0,
+0xDF00, 0xDF20, 0xDF40, 0xDF60, 0xDF80, 0xDFA0, 0xDFC0, 0xDFE0)
+(x64, x64sc, xscpu64, vsid: 0xD420, 0xD440, 0xD460, 0xD480, 0xD4A0,
+0xD4C0, 0xD4E0, 0xD500, 0xD520, 0xD540, 0xD560, 0xD580, 0xD5A0,
+0xD5C0, 0xD5E0, 0xD600, 0xD620, 0xD640, 0xD660, 0xD680, 0xD6A0,
+0xD6C0, 0xD6E0, 0xD700, 0xD720, 0xD740, 0xD760, 0xD780, 0xD7A0,
+0xD7C0, 0xD7E0, 0xDE00, 0xDE20, 0xDE40, 0xDE60, 0xDE80, 0xDEA0,
+0xDEC0, 0xDEE0, 0xDF00, 0xDF20, 0xDF40, 0xDF60, 0xDF80, 0xDFA0,
+0xDFC0, 0xDFE0)
+
+@vindex Sid10AddressStart
+@item Sid10AddressStart
+Integer specifying the base address of the tenth SID
 (x64, x64sc, xscpu64, x128 and vsid only).
 (x128: 0xD420, 0xD440, 0xD460, 0xD480, 0xD4A0, 0xD4C0, 0xD4E0,
 0xD700, 0xD720, 0xD740, 0xD760, 0xD780, 0xD7A0, 0xD7C0, 0xD7E0,
@@ -12779,7 +12877,8 @@ In most cases the default value of 8192 bytes is the right setting for best audi
 @item -sidextra
 Specify the amount of extra SID chips to emulate
 (@code{SidStereo}).
-(0: off, 1: 1 extra sid, 2: 2 extra sids, 3: 3 extra sids, 4: 4 extra sids, 5: 5 extra sids, 6: 6 extra sids, 7: 7 extra sids)
+(0: off, 1: 1 extra sid, 2: 2 extra sids, 3: 3 extra sids, 4: 4 extra sids,
+ 5: 5 extra sids, 6: 6 extra sids, 7: 7 extra sids, 8: 8 extra sids, 9: 9 extra sids)
 
 @findex -sid2address
 @item -sid2address <Base address>
@@ -12887,6 +12986,40 @@ Specifies the start address for the seventh SID chip
 @item -sid8address @code{ADDRESS}
 Specifies the start address for the eight SID chip
 (@code{Sid8AddressStart})
+(x64, x64sc, xscpu64, x128 and vsid only).
+(x128: 0xD420, 0xD440, 0xD460, 0xD480, 0xD4A0, 0xD4C0, 0xD4E0,
+0xD700, 0xD720, 0xD740, 0xD760, 0xD780, 0xD7A0, 0xD7C0, 0xD7E0,
+0xDE00, 0xDE20, 0xDE40, 0xDE60, 0xDE80, 0xDEA0, 0xDEC0, 0xDEE0,
+0xDF00, 0xDF20, 0xDF40, 0xDF60, 0xDF80, 0xDFA0, 0xDFC0, 0xDFE0)
+(x64, x64sc, xscpu64, vsid: 0xD420, 0xD440, 0xD460, 0xD480, 0xD4A0,
+0xD4C0, 0xD4E0, 0xD500, 0xD520, 0xD540, 0xD560, 0xD580, 0xD5A0,
+0xD5C0, 0xD5E0, 0xD600, 0xD620, 0xD640, 0xD660, 0xD680, 0xD6A0,
+0xD6C0, 0xD6E0, 0xD700, 0xD720, 0xD740, 0xD760, 0xD780, 0xD7A0,
+0xD7C0, 0xD7E0, 0xDE00, 0xDE20, 0xDE40, 0xDE60, 0xDE80, 0xDEA0,
+0xDEC0, 0xDEE0, 0xDF00, 0xDF20, 0xDF40, 0xDF60, 0xDF80, 0xDFA0,
+0xDFC0, 0xDFE0)
+
+@findex -sid9address
+@item -sid9address @code{ADDRESS}
+Specifies the start address for the ninth SID chip
+(@code{Sid9AddressStart})
+(x64, x64sc, xscpu64, x128 and vsid only).
+(x128: 0xD420, 0xD440, 0xD460, 0xD480, 0xD4A0, 0xD4C0, 0xD4E0,
+0xD700, 0xD720, 0xD740, 0xD760, 0xD780, 0xD7A0, 0xD7C0, 0xD7E0,
+0xDE00, 0xDE20, 0xDE40, 0xDE60, 0xDE80, 0xDEA0, 0xDEC0, 0xDEE0,
+0xDF00, 0xDF20, 0xDF40, 0xDF60, 0xDF80, 0xDFA0, 0xDFC0, 0xDFE0)
+(x64, x64sc, xscpu64, vsid: 0xD420, 0xD440, 0xD460, 0xD480, 0xD4A0,
+0xD4C0, 0xD4E0, 0xD500, 0xD520, 0xD540, 0xD560, 0xD580, 0xD5A0,
+0xD5C0, 0xD5E0, 0xD600, 0xD620, 0xD640, 0xD660, 0xD680, 0xD6A0,
+0xD6C0, 0xD6E0, 0xD700, 0xD720, 0xD740, 0xD760, 0xD780, 0xD7A0,
+0xD7C0, 0xD7E0, 0xDE00, 0xDE20, 0xDE40, 0xDE60, 0xDE80, 0xDEA0,
+0xDEC0, 0xDEE0, 0xDF00, 0xDF20, 0xDF40, 0xDF60, 0xDF80, 0xDFA0,
+0xDFC0, 0xDFE0)
+
+@findex -sid10address
+@item -sid810ddress @code{ADDRESS}
+Specifies the start address for the tenth SID chip
+(@code{Sid10AddressStart})
 (x64, x64sc, xscpu64, x128 and vsid only).
 (x128: 0xD420, 0xD440, 0xD460, 0xD480, 0xD4A0, 0xD4C0, 0xD4E0,
 0xD700, 0xD720, 0xD740, 0xD760, 0xD780, 0xD7A0, 0xD7C0, 0xD7E0,
@@ -14867,7 +15000,7 @@ To run VIC-20 games, you can try the following:
 Try to autorun with different memory sets: "no expansion", "3KiB" and "Full"
 @item
 Load the file in a hex editor and have a look at the first two bytes. If they
-are e.g. @code{00 A0} the file should probably be attached as a cartridge image at @code {$A000}.
+are e.g. @code{00 A0} the file should probably be attached as a cartridge image at @code{$A000}.
 @item
 Some programs, (eg the loadable Scott Adams text adventures) have to be loaded
 into the expanded memory blocks, and then run with the expansion disabled via
@@ -17893,6 +18026,150 @@ Register $0C (RAM address high) = #$02
 @end itemize
 
 The last value causes the board to switch into graphics mode; former values set up proper screen dimensions for 512x256 display.
+
+@subsubsection The meaning of the bits in $E888
+
+On zimmers.net is a 1-page document 324890-01_manual.pdf which
+reads (my translation from German):
+@quotation
+The 8296 HIRES Graphics is an emulation of the 512*256 Commodore High Speed
+Graphics, which uses the built-in RAM and 6502 microprocessor.
+
+A hardware addition is plugged into the socket of the CRTC (UC9) and the
+character ROM (UC5).
+
+The software for emulating the High Speed Graphics is contained in a 4 KB
+EPROM ($9000, UE10), and a BASIC-extension to use the graphics is in a
+further 4K EPROM ($A000, UE9).
+
+The "hidden" RAM behind the EPROM in UE9 and the BASIC ROM is used as screen
+memory.
+
+On the extension board there is a 4-fold DIL switch (1 to 4), with which one
+can set jumpers JU3, JU4, JU7, JU6 by hardware.
+
+By writing a latch at $E888 (decimal 59582), the jumpers JU3...JU7  are
+controlled by software (independently of the DIL-settings).
+
+@multitable @columnfractions .10 .10  .30 .15
+@item
+Bit
+@tab
+Value
+@tab
+Jumper/Signal
+@tab
+Note
+
+@item
+0
+@tab
+1
+@tab
+JU4 /RAMSEL9
+@tab
+1)
+@item
+1
+@tab
+2
+@tab
+JU3 /RAMSELA
+@tab
+1)
+@item
+2
+@tab
+4
+@tab
+JU5 /RAMON
+@tab
+1)
+@item
+3
+@tab
+8 
+@tab
+---
+@item
+4
+@tab
+16
+@tab
+JU7
+@tab
+2)
+@item
+5
+@tab
+32
+@tab
+JU6
+@tab
+2)
+@item
+6
+@tab
+64
+@tab
+---
+@item
+7
+@tab
+128
+@tab
+LATCHON
+@tab
+3)
+@end multitable
+
+@enumerate 1
+@item @c 1
+On the original motherboard the signals /RAMSELA, /RAMSEL9 and /RAMON
+can be controlled by PA0, PA1 and PA3 of the user port, if jumpers
+JU3, JU4 and JU5 are closed.
+On the adapter, "off" of the DIL-switch means
+for 1 and 2: RAMSELA and RAMSEL9 : high;
+for 3 and 4: Jumper J6 and J7: placed (closed)
+@item @c 2
+high = jumper placed
+@item @c 3
+high = Latch On
+@end enumerate
+@end quotation
+
+(unfortunately the document doesn't say what "Latch On" does, but I guess
+that if it is off, the @code{/RAM*} signals are set by the DIL switches.)
+
+Here is a quick reminder of the meaning of the 8296's jumpers:
+
+@itemize
+@item
+JU1
+set /RAMSELA to GND (do not use JU1/JU3 together)
+@item
+JU2
+set /RAMSEL9 to GND (do not use JU2/JU4 together)
+@item
+JU3
+set /RAMSELA to Userport PA0 (do not use JU1/JU3 together)
+@item
+JU4
+set /RAMSEL9 to Userport PA1 (do not use JU2/JU4 together)
+@item
+JU5
+set /RAMON to Userport PA2
+@item
+JU6
+set J4 expansion port pin /SEL EXP to /CSA ($A*** ROM)
+@item
+JU7
+set J4 expansion port pin /SEL EXP to /CS9 ($9*** ROM)
+@item
+JU8/JU9 
+set JU8, unset JU9: do not use video MA12 for RAM addressing;
+unset JU8, set JU9: use video MA12 for RAM addressing.
+@end itemize
 
 @c --------------------------------------------------------------
 
@@ -23583,6 +23860,10 @@ Lt. Kernal Host Adaptor .crt file
 MACH 5 .crt file
 @item md
 Magic Desk .crt file
+@item mdp
+Magic Desk Plus 256KiB/512KiB/1024KiB .crt file. Use @code{-s 0} for SRAM + 32KiB EEPROM,
+@code{-s 1} for SRAM + 8KiB EEPROM, @code{-s 2} for 32KiB EEPROM, @code{-s 3} for 8KiB EEPROM,
+or @code{-s 4} for SRAM only.
 @item md16
 Magic Desk 16 .crt file
 @item mf
@@ -23755,6 +24036,8 @@ Convert a .crt file to a .prg file with default load-address.
 Convert a .crt file to a .prg file with 49152 as the load-address.
 @item cartconv -t ocean -i foo.bin -o foo.crt
 Convert a binary file to an ocean type cartridge.
+@item cartconv -t mdp -s 1 -i game.bin -o game.crt
+Create a Magic Desk Plus cartridge with SRAM and 8KiB EEPROM.
 @item cartconv -t dep64 -i dep64.bin -i eprom.prg -o foo.crt
 Inserting a 32KiB EPROM file into an dep64 type cartridge.
 @itemize @bullet
@@ -30371,6 +30654,8 @@ $0010- xxxx - ROM data
 @tab Magic Desk 16
 @item 86
 @tab Protovision "Megabyter"
+@item 87
+@tab Magic Desk Plus (Subtype 0: SRAM + 32KiB EEPROM, 1: SRAM + 8KiB EEPROM, 2: 32KiB EEPROM, 3: 8KiB EEPROM or 4: SRAM only)
 @end multitable
 
 (*Note: Ocean type 1 includes Navy Seals, Robocop 2 & 3, Shadow of the Beast,
@@ -34856,6 +35141,59 @@ used by "SNK vs CAPCOM - Stronger Edition"
 
 
 @c @node FIXME
+@subsubsection 87 - Magic Desk Plus
+
+@multitable @columnfractions .3 .7
+@item Size
+@tab 256KiB, 512KiB, or 1024KiB ROM (32, 64, or 128 banks of 8KiB)
+@item EXROM
+@tab active (lo) (0)
+@item GAME
+@tab inactive (hi) (1)
+@item Startup mode
+@tab 8KiB Game
+@item Load address
+@tab (banks 0-127) - $8000-$9FFF
+@item Additional memory
+@tab 128KiB SRAM and/or 8KiB/32KiB parallel EEPROM
+@end multitable
+
+@example
+       00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F       ASCII
+       -----------------------------------------------  ----------------
+000000 43 36 34 20 43 41 52 54 52 49 44 47 45 20 20 20  C64 CARTRIDGE
+000010 00 00 00 40 01 00 00 57 00 01 00 00 00 00 00 00  ...@...W........
+000020 4d 61 67 69 63 20 44 65 73 6b 20 50 6c 75 73 00  Magic Desk Plus.
+000030 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+000040 43 48 49 50 00 00 20 10 00 00 00 00 80 00 20 00  CHIP.. ....... .
+000050 09 80 39 80 c3 c2 cd 38 30 78 8e 16 d0 20 a3 fd  ..9....80x... ..
+@dots{}
+040230 ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  ................
+@end example
+
+
+Magic Desk Plus is very similar to the original Magic Desk, except it has
+additional SRAM and/or EEPROM:
+
+@itemize @bullet
+@item Revision 0: SRAM and 32KiB EEPROM
+@item Revision 1: SRAM and 8KiB EEPROM
+@item Revision 2: 32KiB EEPROM
+@item Revision 3: 8KiB EEPROM
+@item Revision 4: SRAM only
+@end itemize
+
+The SRAM and EEPROM are hardware features of the selected revision and are
+emulated even if no backing image is configured. In that case their contents
+are temporary. SRAM and EEPROM data are stored in separate optional image files,
+not as CHIP packets in the CRT image.
+
+The ROM bank register is at $DE00 and uses bits 0-6 for the bank number; bit 7
+disables the cartridge. $DE01 selects the SRAM or EEPROM page and $DE03 is the
+memory control register. The selected SRAM or EEPROM page is accessible through
+the 256-byte window at $DF00-$DFFF.
+
+@c @node FIXME
 @subsection C128 Cartridge Specifics
 
 Note: Cartridges that work on both C64 and C128 get "C64 Cartridge" type and get a
@@ -35782,8 +36120,10 @@ environment for each SID file format.
 +04    WORD version
 @end example
 
-Available version number can be 0001, 0002, 0003 or 0004. Headers of version 2, 3 and 4
-provide additional fields. RSID and PSID v2NG files must have 0002, 0003 or 0004 here.
+Available version number can be 0x0001, 0x0002, 0x0003 or 0x0004. Headers of version 2, 3 and 4
+provide additional fields. RSID and PSID v2NG files must have 0x0002, 0x0003 or 0x0004 here.
+
+0x004E denotes an unofficial extension defined by Juergen Wothke for use in "Deepsid".
 
 @example
 +06    WORD dataOffset
@@ -35792,6 +36132,10 @@ provide additional fields. RSID and PSID v2NG files must have 0002, 0003 or 0004
 This is the offset from the start of the file to the C64 binary data area.
 Because of the fixed size of the header, this is either 0x0076 for version 1
 and 0x007C for version 2, 3 and 4.
+
+The 0x4e extension actually uses a variable header length, and requires this
+offset to be correct (and used). Eg. for a 1-SID file the offset would be 0x7C,
+for a 2-SID file the offset would be 0x7E, etc.
 
 @example
 +08    WORD loadAddress
@@ -36048,6 +36392,32 @@ be played back correctly, bits 4-9 in 'flags' are used as stated above.
 @item Bits 10-15 are reserved and should be set to 0.
 @end itemize
 
+
+The 0x4e extension slightly changes the valid bits:
+
+@itemize
+@item Bit 0 specifies format of the binary data (musPlayer):
+  0 = built-in music player,
+  1 = Compute!'s Sidplayer MUS data, music player must be merged.
+@item Bit 1 specifies whether the tune is PlaySID specific, e.g. uses PlaySID
+  samples (psidSpecific):
+  0 = C64 compatible,
+  1 = PlaySID specific (PSID v2NG, v3, v4)
+  1 = C64 BASIC flag (RSID)
+@item Bits 2-3 specify the video standard (clock):
+  00 = Unknown,
+  01 = PAL,
+  10 = NTSC,
+  11 = PAL and NTSC.
+@item Bits 4-5 specify the SID version (sidModel):
+  00 = Unknown,
+  01 = MOS6581,
+  10 = MOS8580,
+  11 = MOS6581 and MOS8580.
+@item 6, output channel for main $d400 SID - aka SID #0 (default: 0 )
+@item Bits 7-15 are reserved and should be set to 0.
+@end itemize
+
 @example
 +78    BYTE startPage (relocStartPage)
 @end example
@@ -36103,6 +36473,27 @@ $FE for $DFE0). Only even values are valid. Ranges $00-$41 ($D000-$D410) and
 $80-$DF ($D800-$DDF0) are invalid. Any invalid value means that no third SID
 is used, like $00.
 The address of the third SID cannot be the same as the second SID.
+
+The 0x4e extension adds a variable amount of flag words (one per extra SID) instead
+of just using the one reserved word left:
+
+@example
++7A    WORD nSidFlags
+@end example
+
+For each additional SID there is one additional nSidFlags WORD. A 0-WORD must be used
+as an "end" marker, i.e. with only 1 SID the nSidFlags at +7A would be 0. (This corresponds to the
+reserved 0 WORD that old versions require at 0x7A.)
+
+@itemize
+@item Bits 0-3,  unused
+@item Bits 4-5, SID version (same as respective flag for main SID - see +76):
+00 = Unknown: defaults to respective main SID setting
+@item Bit  6, output channel (same position as respective flag for main SID - see +76)
+@item Bit  7, unused
+@item Bits 8-15, address of SID chip (same "2 center nibbles" format as used in original HVSC formats,
+e.g. "D420" would be represented as 0x42)
+@end itemize
 
 @example
 +7C    <data>
@@ -36463,7 +36854,7 @@ Added PET HRE (High Res Emulator) board emulation. Added the
 support for 'printer/plotter' Commodore 1520. Overhauled internals
 of VIA and CIA code. Corrected pre-CRTC PET display timing.
 REL-file support for the filesystem device and c1541.
-Added WordCraft dongle.
+Added WordCraft and PetSpeed dongles.
 
 @item
 @b{Marcus Sutton}

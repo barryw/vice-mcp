@@ -53,42 +53,42 @@ static unsigned int rom9000_loaded = 0;
 /* test ROM for existence, size */
 int ieeerom_load_2031(void)
 {
-    return driverom_test_load("DosName2031", &rom2031_loaded,
+    return driverom_probe("DosName2031", &rom2031_loaded,
             DRIVE_ROM2031_SIZE, DRIVE_ROM2031_SIZE, "2031",
             DRIVE_TYPE_2031, NULL);
 }
 
 int ieeerom_load_2040(void)
 {
-    return driverom_test_load("DosName2040", &rom2040_loaded,
+    return driverom_probe("DosName2040", &rom2040_loaded,
             DRIVE_ROM2040_SIZE, DRIVE_ROM2040_SIZE, "2040",
             DRIVE_TYPE_2040, NULL);
 }
 
 int ieeerom_load_3040(void)
 {
-    return driverom_test_load("DosName3040", &rom3040_loaded,
+    return driverom_probe("DosName3040", &rom3040_loaded,
             DRIVE_ROM3040_SIZE, DRIVE_ROM3040_SIZE, "3040",
             DRIVE_TYPE_3040, NULL);
 }
 
 int ieeerom_load_4040(void)
 {
-    return driverom_test_load("DosName4040", &rom4040_loaded,
+    return driverom_probe("DosName4040", &rom4040_loaded,
             DRIVE_ROM4040_SIZE, DRIVE_ROM4040_SIZE, "4040",
             DRIVE_TYPE_4040, NULL);
 }
 
 int ieeerom_load_1001(void)
 {
-    return driverom_test_load("DosName1001", &rom1001_loaded,
+    return driverom_probe("DosName1001", &rom1001_loaded,
             DRIVE_ROM1001_SIZE, DRIVE_ROM1001_SIZE, "1001/8050/8250",
             DRIVE_TYPE_1001, NULL);
 }
 
 int ieeerom_load_9000(void)
 {
-    return driverom_test_load("DosName9000", &rom9000_loaded,
+    return driverom_probe("DosName9000", &rom9000_loaded,
             DRIVE_ROM9000_SIZE, DRIVE_ROM9000_SIZE, "D9090/9060",
             DRIVE_TYPE_9000, NULL);
 }
@@ -97,7 +97,7 @@ int ieeerom_load_9000(void)
 void ieeerom_setup_image(diskunit_context_t *unit)
 {
     unsigned int loaded = 0;
-    if (rom_loaded) {
+    if (drive_rom_loaded) {
         if (unit->rom_type != unit->type) {
             /* set this here to avoid recursion */
             unit->rom_type = unit->type;
@@ -170,41 +170,41 @@ int ieeerom_check_loaded(unsigned int type)
         case DRIVE_TYPE_NONE:
             return 0;
         case DRIVE_TYPE_2031:
-            if (rom2031_loaded < 1 && rom_loaded) {
+            if (rom2031_loaded < 1 && drive_rom_loaded) {
                 return -1;
             }
             break;
         case DRIVE_TYPE_2040:
-            if (rom2040_loaded < 1 && rom_loaded) {
+            if (rom2040_loaded < 1 && drive_rom_loaded) {
                 return -1;
             }
             break;
         case DRIVE_TYPE_3040:
-            if (rom3040_loaded < 1 && rom_loaded) {
+            if (rom3040_loaded < 1 && drive_rom_loaded) {
                 return -1;
             }
             break;
         case DRIVE_TYPE_4040:
-            if (rom4040_loaded < 1 && rom_loaded) {
+            if (rom4040_loaded < 1 && drive_rom_loaded) {
                 return -1;
             }
             break;
         case DRIVE_TYPE_1001:
         case DRIVE_TYPE_8050:
         case DRIVE_TYPE_8250:
-            if (rom1001_loaded < 1 && rom_loaded) {
+            if (rom1001_loaded < 1 && drive_rom_loaded) {
                 return -1;
             }
             break;
         case DRIVE_TYPE_9000:
-            if (rom9000_loaded < 1 && rom_loaded) {
+            if (rom9000_loaded < 1 && drive_rom_loaded) {
                 return -1;
             }
             break;
         case DRIVE_TYPE_ANY:
             if ((!rom2031_loaded && !rom2040_loaded && !rom3040_loaded
                  && !rom4040_loaded && !rom1001_loaded && !rom9000_loaded )
-                 && rom_loaded) {
+                 && drive_rom_loaded) {
                 return -1;
             }
             break;

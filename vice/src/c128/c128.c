@@ -879,6 +879,7 @@ void machine_resources_shutdown(void)
     printer_resources_shutdown();
     drive_resources_shutdown();
     cartridge_resources_shutdown();
+    c128cartridge_resources_shutdown();
     functionrom_resources_shutdown();
     rombanks_resources_shutdown();
     userport_resources_shutdown();
@@ -1105,7 +1106,7 @@ int machine_specific_init(void)
     disk_image_init();
 
     /* Initialize autostart. */
-    autostart_init(3, 1);
+    autostart_init(3);
 
     /* Pre-init C128-specific parts of the menus before vdc_init() and
        vicii_init() create canvas windows with menubars at the top. */

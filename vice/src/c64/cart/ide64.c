@@ -69,9 +69,9 @@
 #include "vicesocket.h"
 #include "vicii-phi1.h"
 
-#define IDE64_DEBUG
+/* #define DEBUG_IDE64 */
 
-#ifdef IDE64_DEBUG
+#ifdef DEBUG_IDE64
 #define debug(x) log_printf x
 #else
 #define debug(x)
@@ -397,7 +397,7 @@ static void detect_ide64_image(struct drive_s *drive)
     FILE *file;
     unsigned char header[24];
     size_t res;
-    char *ext;
+    const char *ext;
     ata_drive_geometry_t *geometry = &drive->detected;
 
     if (!ide64_rom_list_item) {

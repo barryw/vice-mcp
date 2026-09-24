@@ -529,6 +529,14 @@ static int cart_getid_slotmain(void)
     return mem_cartridge_type;
 }
 
+/* FIXME: return filetype of cart with given crtid
+   (CARTRIDGE_FILETYPE_BIN, CARTRIDGE_FILETYPE_CRT, CARTRIDGE_FILETYPE_CRT, CARTRIDGE_FILETYPE_NONE) */
+int cartridge_get_filetype(int crtid)
+{
+    log_error(LOG_DEFAULT, "cartridge_get_filetype not implemented.");
+    return CARTRIDGE_FILETYPE_NONE;
+}
+
 /* ------------------------------------------------------------------------- */
 
 /* FIXME: type is passed, but vic20cart_type used instead? */
@@ -1162,8 +1170,8 @@ int cartridge_flush_secondary_image(int type)
 
 int cartridge_save_image(int type, const char *filename)
 {
-    char *ext = util_get_extension((char *)filename);
-    if (ext != NULL && !strcmp(ext, "crt")) {
+    const char *ext = util_get_extension((char *)filename);
+    if ((ext != NULL) && !strcmp(ext, "crt")) {
         return cartridge_crt_save(type, filename);
     }
     return cartridge_bin_save(type, filename);
@@ -1176,6 +1184,26 @@ int cartridge_save_secondary_image(int type, const char *filename)
             return megacart_save_nvram(filename);
     }
     return -1;
+}
+
+int cartridge_flush_tertiary_image(int type)
+{
+    return -1;
+}
+
+int cartridge_save_tertiary_image(int type, const char *filename)
+{
+    return -1;
+}
+
+int cartridge_can_flush_tertiary_image(int crtid)
+{
+    return 0;
+}
+
+int cartridge_can_save_tertiary_image(int crtid)
+{
+    return 0;
 }
 
 /* returns 1 if cartridge with given crtid is enabled */

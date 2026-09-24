@@ -709,8 +709,8 @@ void ted_update_video_mode(unsigned int cycle)
             TED_DEBUG_VMODE(("???"));
     }
 
-    TED_DEBUG_VMODE((" Mode enabled at line $%04X, cycle %d.",
-                     TED_RASTER_Y(clk), cycle));
+    TED_DEBUG_VMODE((" Mode enabled at line $%04X, cycle %u.",
+                     TED_RASTER_Y(maincpu_clk), cycle));
 #endif
 }
 

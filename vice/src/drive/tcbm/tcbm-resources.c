@@ -28,6 +28,7 @@
 
 #include <stdio.h>
 
+#include "drive.h"
 #include "driverom.h"
 #include "lib.h"
 #include "resources.h"
@@ -39,11 +40,17 @@ static char *dos_rom_name_1551 = NULL;
 
 static int set_dos_rom_name_1551(const char *val, void *param)
 {
+    int reload = ((val != NULL) && (dos_rom_name_1551 != NULL));
+
     if (util_string_set(&dos_rom_name_1551, val)) {
         return 0;
     }
 
-    return tcbmrom_load_1551();
+    if (reload) {
+        return driverom_reload(DRIVE_TYPE_1551);
+    }
+
+    return tcbmrom_probe_1551();
 }
 
 static const resource_string_t resources_string[] = {

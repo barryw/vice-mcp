@@ -36,7 +36,7 @@
         - check for byte ready *within* `BVC', `BVS' and `PHP'.
         - serial bus handling might be faster.  */
 
-/* #define DEBUG_DRIVE */
+#define DEBUG_DRIVE
 
 #include "vice.h"
 
@@ -93,7 +93,7 @@ diskunit_context_t *diskunit_context[NUM_DISK_UNITS];
 static log_t drive_log = LOG_DEFAULT;
 
 /* If nonzero, at least one vaild drive ROM has already been loaded.  */
-int rom_loaded = 0;
+int drive_rom_loaded = 0;
 
 /* ------------------------------------------------------------------------- */
 
@@ -113,13 +113,18 @@ void drive_set_disk_memory(uint8_t *id, unsigned int track, unsigned int sector,
         || unit->type == DRIVE_TYPE_1570
         || unit->type == DRIVE_TYPE_1571
         || unit->type == DRIVE_TYPE_1571CR) {
+        /* disk id drive 0 */
         unit->drive_ram[0x12] = id[0];
         unit->drive_ram[0x13] = id[1];
+        /* header block */
         unit->drive_ram[0x16] = id[0];
         unit->drive_ram[0x17] = id[1];
         unit->drive_ram[0x18] = track;
         unit->drive_ram[0x19] = sector;
+        /* current track drive 0 */
         unit->drive_ram[0x22] = track;
+        /* last read sector */
+        unit->drive_ram[0x4c] = sector;
     }
 }
 
@@ -134,6 +139,7 @@ void drive_set_last_read(unsigned int track, unsigned int sector, uint8_t *buffe
     /* TODO: drive 1 ? */
     drive_gcr_data_writeback(drive);
 
+    /* FIXME: handle all drives here */
     if (unit->type == DRIVE_TYPE_1570
         || unit->type == DRIVE_TYPE_1571
         || unit->type == DRIVE_TYPE_1571CR) {
@@ -145,13 +151,17 @@ void drive_set_last_read(unsigned int track, unsigned int sector, uint8_t *buffe
     /* TODO: drive 1 ? */
     drive_set_half_track(track * 2, side, drive);
 
+    /* FIXME: handle all drives here */
     if (unit->type == DRIVE_TYPE_1540
         || unit->type == DRIVE_TYPE_1541
         || unit->type == DRIVE_TYPE_1541II
         || unit->type == DRIVE_TYPE_1570
         || unit->type == DRIVE_TYPE_1571
-        || unit->type == DRIVE_TYPE_1571CR) {
-        memcpy(&(unit->drive_ram[0x0400]), buffer, 256);
+        || unit->type == DRIVE_TYPE_1571CR
+        || unit->type == DRIVE_TYPE_2031) {
+        memcpy(&(unit->drive_ram[0x0400]), buffer, 256 * 2);
+    } else if (unit->type == DRIVE_TYPE_1551) {
+        memcpy(&(unit->drive_ram[0x0500]), buffer, 256 * 2);
     }
 }
 
@@ -164,7 +174,10 @@ int drive_init(void)
     unsigned int unit;
     drive_t *drive;
 
-    if (rom_loaded) {
+    DBG(("drive_init drive_rom_loaded:%d", drive_rom_loaded));
+
+    /* if drive roms are already loaded, don't do this again */
+    if (drive_rom_loaded) {
         return 0;
     }
 
@@ -195,7 +208,7 @@ int drive_init(void)
 
     }
 
-    /* NOTE: this will not actually load the images yet, only check of the ROMs exist */
+    /* NOTE: this will not actually load the images yet, only check if the ROMs exist */
     driverom_load_images();
     /* Do not error out if _SOME_ images are not found, ie. FD2K/4K, CMDHD */
 #if 0
@@ -208,7 +221,7 @@ int drive_init(void)
     }
 #endif
 
-    rom_loaded = 1; /* mark drive ROMs being tested OK */
+    drive_rom_loaded = 1; /* mark drive ROMs being tested OK */
 
     for (unit = 0; unit < NUM_DISK_UNITS; unit++) {
         diskunit_context_t *diskunit = diskunit_context[unit];
@@ -486,15 +499,17 @@ int drive_enable(diskunit_context_t *drv)
     unsigned int dnr;
     unsigned int drive;
 
+    DBG(("drive_enable drive_rom_loaded:%d", drive_rom_loaded));
+
     dnr = drv->mynumber;
 
     /* This must come first, because this might be called before the drive
        initialization.  */
-    if (!rom_loaded) {
+    if (!drive_rom_loaded) {
         return -1;
     }
 
-    DBG(("drive_enable unit: %d", 8 + drv->mynumber));
+    DBG(("drive_enable unit: %u", 8 + drv->mynumber));
     resources_get_int_sprintf("Drive%uTrueEmulation", &drive_true_emulation, 8 + drv->mynumber);
 
     /* Always disable kernal traps. */
@@ -542,7 +557,7 @@ void drive_disable(diskunit_context_t *drv)
     DBG(("drive_disable unit: %u", 8 + drv->mynumber));
     resources_get_int_sprintf("Drive%uTrueEmulation", &drive_true_emulation, 8 + drv->mynumber);
 
-    if (rom_loaded) {
+    if (drive_rom_loaded) {
 #if 0
         if (drv->type == DRIVE_TYPE_2000 ||
             drv->type == DRIVE_TYPE_4000 ||

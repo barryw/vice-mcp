@@ -367,19 +367,19 @@ void ted_delay_oldclk(CLOCK num);
 /* #define TED_REGISTERS_DEBUG */
 
 #ifdef TED_VMODE_DEBUG
-#define TED_DEBUG_VMODE(x) log_debug x
+#define TED_DEBUG_VMODE(x) log_printf x
 #else
 #define TED_DEBUG_VMODE(x)
 #endif
 
 #ifdef TED_RASTER_DEBUG
-#define TED_DEBUG_RASTER(x) log_debug x
+#define TED_DEBUG_RASTER(x) log_printf x
 #else
 #define TED_DEBUG_RASTER(x)
 #endif
 
 #ifdef TED_REGISTERS_DEBUG
-#define TED_DEBUG_REGISTER(x) log_debug x
+#define TED_DEBUG_REGISTER(x) log_printf x
 #else
 #define TED_DEBUG_REGISTER(x)
 #endif

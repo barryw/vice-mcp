@@ -39,6 +39,7 @@
 #include "lib.h"
 #include "ltkernal.h"
 #include "machine.h"
+#include "magicdeskplus.h"
 #include "menu_c64_common_expansions.h"
 #include "menu_common.h"
 #include "menu_ethernetcart.h"
@@ -182,6 +183,7 @@ static c64_cart_flush_t carts[] = {
 static c64_cart_flush_t carts_secondary[] = {
     { CARTRIDGE_MMC_REPLAY,     NULL,       "MMCREEPROMImage" },
     { CARTRIDGE_GMOD2,          NULL,       "GMod2EEPROMImage" },
+    { CARTRIDGE_MAGIC_DESK_PLUS, NULL,       "MagicDeskPlusSRAMImage" },
     { CARTRIDGE_C128_GMOD2C128, NULL,       "GMod128EEPROMImage" }, /* FIXME: is this correct here? */
     { CARTRIDGE_RAMLINK,        "RAMLINK",  "RAMLINKfilename" },
     { CARTRIDGE_REX_RAMFLOPPY,  NULL,       "RRFfilename" },
@@ -320,6 +322,26 @@ static UI_MENU_CALLBACK(c64_cart_save_secondary_callback)
         if (name != NULL) {
             if (cartridge_save_secondary_image(cartid, name) < 0) {
                 ui_error("Cannot save secondary image.");
+            }
+            lib_free(name);
+        }
+    } else {
+        cartmenu_update_save();
+    }
+    return NULL;
+}
+
+static UI_MENU_CALLBACK(c64_cart_save_tertiary_callback)
+{
+    if (activated) {
+        int cartid = vice_ptr_to_int(param);
+        char *name = NULL;
+
+        name = sdl_ui_file_selection_dialog("Choose tertiary image file", FILEREQ_MODE_SAVE_FILE);
+
+        if (name != NULL) {
+            if (cartridge_save_tertiary_image(cartid, name) < 0) {
+                ui_error("Cannot save tertiary image.");
             }
             lib_free(name);
         }
@@ -1174,6 +1196,212 @@ static ui_menu_entry_t gmod2_cart_menu[] = {
     SDL_MENU_LIST_END
 };
 
+/* Magic Desk Plus */
+UI_MENU_DEFINE_TOGGLE(MagicDeskPlusSRAMWrite)
+UI_MENU_DEFINE_TOGGLE(MagicDeskPlusEEPROMWrite)
+static void magicdeskplus_update_menu(void);
+
+static UI_MENU_CALLBACK(magicdeskplus_revision_callback)
+{
+    int current = 0;
+    int revision = vice_ptr_to_int(param);
+
+    resources_get_int("MagicDeskPlusRevision", &current);
+    if (activated) {
+        resources_set_int("MagicDeskPlusRevision", revision);
+        magicdeskplus_update_menu();
+    }
+    return revision == current ? sdl_menu_text_tick : NULL;
+}
+
+static UI_MENU_CALLBACK(magicdeskplus_sram_image_callback)
+{
+    const char *result;
+
+    result = sdl_ui_menu_file_string_helper(activated, param,
+                                            "MagicDeskPlusSRAMImage");
+    if (activated) {
+        magicdeskplus_update_menu();
+    }
+    return result;
+}
+
+static UI_MENU_CALLBACK(magicdeskplus_eeprom_image_callback)
+{
+    const char *result;
+
+    result = sdl_ui_menu_file_string_helper(activated, param,
+                                            "MagicDeskPlusEEPROMImage");
+    if (activated) {
+        magicdeskplus_update_menu();
+    }
+    return result;
+}
+
+#define MDP_OFFSET_SRAM_FIRST       7
+#define MDP_OFFSET_SRAM_WRITE       9
+#define MDP_OFFSET_SAVE_SECONDARY   10
+#define MDP_OFFSET_SRAM_LAST        10
+#define MDP_OFFSET_EEPROM_FIRST     12
+#define MDP_OFFSET_EEPROM_WRITE     14
+#define MDP_OFFSET_SAVE_TERTIARY    15
+#define MDP_OFFSET_EEPROM_LAST      15
+
+static const ui_menu_entry_t magicdeskplus_cart_menu_template[] = {
+    SDL_MENU_ITEM_TITLE("Hardware revision"),
+    {   .string   = "SRAM and 32KiB EEPROM",
+        .type     = MENU_ENTRY_RESOURCE_RADIO,
+        .callback = magicdeskplus_revision_callback,
+        .data     = (ui_callback_data_t)MAGICDESKPLUS_REV_SRAM_EEPROM_32K
+    },
+    {   .string   = "SRAM and 8KiB EEPROM",
+        .type     = MENU_ENTRY_RESOURCE_RADIO,
+        .callback = magicdeskplus_revision_callback,
+        .data     = (ui_callback_data_t)MAGICDESKPLUS_REV_SRAM_EEPROM_8K
+    },
+    {   .string   = "32KiB EEPROM",
+        .type     = MENU_ENTRY_RESOURCE_RADIO,
+        .callback = magicdeskplus_revision_callback,
+        .data     = (ui_callback_data_t)MAGICDESKPLUS_REV_EEPROM_32K
+    },
+    {   .string   = "8KiB EEPROM",
+        .type     = MENU_ENTRY_RESOURCE_RADIO,
+        .callback = magicdeskplus_revision_callback,
+        .data     = (ui_callback_data_t)MAGICDESKPLUS_REV_EEPROM_8K
+    },
+    {   .string   = "SRAM only",
+        .type     = MENU_ENTRY_RESOURCE_RADIO,
+        .callback = magicdeskplus_revision_callback,
+        .data     = (ui_callback_data_t)MAGICDESKPLUS_REV_SRAM
+    },
+    SDL_MENU_ITEM_SEPARATOR,
+    SDL_MENU_ITEM_TITLE("SRAM image"),
+    {   .string   = "SRAM image file",
+        .type     = MENU_ENTRY_DIALOG,
+        .callback = magicdeskplus_sram_image_callback,
+        .data     = (ui_callback_data_t)"Select " CARTRIDGE_NAME_MAGIC_DESK_PLUS " SRAM image"
+    },
+    {   .string   = "Save SRAM image on detach or exit",
+        .type     = MENU_ENTRY_RESOURCE_TOGGLE,
+        .callback = toggle_MagicDeskPlusSRAMWrite_callback
+    },
+    {   .string   = "Save SRAM image now ...",
+        .type     = MENU_ENTRY_OTHER,
+        .callback = c64_cart_save_secondary_callback,
+        .data     = (ui_callback_data_t)CARTRIDGE_MAGIC_DESK_PLUS
+    },
+    SDL_MENU_ITEM_SEPARATOR,
+
+    SDL_MENU_ITEM_TITLE("EEPROM image"),
+    {   .string   = "EEPROM image file",
+        .type     = MENU_ENTRY_DIALOG,
+        .callback = magicdeskplus_eeprom_image_callback,
+        .data     = (ui_callback_data_t)"Select " CARTRIDGE_NAME_MAGIC_DESK_PLUS " EEPROM image"
+    },
+    {   .string   = "Save EEPROM image on detach or exit",
+        .type     = MENU_ENTRY_RESOURCE_TOGGLE,
+        .callback = toggle_MagicDeskPlusEEPROMWrite_callback
+    },
+    {   .string   = "Save EEPROM image now ...",
+        .type     = MENU_ENTRY_OTHER,
+        .callback = c64_cart_save_tertiary_callback,
+        .data     = (ui_callback_data_t)CARTRIDGE_MAGIC_DESK_PLUS
+    },
+    SDL_MENU_LIST_END
+};
+
+static ui_menu_entry_t magicdeskplus_cart_menu[
+    sizeof magicdeskplus_cart_menu_template
+    / sizeof magicdeskplus_cart_menu_template[0]
+];
+
+static void magicdeskplus_hide_entries(int first, int last)
+{
+    int i;
+
+    for (i = first; i <= last; i++) {
+        magicdeskplus_cart_menu[i].string = "";
+        magicdeskplus_cart_menu[i].type = MENU_ENTRY_TEXT;
+        magicdeskplus_cart_menu[i].callback = seperator_callback;
+        magicdeskplus_cart_menu[i].data = NULL;
+        magicdeskplus_cart_menu[i].status = MENU_STATUS_NA;
+    }
+}
+
+static void magicdeskplus_update_menu(void)
+{
+    const char *eeprom_filename = NULL;
+    const char *sram_filename = NULL;
+    int revision = MAGICDESKPLUS_REV_SRAM_EEPROM_32K;
+    int iscrt = cartridge_get_filetype(CARTRIDGE_MAGIC_DESK_PLUS) == CARTRIDGE_FILETYPE_CRT ? MENU_STATUS_INACTIVE : MENU_STATUS_ACTIVE;
+
+    memcpy(magicdeskplus_cart_menu,
+           magicdeskplus_cart_menu_template,
+           sizeof magicdeskplus_cart_menu);
+
+    resources_get_int("MagicDeskPlusRevision", &revision);
+    resources_get_string("MagicDeskPlusSRAMImage", &sram_filename);
+    resources_get_string("MagicDeskPlusEEPROMImage", &eeprom_filename);
+
+    magicdeskplus_cart_menu[1].status = iscrt;
+    magicdeskplus_cart_menu[2].status = iscrt;
+    magicdeskplus_cart_menu[3].status = iscrt;
+
+    if ((revision == MAGICDESKPLUS_REV_EEPROM_32K) ||
+        (revision == MAGICDESKPLUS_REV_EEPROM_8K)) {
+        /* only EEPROM */
+        memcpy(&magicdeskplus_cart_menu[MDP_OFFSET_SRAM_FIRST],
+               &magicdeskplus_cart_menu_template[MDP_OFFSET_EEPROM_FIRST],
+               (MDP_OFFSET_EEPROM_LAST - MDP_OFFSET_EEPROM_FIRST + 1)
+               * sizeof magicdeskplus_cart_menu[0]);
+        magicdeskplus_hide_entries(MDP_OFFSET_SRAM_LAST + 1,
+                                   MDP_OFFSET_EEPROM_LAST);
+    }
+    if (revision == MAGICDESKPLUS_REV_SRAM) {
+        /* only SRAM */
+        magicdeskplus_hide_entries(MDP_OFFSET_SRAM_LAST + 1,
+                                   MDP_OFFSET_EEPROM_LAST);
+    }
+
+    if ((revision != MAGICDESKPLUS_REV_EEPROM_32K) &&
+        (revision != MAGICDESKPLUS_REV_EEPROM_8K)) {
+        /* has SRAM */
+        if (sram_filename == NULL || *sram_filename == '\0') {
+            magicdeskplus_cart_menu[MDP_OFFSET_SRAM_WRITE].status
+                = MENU_STATUS_INACTIVE;
+        }
+        magicdeskplus_cart_menu[MDP_OFFSET_SAVE_SECONDARY].status
+            = cartridge_can_save_secondary_image(CARTRIDGE_MAGIC_DESK_PLUS)
+              ? MENU_STATUS_ACTIVE : MENU_STATUS_INACTIVE;
+    }
+
+    if (revision != MAGICDESKPLUS_REV_SRAM) {
+        /* has EEPROM */
+        int eeprom_only = ((revision == MAGICDESKPLUS_REV_EEPROM_32K) ||
+                           (revision == MAGICDESKPLUS_REV_EEPROM_8K));
+        int write_offset = eeprom_only
+                           ? MDP_OFFSET_SRAM_WRITE
+                           : MDP_OFFSET_EEPROM_WRITE;
+        int save_offset = eeprom_only
+                          ? MDP_OFFSET_SAVE_SECONDARY
+                          : MDP_OFFSET_SAVE_TERTIARY;
+
+        if (eeprom_filename == NULL || *eeprom_filename == '\0') {
+            magicdeskplus_cart_menu[write_offset].status
+                = MENU_STATUS_INACTIVE;
+        }
+        magicdeskplus_cart_menu[save_offset].status
+            = cartridge_can_save_tertiary_image(CARTRIDGE_MAGIC_DESK_PLUS)
+              ? MENU_STATUS_ACTIVE : MENU_STATUS_INACTIVE;
+    }
+}
+
+static UI_MENU_CALLBACK(magicdeskplus_submenu_callback)
+{
+    magicdeskplus_update_menu();
+    return MENU_SUBMENU_STRING;
+}
+
 /* GMod2-C128 */
 
 UI_MENU_DEFINE_FILE_STRING(GMod128EEPROMImage)
@@ -1778,6 +2006,11 @@ static const cartmenu_state_t save_secondary_states[] = {
     { NULL,                 0,                                  0 }
 };
 
+/** \brief  Menu items to be updated using `cartridge_can_save_tertiary_image()` */
+static const cartmenu_state_t save_tertiary_states[] = {
+    { NULL, 0, 0 }
+};
+
 /** \brief  Update cartridge menu `status` fields using a cartridge API function
  *
  * Set cartridge menu items enabled/disabled state by iterating \a states and
@@ -1817,6 +2050,8 @@ static void cartmenu_update_save(void)
     update_cartmenu_states(save_primary_states, cartridge_can_save_image);
     /* secondary */
     update_cartmenu_states(save_secondary_states, cartridge_can_save_secondary_image);
+    /* tertiary */
+    update_cartmenu_states(save_tertiary_states, cartridge_can_save_tertiary_image);
 }
 
 /* Cartridge menu */
@@ -1936,6 +2171,11 @@ ui_menu_entry_t c64cart_menu[] = {
         .type     = MENU_ENTRY_SUBMENU,
         .callback = submenu_callback,
         .data     = (ui_callback_data_t)gmod2_cart_menu
+    },
+    {   .string   = CARTRIDGE_NAME_MAGIC_DESK_PLUS,
+        .type     = MENU_ENTRY_SUBMENU,
+        .callback = magicdeskplus_submenu_callback,
+        .data     = (ui_callback_data_t)magicdeskplus_cart_menu
     },
     {   .string   = CARTRIDGE_NAME_GMOD3,
         .type     = MENU_ENTRY_SUBMENU,
@@ -2097,6 +2337,11 @@ ui_menu_entry_t c128cart_menu[] = {
         .callback = submenu_callback,
         .data     = (ui_callback_data_t)gmod2_cart_menu
     },
+    {   .string   = CARTRIDGE_NAME_MAGIC_DESK_PLUS,
+        .type     = MENU_ENTRY_SUBMENU,
+        .callback = magicdeskplus_submenu_callback,
+        .data     = (ui_callback_data_t)magicdeskplus_cart_menu
+    },
     {   .string   = CARTRIDGE_C128_NAME_GMOD2C128,
         .type     = MENU_ENTRY_SUBMENU,
         .callback = submenu_callback,
@@ -2244,6 +2489,11 @@ ui_menu_entry_t scpu64cart_menu[] = {
         .type     = MENU_ENTRY_SUBMENU,
         .callback = submenu_callback,
         .data     = (ui_callback_data_t)gmod2_cart_menu
+    },
+    {   .string   = CARTRIDGE_NAME_MAGIC_DESK_PLUS,
+        .type     = MENU_ENTRY_SUBMENU,
+        .callback = magicdeskplus_submenu_callback,
+        .data     = (ui_callback_data_t)magicdeskplus_cart_menu
     },
     {   .string   = CARTRIDGE_NAME_GMOD3,
         .type     = MENU_ENTRY_SUBMENU,

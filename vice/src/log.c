@@ -171,10 +171,10 @@ static void log_file_close(void)
 {
     DBG(("log_file_close %p\n", log_file));
     if (log_file) {
+        fflush(log_file);
         if (log_file != stdout) {
             fclose(log_file);
         }
-        fflush(log_file);
         log_file = NULL;
     }
 }
@@ -615,7 +615,7 @@ static int log_archdep(const char *pretxt, const char *logtxt)
     const char *end = logtxt + strlen(logtxt) + 1;
 
     while (beg < end) {
-        char *eol = strchr(beg, '\n');
+        char *eol = (char*)strchr(beg, '\n');
 
         if (eol) {
             *eol = '\0';
@@ -743,7 +743,9 @@ static int log_helper(log_t log, unsigned int level, const char *format,
         return -1;
     }
 
-    if ((log_to_file) || (!log_colorize)) {
+    /* produce strings without escape sequences for no color logging if we are
+       either logging to a file, stdout is redirected, or colors have been disabled. */
+    if ((log_to_file) || (archdep_default_logger_is_terminal() == 0) || (!log_colorize)) {
         nocolorpre = logskipcolors(pretxt);
         nocolortxt = logskipcolors(logtxt);
     }
@@ -783,10 +785,18 @@ static int log_helper(log_t log, unsigned int level, const char *format,
         }
     }
 
-    lib_free(pretxt);
-    lib_free(logtxt);
-    lib_free(nocolorpre);
-    lib_free(nocolortxt);
+    if (pretxt) {
+        lib_free(pretxt);
+    }
+    if (logtxt) {
+        lib_free(logtxt);
+    }
+    if (nocolorpre) {
+        lib_free(nocolorpre);
+    }
+    if (nocolortxt) {
+        lib_free(nocolortxt);
+    }
     return rc;
 }
 

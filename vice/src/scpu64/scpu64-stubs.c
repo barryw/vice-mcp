@@ -37,6 +37,7 @@
 #include "tapeport.h"
 #include "tape-snapshot.h"
 
+int board_type = 0;
 
 /*******************************************************************************
     tape
@@ -87,8 +88,18 @@ int tape_image_detach(unsigned int unit)
     return 0;
 }
 
+int tape_image_probe(const char *name)
+{
+    return 0;
+}
+
 void tape_image_detach_all(void)
 {
+}
+
+int tap_probe(const char *filename)
+{
+    return 0;
 }
 
 int tap_seek_start(tap_t *tap)
