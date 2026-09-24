@@ -36,6 +36,8 @@ extern int mcp_tool_name_matches(const char *canonical_name, const char *request
 extern int mcp_transport_test_dispatch_mutex_serializes(void);
 extern int mcp_transport_test_abandoned_trap_skips_dispatch(void);
 extern int mcp_transport_test_active_trap_dispatches_once(void);
+extern int mcp_transport_test_ping_and_pause_skip_dispatch_slot(void);
+extern int mcp_transport_test_other_tools_wait_for_dispatch_slot(void);
 extern int mcp_transport_test_all_interfaces_without_token_starts(void);
 extern int mcp_transport_test_cors_without_token_rejected(void);
 
@@ -2247,6 +2249,22 @@ TEST(transport_abandoned_trap_skips_dispatch)
 TEST(transport_active_trap_dispatches_once)
 {
     ASSERT_TRUE(mcp_transport_test_active_trap_dispatches_once());
+}
+
+/* Test (#28): ping and pause answer while a waiting tool holds the slot,
+ * and pause stops the machine */
+TEST(transport_ping_and_pause_skip_dispatch_slot)
+{
+    test_ui_pause_reset();
+    ASSERT_TRUE(mcp_transport_test_ping_and_pause_skip_dispatch_slot());
+    ASSERT_TRUE(ui_pause_active());
+    test_ui_pause_reset();
+}
+
+/* Test (#28): every other tool still queues for the slot */
+TEST(transport_other_tools_wait_for_dispatch_slot)
+{
+    ASSERT_TRUE(mcp_transport_test_other_tools_wait_for_dispatch_slot());
 }
 
 /* Test: explicit all-interface binds remain backwards compatible without auth */
@@ -8912,6 +8930,8 @@ int main(void)
     RUN_TEST(transport_dispatch_mutex_serializes);
     RUN_TEST(transport_abandoned_trap_skips_dispatch);
     RUN_TEST(transport_active_trap_dispatches_once);
+    RUN_TEST(transport_ping_and_pause_skip_dispatch_slot);
+    RUN_TEST(transport_other_tools_wait_for_dispatch_slot);
     RUN_TEST(transport_all_interfaces_without_token_starts);
     RUN_TEST(transport_cors_without_token_rejected);
 

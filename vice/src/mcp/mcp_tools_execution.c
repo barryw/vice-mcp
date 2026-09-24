@@ -82,12 +82,19 @@ cJSON* mcp_tool_execution_run(cJSON *params)
 }
 
 /* Trap handler: runs on the emulator thread at the next instruction
- * boundary and holds it there until a client calls vice.execution.run. */
+ * boundary and holds it there until a client calls vice.execution.run.
+ * Only while the pause flag is still up: vice.execution.pause can land
+ * while a step or a frame advance is stopping the machine, which then
+ * holds before this trap runs, and a vice.execution.run drops the flag
+ * before the trap gets its turn. mcp_hold_paused() would raise the flag
+ * again and stop the machine that was just told to run. */
 static void mcp_pause_trap(uint16_t addr, void *data)
 {
     (void)addr;
     (void)data;
-    mcp_hold_paused();
+    if (ui_pause_active()) {
+        mcp_hold_paused();
+    }
 }
 
 cJSON* mcp_tool_execution_pause(cJSON *params)
