@@ -463,7 +463,7 @@ cJSON* mcp_tool_tools_list(cJSON *params)
 
         } else if (strcmp(name, "vice.execution.step") == 0) {
             props = cJSON_CreateObject();
-            cJSON_AddItemToObject(props, "count", mcp_prop_number("Number of instructions to step"));
+            cJSON_AddItemToObject(props, "count", mcp_prop_number("Instructions to step (default: 1, max: 10000)"));
             cJSON_AddItemToObject(props, "stepOver", mcp_prop_boolean("Step over subroutines"));
             schema = mcp_schema_object(props, NULL);
 

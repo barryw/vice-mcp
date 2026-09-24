@@ -431,10 +431,16 @@ Resume execution. No parameters.
 Pause execution. No parameters.
 
 #### `vice.execution.step`
-Step one or more instructions.
+Step one or more instructions. On a stopped machine the call returns
+after the step, with `completed: true` and the PC. If a checkpoint stops
+the machine first, the reply carries `stopped_early: true` and the PC
+there; if the step has not finished after 2 seconds (a step over a slow
+subroutine), the machine is paused at the next instruction boundary and
+the reply carries `timed_out: true`. Either way the rest of the step is
+dropped. On a running machine the call arms the step and returns at once.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `count` | number | | Number of instructions to step |
+| `count` | number | | Instructions to step (default: 1, max: 10000) |
 | `stepOver` | boolean | | Step over subroutines |
 
 #### `vice.run_until`

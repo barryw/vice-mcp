@@ -119,6 +119,14 @@ cJSON* mcp_tool_execution_pause(cJSON *params)
     return response;
 }
 
+/* A step on a held machine is waited for, polling every 0.2 ms for up to
+ * about 2 s. The count is capped to stay well inside that at any speed
+ * near normal (running further is what a checkpoint and
+ * vice.execution.run are for). A step over a subroutine counts as one
+ * instruction however long the subroutine runs; only the wait bounds it. */
+#define MCP_STEP_COUNT_MAX 10000
+#define MCP_STEP_POLLS     10000
+
 cJSON* mcp_tool_execution_step(cJSON *params)
 {
     cJSON *response;
@@ -127,6 +135,8 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     bool step_over = false;
     int was_held;
     int completed = 0;
+    int stopped_early = 0;
+    int timed_out = 0;
     int waited;
 
     log_message(mcp_tools_log, "Handling vice.execution.step");
@@ -138,6 +148,11 @@ cJSON* mcp_tool_execution_step(cJSON *params)
             count = count_item->valueint;
             if (count < 1) {
                 count = 1;
+            }
+            if (count > MCP_STEP_COUNT_MAX) {
+                return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                                 "count must be at most 10000; to run further, "
+                                 "stop at a checkpoint with vice.execution.run");
             }
         }
 
@@ -173,11 +188,30 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     if (was_held) {
         ui_pause_disable();
         mainlock_release();
-        for (waited = 0; waited < 10000 && !ui_pause_active(); waited++) {
+        for (waited = 0; waited < MCP_STEP_POLLS && !ui_pause_active(); waited++) {
             tick_sleep(tick_per_second() / 5000);   /* 0.2 ms; a step is microseconds */
         }
         mainlock_obtain();
-        completed = ui_pause_active();
+        if (!ui_pause_active()) {
+            /* Still running: a step over a subroutine that takes its time,
+             * or a count the machine's speed does not get through. Do not
+             * leave it running on a reply that says the step is over: drop
+             * the rest of the step and stop the machine where it is, the
+             * way vice.execution.pause does. */
+            timed_out = 1;
+            mcp_cancel_step();
+            ui_pause_enable();
+            interrupt_maincpu_trigger_trap(mcp_pause_trap, NULL);
+        } else if (mcp_is_step_active()) {
+            /* Held, but not by the step, which clears the flag before it
+             * holds (monitor_check_icount()): a checkpoint got there first.
+             * Drop the rest of the step, or it stops the machine again
+             * after the next resume. */
+            stopped_early = 1;
+            mcp_cancel_step();
+        } else {
+            completed = 1;
+        }
     }
 
     response = cJSON_CreateObject();
@@ -190,7 +224,24 @@ cJSON* mcp_tool_execution_step(cJSON *params)
     cJSON_AddBoolToObject(response, "step_over", step_over);
     if (was_held) {
         cJSON_AddBoolToObject(response, "completed", completed);
+    }
+    if (completed || stopped_early) {
         cJSON_AddNumberToObject(response, "PC", maincpu_get_pc());
+    }
+    if (stopped_early) {
+        cJSON_AddBoolToObject(response, "stopped_early", true);
+        cJSON_AddStringToObject(response, "message",
+            "Something else stopped the machine before the step finished "
+            "(a checkpoint?); the rest of the step was dropped and the "
+            "machine is paused there");
+    }
+    if (timed_out) {
+        /* No PC: the machine stops at the next instruction boundary, after
+         * this reply has gone. */
+        cJSON_AddBoolToObject(response, "timed_out", true);
+        cJSON_AddStringToObject(response, "message",
+            "The step did not finish within 2 s; the rest of it was dropped "
+            "and the machine has been paused at the next instruction boundary");
     }
 
     return response;

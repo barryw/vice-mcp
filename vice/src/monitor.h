@@ -273,6 +273,10 @@ void mcp_set_step_active(int active);
 /* Hold the emulator thread where it is until an MCP client resumes it
  * with ui_pause_disable(). Must be called on the emulator thread. */
 void mcp_hold_paused(void);
+
+/* Drop a step that has not finished, so that it cannot stop the machine
+ * later. Call with the machine held, or with the mainlock. */
+void mcp_cancel_step(void);
 #endif
 
 /* HACK to enable fetch/load separation */
