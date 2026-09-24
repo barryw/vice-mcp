@@ -61,6 +61,7 @@
 #include "log.h"
 #include "machine.h"
 #include "machine-video.h"
+#include "mainlock.h"
 #include "mem.h"
 #include "mon_breakpoint.h"
 #include "mon_disassemble.h"
@@ -121,6 +122,7 @@ static void mcp_mark_checkpoint_if_active(void)
 
 #include "resources.h"
 #include "screenshot.h"
+#include "sound.h"
 #include "sysfile.h"
 #include "tape.h"
 #include "traps.h"
@@ -131,6 +133,37 @@ static void mcp_mark_checkpoint_if_active(void)
 #include "util.h"
 #include "video.h"
 #include "vsync.h"
+
+#ifdef HAVE_MCP_SERVER
+/* Hold the emulator thread here until an MCP client resumes it.
+ *
+ * ui_pause_enable() on its own is not a stop. On the GTK3 UI it schedules
+ * the pause loop for the next vsync, so after a checkpoint hit or a
+ * completed step the CPU runs on for up to a frame; on the headless UI its
+ * pause trap is empty, so the CPU never stops at all. In both cases
+ * ui_pause_active() already reports "paused" and the registers the client
+ * reads are the stale export from the hit, while memory keeps changing.
+ *
+ * Blocking here, on the emulator thread, at the point the stop was asked
+ * for, gives MCP clients what the interactive monitor gives a human: the
+ * instruction at the reported PC has not executed yet. The MCP transport
+ * dispatches through the mainlock while ui_pause_active() is set, so the
+ * flag is raised through ui_pause_enable() and the loop keeps yielding the
+ * mainlock. This is the same construct monitor_startup() uses for
+ * pause_on_exit_mon, with a sleep so the headless build does not spin. */
+void mcp_hold_paused(void)
+{
+    if (!ui_pause_active()) {
+        ui_pause_enable();
+    }
+    vsync_suspend_speed_eval();
+    sound_suspend();
+    while (ui_pause_active()) {
+        mainlock_yield_and_sleep(tick_per_second() / 60);
+    }
+    vsync_suspend_speed_eval();
+}
+#endif
 
 /*#define DEBUG_MONITOR*/
 
@@ -3017,11 +3050,12 @@ void monitor_check_icount(uint16_t pc)
     }
 
 #ifdef HAVE_MCP_SERVER
-    /* If MCP step mode is active, use ui_pause_enable() instead of opening
-     * the monitor window. This allows MCP clients to step without UI popups. */
+    /* If MCP step mode is active, hold the CPU here instead of opening the
+     * monitor window. This allows MCP clients to step without UI popups, and
+     * the stop lands on this instruction rather than at the next vsync. */
     if (mcp_is_step_active()) {
         mcp_clear_step_active();
-        ui_pause_enable();
+        mcp_hold_paused();
         return;
     }
 #endif
@@ -3063,12 +3097,18 @@ void monitor_check_watchpoints(MEMSPACE mem, unsigned int lastpc, unsigned int p
 {
     while (watch_load_count[mem]) {
         if (watchpoints_check_loads(mem, lastpc, pc)) {
+#ifdef HAVE_MCP_SERVER
+            mcp_mark_checkpoint_if_active();
+#endif
             monitor_startup(mem);
         }
     }
 
     while (watch_store_count[mem]) {
         if (watchpoints_check_stores(mem, lastpc, pc)) {
+#ifdef HAVE_MCP_SERVER
+            mcp_mark_checkpoint_if_active();
+#endif
             monitor_startup(mem);
         }
     }
@@ -3461,7 +3501,7 @@ void monitor_startup(MEMSPACE mem)
 #ifdef HAVE_MCP_SERVER
     if (mcp_checkpoint_active) {
         mcp_checkpoint_active = 0;
-        ui_pause_enable();
+        mcp_hold_paused();
         return;
     }
 #endif

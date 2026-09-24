@@ -1,0 +1,24 @@
+# Conventional Commits — validate commit messages on every push.
+#
+# CI safety net for the Walker Heavy Industries Build & Release Standard.
+# Developers should also install the local hook: `cog install-hook --all`.
+# cog only checks commits since the latest v tag (from_latest_tag = true).
+when:
+  - event: push
+
+labels:
+  platform: linux/amd64
+
+clone:
+  git:
+    image: woodpeckerci/plugin-git
+    settings:
+      tags: true
+      depth: 0
+
+steps:
+  - name: validate-commits
+    image: ghcr.io/cocogitto/cog:latest
+    commands:
+      - cog check --from-latest-tag
+      - echo "All commits follow conventional commit format"

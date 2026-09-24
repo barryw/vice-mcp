@@ -423,12 +423,20 @@ int interrupt_read_snapshot(interrupt_cpu_status_t *cs, snapshot_module_t *m)
 {
     unsigned int i;
     CLOCK qw;
+    unsigned int preserve_monitor;
 
     for (i = 0; i < cs->num_ints; i++) {
         cs->pending_int[i] = IK_NONE;
     }
 
-    cs->global_pending_int = IK_NONE;
+    /* IK_MONITOR is not machine state: it says the monitor has checkpoints
+     * to check before each instruction, and the checkpoints outlive the
+     * snapshot. Dropping it here left every checkpoint silently dead after
+     * a load - hit counts frozen at zero, stops never taken - until the next
+     * checkpoint change happened to raise it again. cpu_reset() already
+     * carries it across a reset for the same reason. */
+    preserve_monitor = cs->global_pending_int & IK_MONITOR;
+    cs->global_pending_int = IK_NONE | preserve_monitor;
     cs->nirq = cs->nnmi = cs->reset = cs->trap = 0;
 
     if (0
@@ -453,12 +461,21 @@ int interrupt_read_snapshot(interrupt_cpu_status_t *cs, snapshot_module_t *m)
 
 int interrupt_read_new_snapshot(interrupt_cpu_status_t *cs, snapshot_module_t *m)
 {
+    unsigned int preserve_monitor;
+
+    /* The file carries whatever IK_MONITOR was at save time, which says
+     * nothing about the checkpoints that exist now: see
+     * interrupt_read_snapshot(). Keep the live bit. */
+    preserve_monitor = cs->global_pending_int & IK_MONITOR;
+
     if (0
         || SMR_DW_INT(m, &cs->nirq) < 0
         || SMR_DW_INT(m, &cs->nnmi) < 0
         || SMR_DW_UINT(m, &cs->global_pending_int) < 0) {
         return -1;
     }
+
+    cs->global_pending_int = (cs->global_pending_int & ~IK_MONITOR) | preserve_monitor;
 
     return 0;
 }

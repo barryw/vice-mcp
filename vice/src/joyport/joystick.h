@@ -452,6 +452,7 @@ void joystick_joypad_clear(void);
 uint8_t joystick_get_axis_value(unsigned int port, unsigned int pot);
 
 void joystick_set_value_absolute(unsigned int joyport, uint16_t value);
+void joystick_set_value_absolute_now(unsigned int joyport, uint16_t value);
 void joystick_set_value_or(unsigned int joyport, uint16_t value);
 void joystick_set_value_and(unsigned int joyport, uint16_t value);
 void joystick_clear(unsigned int joyport);

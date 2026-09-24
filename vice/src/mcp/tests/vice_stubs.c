@@ -231,6 +231,12 @@ void joystick_set_value_absolute(unsigned int joyport, uint16_t value)
     (void)value;
 }
 
+void joystick_set_value_absolute_now(unsigned int joyport, uint16_t value)
+{
+    (void)joyport;
+    (void)value;
+}
+
 /* Phase 2.4: Disk management stubs */
 int file_system_attach_disk(unsigned int unit, unsigned int drive, const char *filename)
 {
@@ -428,6 +434,25 @@ int test_checkpoint_get_last_num(void)
 }
 
 /* Check if last checkpoint has a condition set */
+/* Flags of the most recently added checkpoint */
+int test_checkpoint_last_stop(void)
+{
+    int idx = test_checkpoint_last_num - 1;
+    return (idx >= 0 && idx < MAX_TEST_CHECKPOINTS) ? test_checkpoints[idx].stop : -1;
+}
+
+/* Operation bits of the most recently added checkpoint: 1 load, 2 store, 4 exec */
+int test_checkpoint_last_ops(void)
+{
+    int idx = test_checkpoint_last_num - 1;
+    if (idx < 0 || idx >= MAX_TEST_CHECKPOINTS) {
+        return -1;
+    }
+    return (test_checkpoints[idx].check_load ? 1 : 0)
+         | (test_checkpoints[idx].check_store ? 2 : 0)
+         | (test_checkpoints[idx].check_exec ? 4 : 0);
+}
+
 int test_checkpoint_has_condition(void)
 {
     return test_checkpoint_last_has_condition;
@@ -690,11 +715,20 @@ void alarm_log_too_many_alarms(void)
 /* D3: Trap-based dispatch stubs */
 #include <stdbool.h>
 
+/* The unit tests call mcp_tools_dispatch() directly, so nothing here
+ * depends on the transport's monitor check; default to "not inside the
+ * monitor", which is what a running machine reports. Tests that need the
+ * monitor open switch it. */
+static int test_inside_monitor = 0;
+
+void test_monitor_inside_set(int inside)
+{
+    test_inside_monitor = inside;
+}
+
 bool monitor_is_inside_monitor(void)
 {
-    /* For tests, always return true so direct dispatch is used
-     * (trap-based dispatch requires a running emulator main loop) */
-    return true;
+    return test_inside_monitor ? true : false;
 }
 
 void interrupt_maincpu_trigger_trap(void (*trap_func)(uint16_t, void *data), void *data)
@@ -1071,6 +1105,11 @@ void ui_pause_enable(void)
 void ui_pause_disable(void)
 {
     test_ui_pause_state = 0;
+}
+
+/* mcp_hold_paused() lives in monitor.c; in tests a hold returns at once */
+void mcp_hold_paused(void)
+{
 }
 
 /* Test helper to reset UI pause state */

@@ -1,3 +1,7 @@
+# CI: short-lived minted GitHub App token (WAL-72). Must never be committed and
+# must be gitignored so `cog bump` (skip_untracked=false) sees a clean tree.
+.ci-token
+
 # Local Python/tooling caches
 .pytest_cache/
 __pycache__/

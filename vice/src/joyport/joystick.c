@@ -359,6 +359,29 @@ void joystick_set_value_and(unsigned int joyport, uint16_t value)
     joystick_handle_hooks(joyport);
 }
 
+/* Same as joystick_set_value_absolute(), but the value reaches the
+ * emulated port now rather than after joystick_process_latch()'s random
+ * delay of up to a frame. That delay imitates a human hand; a debugger
+ * client setting the stick on a stopped machine wants the next
+ * instruction to see it, every time, or a script that steps a frame per
+ * input cannot be replayed. Used by the MCP input tools. Networked play
+ * keeps the recorded delay. */
+void joystick_set_value_absolute_now(unsigned int joyport, uint16_t value)
+{
+    if (event_playback_active() || network_connected()) {
+        joystick_set_value_absolute(joyport, value);
+        return;
+    }
+
+    if (latch_joystick_value.values[joyport] != value) {
+        latch_joystick_value.values[joyport] = value;
+        latch_joystick_value.last_used_joyport = joyport;
+        joystick_latch_matrix(0);
+        joystick_event_record();
+        joystick_handle_hooks(joyport);
+    }
+}
+
 void joystick_clear(unsigned int joyport)
 {
     latch_joystick_value.values[joyport] = 0;

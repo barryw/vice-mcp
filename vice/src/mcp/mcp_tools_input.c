@@ -543,7 +543,7 @@ static int parse_joystick_value(cJSON *params, unsigned int *port, uint16_t *val
         }
     }
 
-    *port = parsed_port;
+    *port = parsed_port - 1;
     *value = parsed_value;
     *error_msg = NULL;
     return 0;
@@ -565,7 +565,7 @@ cJSON* mcp_tool_joystick_set(cJSON *params)
     log_message(mcp_tools_log, "Setting joystick port %u to value 0x%04x", port, value);
 
     /* Set joystick state */
-    joystick_set_value_absolute(port, value);
+    joystick_set_value_absolute_now(port, value);
 
     response = cJSON_CreateObject();
     if (response == NULL) {
@@ -573,7 +573,7 @@ cJSON* mcp_tool_joystick_set(cJSON *params)
     }
 
     cJSON_AddStringToObject(response, "status", "ok");
-    cJSON_AddNumberToObject(response, "port", port);
+    cJSON_AddNumberToObject(response, "port", port + 1);
     cJSON_AddNumberToObject(response, "value", value);
 
     return response;
@@ -616,9 +616,9 @@ cJSON* mcp_tool_joystick_tap(cJSON *params)
         }
     }
 
-    joystick_set_value_absolute(port, value);
+    joystick_set_value_absolute_now(port, value);
     if (add_pending_joystick_center(port, duration_frames) < 0) {
-        joystick_set_value_absolute(port, 0);
+        joystick_set_value_absolute_now(port, 0);
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to schedule joystick auto-center");
     }
 
@@ -628,7 +628,7 @@ cJSON* mcp_tool_joystick_tap(cJSON *params)
     }
 
     cJSON_AddStringToObject(response, "status", "ok");
-    cJSON_AddNumberToObject(response, "port", port);
+    cJSON_AddNumberToObject(response, "port", port + 1);
     cJSON_AddNumberToObject(response, "value", value);
     cJSON_AddNumberToObject(response, "duration_frames", duration_frames);
     if (duration_ms > 0) {
@@ -740,7 +740,7 @@ static void mcp_keyboard_vsync_callback(void *unused)
         if (pending_joystick_centers[i].active) {
             pending_joystick_centers[i].frames_remaining--;
             if (pending_joystick_centers[i].frames_remaining <= 0) {
-                joystick_set_value_absolute(pending_joystick_centers[i].port, 0);
+                joystick_set_value_absolute_now(pending_joystick_centers[i].port, 0);
                 log_message(mcp_tools_log, "Auto-centered joystick port %u",
                            pending_joystick_centers[i].port);
                 pending_joystick_centers[i].active = 0;

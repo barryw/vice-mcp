@@ -28,7 +28,8 @@
 
 #include "maincpu.h"
 #include "mos6510.h"
-#include "monitor.h"  /* For mon_instructions_step/next, exit_mon */
+#include "monitor.h"  /* For mon_instructions_step/next, exit_mon, mcp_hold_paused */
+#include "interrupt.h"  /* For interrupt_maincpu_trigger_trap */
 #include "ui.h"       /* For ui_pause_enable/disable/active */
 
 /* mcp_step_active state is defined in monitor.c to avoid a circular link
@@ -73,6 +74,15 @@ cJSON* mcp_tool_execution_run(cJSON *params)
     return response;
 }
 
+/* Trap handler: runs on the emulator thread at the next instruction
+ * boundary and holds it there until a client calls vice.execution.run. */
+static void mcp_pause_trap(uint16_t addr, void *data)
+{
+    (void)addr;
+    (void)data;
+    mcp_hold_paused();
+}
+
 cJSON* mcp_tool_execution_pause(cJSON *params)
 {
     cJSON *response;
@@ -84,10 +94,17 @@ cJSON* mcp_tool_execution_pause(cJSON *params)
     /* Use UI pause to stop the emulator without entering monitor mode.
      * This keeps the emulator window visible (no monitor popup) while
      * still stopping CPU execution. The transport layer acquires the
-     * mainlock when dispatching during UI pause for thread safety. */
+     * mainlock when dispatching during UI pause for thread safety.
+     *
+     * ui_pause_enable() only raises the flag: the GTK3 UI honours it at the
+     * next vsync and the headless UI never does. Queue a trap as well, so
+     * the emulator thread stops at the next instruction boundary. A trap
+     * scheduled from inside a trap (this tool usually runs in one) is run
+     * on the next cycle by interrupt_do_trap(). */
     if (!ui_pause_active()) {
         log_message(mcp_tools_log, "Enabling UI pause");
         ui_pause_enable();
+        interrupt_maincpu_trigger_trap(mcp_pause_trap, NULL);
     }
 
     response = cJSON_CreateObject();
