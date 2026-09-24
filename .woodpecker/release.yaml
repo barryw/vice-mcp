@@ -62,8 +62,11 @@ steps:
       - git fetch --tags
       - VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
       # Clean up any orphaned draft releases left by the retired draft flow.
+      # NB: alpine:3.19 ships github-cli 2.39, which predates `gh release list
+      # --json` (added in gh 2.42) — that flag errored on every run, so the
+      # cleanup silently never ran. Use `gh api` + --jq, available in gh 2.39.
       - |
-        for tag in $$(gh release list --repo "$${CI_REPO}" --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName'); do
+        for tag in $$(gh api "repos/$${CI_REPO}/releases" --paginate --jq '.[] | select(.draft) | .tag_name'); do
           echo "Deleting orphaned draft: $${tag}"
           gh release delete "$${tag}" --repo "$${CI_REPO}" --yes 2>/dev/null || true
         done

@@ -243,7 +243,7 @@ static int disk_image_check_for_d71(disk_image_t *image)
 static int disk_image_check_for_d81(disk_image_t *image)
 {
     unsigned int blk = 0;
-    char *ext;
+    const char *ext;
     size_t len;
     uint8_t block[256];
     fsimage_t *fsimage;
@@ -461,6 +461,16 @@ static int disk_image_check_for_gcr(disk_image_t *image)
         return 0;
     }
 
+    /* check magic first and exit without message if not found */
+    if (!strncmp("GCR-1541", (char*)header, 8)) {
+        image->type = DISK_IMAGE_TYPE_G64;
+    } else if (!strncmp("GCR-1571", (char*)header, 8)) {
+        image->type = DISK_IMAGE_TYPE_G71;
+    } else {
+        return 0;
+    }
+
+
     if (header[8] != 0) {
         log_error(disk_image_probe_log,
                   "Import GCR: Unknown GCR image version %i.",
@@ -489,14 +499,6 @@ static int disk_image_check_for_gcr(disk_image_t *image)
         return 0;
     }
 #endif
-
-    if (!strncmp("GCR-1541", (char*)header, 8)) {
-        image->type = DISK_IMAGE_TYPE_G64;
-    } else if (!strncmp("GCR-1571", (char*)header, 8)) {
-        image->type = DISK_IMAGE_TYPE_G71;
-    } else {
-        return 0;
-    }
 
     image->tracks = header[9] / 2;
     image->max_half_tracks = header[9];
@@ -538,7 +540,7 @@ static int disk_image_check_for_p64(disk_image_t *image)
 static int disk_image_check_for_d1m(disk_image_t *image)
 {
     unsigned int blk = 0;
-    char *ext;
+    const char *ext;
     size_t len;
     uint8_t block[256];
     fsimage_t *fsimage;
@@ -711,7 +713,7 @@ static int disk_image_check_for_dhd(disk_image_t *image)
     /* since the size check(s) are weak, check CRT header to prevent CRT files
        being detected as DHD images (bug #1489). having a crt header at the start
        of a DHD container seems unlikely enough for this to work fine. */
-    if (crt_getid(image->media.fsimage->name) >= 0) {
+    if (crt_probe(image->media.fsimage->name)) {
         log_error(disk_image_probe_log, "trying to attach a CRT file as DHD image, aborting.");
         return 0;
     }
@@ -791,8 +793,14 @@ static int disk_image_check_for_d90(disk_image_t *image)
     return 1;
 }
 
+/* check if this is a supported image,
+   return 0 on success, -1 on failure
+   sets up image->type, image->tracks, image->max_half_tracks etc
+*/
 int fsimage_probe(disk_image_t *image)
 {
+    image->type = DISK_IMAGE_TYPE_UNKNOWN;
+
     if (disk_image_check_for_d64(image)) {
         return 0;
     }

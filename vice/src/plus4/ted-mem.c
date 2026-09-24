@@ -62,7 +62,7 @@ static int unused_bits_in_registers[64] =
     0x00 /* $FF08 */, 0x00 /* $FF09 */, 0xa0 /* $FF0A */, 0x00 /* $FF0B */,
     0xfc /* $FF0C */, 0x00 /* $FF0D */, 0x00 /* $FF0E */, 0x00 /* $FF0F */,
     0x00 /* $FF10 */, 0x00 /* $FF11 */, 0x00 /* $FF12 */, 0x00 /* $FF13 */,
-    0x00 /* $FF14 */, 0x80 /* $FF15 */, 0x80 /* $FF16 */, 0x80 /* $FF17 */,
+    0x07 /* $FF14 */, 0x80 /* $FF15 */, 0x80 /* $FF16 */, 0x80 /* $FF17 */,
     0x80 /* $FF18 */, 0x80 /* $FF19 */, 0x00 /* $FF1A */, 0x00 /* $FF1B */,
     0x00 /* $FF1C */, 0x00 /* $FF1D */, 0x00 /* $FF1E */, 0x00 /* $FF1F */,
     0x00 /* $FF20 */, 0x00 /* $FF21 */, 0x00 /* $FF22 */, 0x00 /* $FF23 */,
@@ -690,9 +690,9 @@ inline static void ted1a1b_store(uint16_t addr, uint8_t value)
 
     ted.regs[addr] = value;
     if (addr == 0x1a) {
-        new_counter = ((value & 1) << 8) + (ted.mem_counter & 0xff);
+        new_counter = ((value & 3) << 8) + (ted.mem_counter & 0xff);
     } else {
-        new_counter = (ted.mem_counter & 0x100) | value;
+        new_counter = (ted.mem_counter & 0x300) | value;
     }
     ted.mem_counter = new_counter;
 }
@@ -976,7 +976,7 @@ inline static uint8_t ted12_read(void)
 inline static uint8_t ted1a1b_read(uint16_t addr)
 {
     if (addr == 0x1a) {
-        return ((ted.mem_counter & 0x100) >> 8) | 0xfc;
+        return ((ted.mem_counter & 0x300) >> 8) | 0xfc;
     } else {
         return ted.mem_counter & 0xff;
     }

@@ -24,7 +24,7 @@
  *
  */
 
-/* #define DBGDRIVEROM */
+#define DBGDRIVEROM
 
 #include "vice.h"
 
@@ -75,7 +75,7 @@ static int drive_rom_load_ok = 0;
 
 /* like driverom_load, but doesn't actually load anything, and only tests if the
    file exists and matches the given size(s) */
-int driverom_test_load(const char *resource_name, unsigned int *loaded,
+int driverom_probe(const char *resource_name, unsigned int *loaded,
                         int min, int max, const char *name,
                         unsigned int type, unsigned int *size)
 {
@@ -83,7 +83,7 @@ int driverom_test_load(const char *resource_name, unsigned int *loaded,
     int filesize;
     unsigned int dnr;
 
-    DBG(("driverom_test_load res:%s loaded:%u min:%d max:%d name:%s type:%u size:%u",
+    DBG(("driverom_probe res:%s loaded:%u min:%d max:%d name:%s type:%u size:%u",
        resource_name, *loaded, min, max, name, type, size ? *size : 0));
 
     if (!drive_rom_load_ok) {
@@ -92,7 +92,7 @@ int driverom_test_load(const char *resource_name, unsigned int *loaded,
 
     resources_get_string(resource_name, &rom_name);
 
-    DBG(("driverom_test_load rom_name: %s", rom_name));
+    DBG(("driverom_probe rom_name: %s", rom_name));
 
     if (size != NULL) {
         *size = 0;
@@ -127,6 +127,7 @@ int driverom_test_load(const char *resource_name, unsigned int *loaded,
     if (size != NULL) {
         *size = (unsigned int)filesize;
     }
+    DBG(("driverom_probe OK size: %d loaded:%u", filesize, *loaded));
     return 0;
 
 exiterror:
@@ -183,6 +184,7 @@ int driverom_load(const char *resource_name, uint8_t *drive_rom, unsigned
     if (size != NULL) {
         *size = (unsigned int)filesize;
     }
+    DBG(("driverom_load filesize:%d", filesize));
 
     /* Align to the end of available space */
     if ((filesize <= min) && (min < max)) {
@@ -194,7 +196,7 @@ int driverom_load(const char *resource_name, uint8_t *drive_rom, unsigned
     /* reset all drives that use the loaded ROM */
     for (dnr = 0; dnr < NUM_DISK_UNITS; dnr++) {
         diskunit_context_t *unit = diskunit_context[dnr];
-
+        DBG(("driverom_load reset filesize: %d dnr:%u unit->type:%u type:%u", filesize, dnr, unit->type, type));
         if (unit->type == type) {
             DBG(("driverom_load prepare drive rom and reset"));
             machine_drive_rom_setup_image(dnr);
@@ -221,7 +223,7 @@ int driverom_load_images(void)
 {
     drive_rom_load_ok = 1;
 
-    machine_drive_rom_load();
+    machine_drive_rom_probe();
 
     if (machine_drive_rom_check_loaded(DRIVE_TYPE_ANY) < 0) {
         log_error(driverom_log,
@@ -316,6 +318,26 @@ void driverom_initialize_traps(diskunit_context_t *unit)
     DBG(("driverom_initialize_traps error (patch not found)"));
     unit->trap = -1;
     unit->trapcont = -1;
+}
+
+/* reload the ROM for all drives of given type */
+int driverom_reload(int type)
+{
+    int dnr;
+    int oldtype = 0;
+    DBG(("driverom_reload type: %d\n", type));
+    for (dnr = 0; dnr < NUM_DISK_UNITS; dnr++) {
+        diskunit_context_t *unit = diskunit_context[dnr];
+        DBG(("driverom_reload unit->type:%u\n", unit->type));
+        if (unit->type == type) {
+            resources_get_int_sprintf("Drive%dType", &oldtype, dnr + 8);
+            DBG(("driverom_reload oldtype:%d\n", oldtype));
+            resources_set_int_sprintf("Drive%dType", 0, dnr + 8);
+            unit->rom_type = 0; /* force reload */
+            resources_set_int_sprintf("Drive%dType", oldtype, dnr + 8);
+        }
+    }
+    return 0; /* no error */
 }
 
 /* -------------------------------------------------------------------- */

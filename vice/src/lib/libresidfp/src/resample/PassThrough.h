@@ -31,22 +31,21 @@ namespace reSIDfp
  */
 class PassThrough final : public Resampler
 {
+    friend class State;
+
 private:
     /// Last sample
-    int outputValue;
+    int32_t outputValue = 0;
 
 public:
-    PassThrough() :
-        outputValue(0) {}
-
-    bool input(int sample) override
+    bool input(int32_t sample) override
     {
         outputValue = sample;
 
         return true;
     }
 
-    int output() const override { return outputValue; }
+    int32_t output() const override { return outputValue; }
 
     void reset() override
     {

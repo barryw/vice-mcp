@@ -140,6 +140,14 @@ int cartridge_get_id(int slot)
     return type;
 }
 
+/* FIXME: return filetype of cart with given crtid
+   (CARTRIDGE_FILETYPE_BIN, CARTRIDGE_FILETYPE_CRT, CARTRIDGE_FILETYPE_CRT, CARTRIDGE_FILETYPE_NONE) */
+int cartridge_get_filetype(int crtid)
+{
+    log_error(LOG_DEFAULT, "cartridge_get_filetype not implemented.");
+    return CARTRIDGE_FILETYPE_NONE;
+}
+
 /* FIXME: slot arg is ignored right now.
    this should return a pointer to a filename, or NULL
 */
@@ -947,6 +955,26 @@ int cartridge_flush_image(int type)
 int cartridge_flush_secondary_image(int type)
 {
     return -1;
+}
+
+int cartridge_flush_tertiary_image(int type)
+{
+    return -1;
+}
+
+int cartridge_save_tertiary_image(int type, const char *filename)
+{
+    return -1;
+}
+
+int cartridge_can_flush_tertiary_image(int crtid)
+{
+    return 0;
+}
+
+int cartridge_can_save_tertiary_image(int crtid)
+{
+    return 0;
 }
 
 int cartridge_can_save_image(int crtid)

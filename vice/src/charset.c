@@ -345,7 +345,12 @@ uint8_t *charset_petconv_stralloc(uint8_t *in, int mode)
             while (1) {
                 while (*s) {
                     int code = charset_petscii_to_ucs(*s);
-                    d += charset_ucs_to_utf8(d, code, len - (d - buf));
+                    size_t used = (size_t)(d - buf);
+                    /* once d passes the end, len - used would wrap to a huge
+                       size_t and let charset_ucs_to_utf8() write past buf;
+                       keep counting without writing, the realloc below
+                       retries with the right size */
+                    d += charset_ucs_to_utf8(d, code, used < len ? len - used : 0);
                     s++;
                 }
                 if (d - buf > len) {

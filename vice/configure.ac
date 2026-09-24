@@ -134,6 +134,7 @@ VICE_ARG_ENABLE_LIST(debug-threads,         [  --enable-debug-threads  enable de
 VICE_ARG_ENABLE_LIST(x64,                   [  --enable-x64            enable building of the old x64 emulator [[default=no]]])
 VICE_ARG_ENABLE_LIST(x64-image,             [  --enable-x64-image      enable X64 image support [[default=no]]])
 VICE_ARG_ENABLE_LIST(optimization,          [  --disable-optimization  disable code optimization by passing -O0 [[default=no]]])
+VICE_ARG_ENABLE_LIST(sanitizer,             [  --enable-sanitizer      enable address- and UB sanitizer [[default=no]]])
 VICE_ARG_ENABLE_LIST(extra-warnings,        [  --enable-extra-warnings enable anal warnings [[default=no]]])
 VICE_ARG_ENABLE_LIST(io-simulation,         [  --enable-io-simulation  enable i/o simulation devices [[default=no]]])
 VICE_ARG_ENABLE_LIST(experimental-devices,  [  --enable-experimental-devices    enable experimental device emulation [[default=no]]])
@@ -143,6 +144,9 @@ VICE_ARG_WITH_LIST(libcurl,                 [  --without-libcurl       disable l
 
 dnl Needed for MCP server
 VICE_ARG_ENABLE_LIST(mcp-server,            [  --enable-mcp-server     enable MCP server support [[default=no]]])
+
+dnl Needed for USBSID
+VICE_ARG_WITH_LIST(libusb,                  [  --without-libusb        disable libusb support [[default=no]]])
 
 dnl
 dnl UI options
@@ -174,6 +178,16 @@ if test x"$enable_optimization" = "xno"; then
   VICE_CFLAGS="-g -O0"
   VICE_CXXFLAGS="-g -O0"
   VICE_OBJCFLAGS="-g -O0"
+fi
+
+dnl
+dnl Check for enabling address- and UB sanitizer with --enable-sanitizer
+dnl
+if test x"$enable_sanitizer" = "xyes"; then
+  VICE_CFLAGS="-g -O0 -fno-common -fno-omit-frame-pointer -fsanitize=address,undefined -fsanitize-address-use-after-scope"
+  VICE_CXXFLAGS="-g -O0 -fno-common -fno-omit-frame-pointer -fsanitize=address,undefined -fsanitize-address-use-after-scope"
+  VICE_OBJCFLAGS="-g -O0 -fsanitize=address,undefined"
+  VICE_LDFLAGS="-fsanitize=address,undefined"
 fi
 
 
@@ -449,6 +463,7 @@ HAVE_DYNLIB_SUPPORT_TOO="no "
 HAVE_FASTSID_SUPPORT="no "
 HAVE_FONTCONFIG_SUPPORT="no "
 HAVE_GIF_SUPPORT="no "
+HAVE_LIBUSB_SUPPORT="no "
 HAVE_USBSID_SUPPORT="no "
 HAVE_HARDSID_SUPPORT="no "
 HAVE_HWSCALE_SUPPORT="no "
@@ -1882,9 +1897,9 @@ dnl
 dnl FIXME: residfp?
 dnl
 dnl Remove this check to allow building without a SID engine
-if test x"$with_fastsid" != "xyes" -a x"$with_resid" = "xno"; then
-  AC_MSG_ERROR([Neither FastSID nor ReSID sound engine enabled, please enable at least one.])
-fi
+dnl if test x"$with_fastsid" != "xyes" -a x"$with_resid" = "xno"; then
+dnl   AC_MSG_ERROR([Neither FastSID nor ReSID sound engine enabled, please enable at least one.])
+dnl fi
 
 
 dnl FastSID
@@ -2064,7 +2079,7 @@ fi
 
 AC_SUBST(RESIDFPSUB)
 
-if test x"$RESIDFPSUB" = "xresidfp"; then
+if test x"$RESIDFPSUB" = "xlib/libresidfp"; then
   AM_CONDITIONAL(RESIDFP_DIR_USED, true)
 else
   AM_CONDITIONAL(RESIDFP_DIR_USED, false)
@@ -3096,7 +3111,7 @@ if test x"$is_unix" = "xyes"; then
   fi
 
   dnl usbsid required libraries and headers
-  if test x"$enable_usbsid" != "xno" ; then
+  if test x"$with_libusb" != "xno" ; then
     PKG_PROG_PKG_CONFIG
     UNIX_USBSID_HEADER_PRESENT=yes
     AC_CHECK_HEADERS(libusb-1.0/libusb.h,,[UNIX_USBSID_HEADER_PRESENT=no],)
@@ -3923,7 +3938,7 @@ echo "-----"
 if test x"$real_arch" = "xUnix" -o x"$real_arch" = "xWin32"; then
   echo "Real device (OpenCBM support)    : $HAVE_REALDEVICE_SUPPORT (--enable/disable-realdevice)"
 fi
-echo "X64 image support                : $HAVE_X64_IMAGE_SUPPORT (--enable/disable--x64-image)"
+echo "X64 image support                : $HAVE_X64_IMAGE_SUPPORT (--enable/disable-x64-image)"
 
 dnl echo ""
 dnl echo "MONITOR"
@@ -3945,6 +3960,8 @@ fi
 if test x"$real_arch" = "xUnix" -o x"$real_arch" = "xWin32"; then
     echo "libieee1284 support               : $HAVE_LIBIEEE1284_SUPPORT (--with/--wihout-libieee1284)"
 fi
+
+echo "libusb support                    : $HAVE_LIBUSB_SUPPORT (--with/-without-libusb)"
 
 
 echo ""

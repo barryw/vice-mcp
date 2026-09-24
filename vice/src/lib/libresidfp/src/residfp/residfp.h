@@ -85,6 +85,16 @@ public:
     void input(int value);
 
     /**
+     * Read registers without altering state.
+     *
+     * @param offset SID register to read
+     * @return value read from chip
+     *
+     * @since 1.1
+     */
+    unsigned char peek(int offset) const;
+
+    /**
      * Read registers.
      *
      * Reading a write only register returns the last char written to any SID register.
@@ -174,6 +184,17 @@ public:
 
     /**
      * Clock SID forward with no audio production.
+     * Only the digital parts are emulated,
+     * the analog stage is ignored.
+     *
+     * @param cycles c64 clocks to clock.
+     *
+     * @since 1.1
+     */
+    void clockDigital(unsigned int cycles);
+
+    /**
+     * Clock SID forward with no audio production.
      *
      * @note
      * You can't mix this method of clocking with the audio-producing
@@ -217,9 +238,94 @@ public:
      * When enabled the filter cutoff is lower.
      *
      * @param enable true to enable old 2200pF caps used on ASSY 326298
-     *               false to use the standard 470pF caps.
+     *               false to use the standard 470pF caps. (default off)
+     * @deprecated since 1.3
+     * @see #set6581caps(CapsType)
      */
-    void enableOld6581caps(bool enable);
+    RESIDFP_DEPRECATED void enableOld6581caps(bool enable);
+
+    /**
+     * Set paddle coordinates.
+     *
+     * @since 1.1
+     */
+    void setPaddle(unsigned char x, unsigned char y);
+
+    /**
+     * Get the save-state size in bytes.
+     *
+     * @note: the size may depend on configuration.
+     *
+     * @since 1.1
+     */
+    int stateSize() const;
+
+    /**
+     * Save current state.
+     *
+     * @note: the save state is not portable across different builds
+     * and may change in future versions.
+     *
+     * @param buffer the buffer where state will be saved to
+     * @param size size of the buffer in bytes
+     *
+     * @since 1.1
+     */
+    int saveState(char* buffer, int size) const;
+
+    /**
+     * Restore saved state.
+     *
+     * @param buffer the buffer containig the saved state
+     * @param size size of the buffer in bytes
+     *
+     * @since 1.1
+     */
+    void restoreState(char* buffer, int size);
+
+    /**
+     * Set the DAC leakage level.
+     * Affects the envelope and waveforms.
+     *
+     * @param level the leakage level, between 0 (no leakage) and 1 (standard leakage) (default 1.0)
+     *
+     * @since 1.2
+     */
+    void setDacLeakage(double level);
+
+    /**
+     * Set the 6581 wave offset.
+     * Affects the volume of digi samples.
+     *
+     * @param offset the waveform offset, between 0 (average digis) and 1 (loud digis) (default 1.0)
+     *
+     * @since 1.2
+     */
+    void setOffset6581(double offset);
+
+    /**
+     * Set the DC-Blocker resistance.
+     * Affects the highpass cutoff frequency.
+     *
+     * @param res the resistance value, between 0 (10KOhm => ~1.6Hz) and 1 (1KOhm => ~16Hz) (default 0.0)
+     *
+     * @since 1.2
+     */
+    void setDCBRes(double res);
+
+    /**
+     * Set caps for 6581 model.
+     * Affects the filter cutoff frequency.
+     * Choose between:
+     * - 2200pF: low cutoff, found on old ASSY 326298
+     * -  470pF: normal cutoff, found on most of the boards
+     * -  330pF: high cutoff, found on some boards and likely on Galway's C128D
+     *
+     * @param type caps type @see #reSIDfp::CapsType
+     *
+     * @since 1.3
+     */
+    void set6581caps(CapsType type);
 };
 
 }

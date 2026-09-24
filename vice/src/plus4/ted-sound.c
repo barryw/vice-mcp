@@ -159,6 +159,18 @@ int machine_sid8_check_range(unsigned int sid_adr)
     return 0;
 }
 
+/* dummy function for now */
+int machine_sid9_check_range(unsigned int sid_adr)
+{
+    return 0;
+}
+
+/* dummy function for now */
+int machine_sid10_check_range(unsigned int sid_adr)
+{
+    return 0;
+}
+
 void machine_sid2_enable(int val)
 {
 }
@@ -516,7 +528,7 @@ static uint8_t ted_sound_machine_read(sound_t *psid, uint16_t addr)
         case 0x0f:
             return plus4_sound_data[1];
         case 0x10:
-            return plus4_sound_data[2] | 0xc0;
+            return (plus4_sound_data[2] & 0x7f) | 0x7c;
         case 0x11:
             return plus4_sound_data[3];
         case 0x12:

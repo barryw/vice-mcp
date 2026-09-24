@@ -36,31 +36,30 @@ namespace reSIDfp
  */
 class ZeroOrderResampler final : public Resampler
 {
+    friend class State;
 
 private:
     /// Last sample
-    int cachedSample;
+    int32_t cachedSample = 0;
 
     /// Number of cycles per sample
     const int cyclesPerSample;
 
-    int sampleOffset;
+    int sampleOffset = 0;
 
     /// Calculated sample
-    int outputValue;
+    int32_t outputValue = 0;
 
 public:
     ZeroOrderResampler(double clockFrequency, double samplingFrequency) :
-        cachedSample(0),
-        cyclesPerSample(static_cast<int>(clockFrequency / samplingFrequency * 1024.)),
-        sampleOffset(0),
-        outputValue(0) {}
+        cyclesPerSample(static_cast<int>(clockFrequency / samplingFrequency * 1024.))
+    {}
 
     bool input(int sample) override
     {
         bool ready = false;
 
-        if (sampleOffset < 1024)
+        if (unlikely(sampleOffset < 1024))
         {
             outputValue = cachedSample + (sampleOffset * (sample - cachedSample) >> 10);
             ready = true;
@@ -74,12 +73,13 @@ public:
         return ready;
     }
 
-    int output() const override { return outputValue; }
+    int32_t output() const override { return outputValue; }
 
     void reset() override
     {
         sampleOffset = 0;
         cachedSample = 0;
+        outputValue = 0;
     }
 };
 

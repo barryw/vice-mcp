@@ -29,6 +29,8 @@
 
 #include "vice.h"
 
+#if defined(HAVE_RESIDFP)
+
 #ifdef _M_ARM
 #undef _ARM_WINAPI_PARTITION_DESKTOP_SDK_AVAILABLE
 #define _ARM_WINAPI_PARTITION_DESKTOP_SDK_AVAILABLE 1
@@ -45,6 +47,14 @@ extern "C" {
 #include "resources.h"
 #include "sid-snapshot.h"
 #include "types.h"
+
+/*#define DEBUG_RESIDFP*/
+
+#ifdef DEBUG_RESIDFP
+#define DBG(x)  log_printf x
+#else
+#define DBG(x)
+#endif
 
 extern log_t sound_log;
 
@@ -94,6 +104,8 @@ static sound_t *residfp_open(uint8_t *sidstate)
     sound_t *psid;
     int i;
 
+    DBG(("residfp_open"));
+
     psid = new sound_t;
     psid->sid = new reSIDfp::SID;
 
@@ -117,6 +129,8 @@ static int residfp_init(sound_t *psid, int speed, int cycles_per_sec, int factor
     int curve_8580_int = RESIDFP_8580_FILTER_CURVE_DEFAULT;
     int combined_strength_int = RESIDFP_COMBINED_WAVEFORM_STRENGTH_DEFAULT;
     int old_caps = 0;
+
+    DBG(("residfp_init"));
 
     CombinedWaveforms combined_table[3] = { WEAK, AVERAGE, STRONG };
 
@@ -191,7 +205,8 @@ static int residfp_init(sound_t *psid, int speed, int cycles_per_sec, int factor
             break;
     }
     psid->sid->enableFilter(filters_enabled ? true : false);
-    psid->sid->enableOld6581caps(old_caps ? true : false);
+    /* FIXME: also handle CAPS330 ("Galway C128") */
+    psid->sid->set6581caps(old_caps ? CAPS2200 : CAPS470);
     psid->sid->setCombinedWaveforms(combined_table[combined_strength_int]);
 
     switch (sampling) {
@@ -285,38 +300,38 @@ static int residfp_calculate_samples(sound_t *psid, float *pbuf, int nr, CLOCK *
 static int residfp_calculate_samples(sound_t *psid, short *pbuf, int nr, int interleave, CLOCK *delta_t)
 {
     short *tmp_buf;
-    int retval;
+    int retval = 0;
     int int_delta_t = (int)*delta_t;
 
     /* Tried not to mess with resid during 64-bit conversion. clock(...) wants to modify *delta_t ... */
+    if ((nr > 0) && (int_delta_t > 0)) {
+        if (psid->factor == 1000) {
+            tmp_buf = getbuf(2 * nr);
 
-    if (psid->factor == 1000) {
-        tmp_buf = getbuf(2 * nr);
-        /* CAUTION: unlike ReSID; this does NOT return the number of cycles "left to do" in int_delta_t */
+            /* CAUTION: unlike ReSID; this does NOT return the number of cycles "left to do" in int_delta_t */
+            retval = psid->sid->clock(int_delta_t, tmp_buf);
+            if (retval > 0) {
+                int n, p = 0;
+                for (n = 0; n < retval; n++) {
+                    pbuf[p] = tmp_buf[n];
+                    p += interleave;
+                }
+            }
+            (*delta_t) = 0;
+            return retval;
+        }
+
+        /* Used when SID does not run at system clock ("SID card") */
+        tmp_buf = getbuf(2 * nr * psid->factor / 1000);
         retval = psid->sid->clock(int_delta_t, tmp_buf);
-        {
+        if (retval > 0) {
             int n, p = 0;
             for (n = 0; n < retval; n++) {
                 pbuf[p] = tmp_buf[n];
                 p += interleave;
             }
         }
-
-        (*delta_t) = 0;
-        return retval;
     }
-
-    /* Used when SID does not run at system clock ("SID card") */
-    tmp_buf = getbuf(2 * nr * psid->factor / 1000);
-    retval = psid->sid->clock(int_delta_t, tmp_buf);
-    {
-        int n, p = 0;
-        for (n = 0; n < retval; n++) {
-            pbuf[p] = tmp_buf[n];
-            p += interleave;
-        }
-    }
-
     (*delta_t) = 0;
     return retval;
 }
@@ -462,3 +477,5 @@ sid_engine_t residfp_hooks =
 };
 
 } // extern "C"
+
+#endif

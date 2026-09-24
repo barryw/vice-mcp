@@ -359,6 +359,29 @@ void joystick_set_value_and(unsigned int joyport, uint16_t value)
     joystick_handle_hooks(joyport);
 }
 
+/* Same as joystick_set_value_absolute(), but the value reaches the
+ * emulated port now rather than after joystick_process_latch()'s random
+ * delay of up to a frame. That delay imitates a human hand; a debugger
+ * client setting the stick on a stopped machine wants the next
+ * instruction to see it, every time, or a script that steps a frame per
+ * input cannot be replayed. Used by the MCP input tools. Networked play
+ * keeps the recorded delay. */
+void joystick_set_value_absolute_now(unsigned int joyport, uint16_t value)
+{
+    if (event_playback_active() || network_connected()) {
+        joystick_set_value_absolute(joyport, value);
+        return;
+    }
+
+    if (latch_joystick_value.values[joyport] != value) {
+        latch_joystick_value.values[joyport] = value;
+        latch_joystick_value.last_used_joyport = joyport;
+        joystick_latch_matrix(0);
+        joystick_event_record();
+        joystick_handle_hooks(joyport);
+    }
+}
+
 void joystick_clear(unsigned int joyport)
 {
     latch_joystick_value.values[joyport] = 0;
@@ -3039,21 +3062,27 @@ void joy_axis_event(joystick_axis_t *axis, int32_t value)
     joystick_axis_value_t prev    = axis->prev;
     int                   joyport = axis->device->joyport;
 
+    direction = joystick_axis_direction(axis, value);
+
 #if !(defined(USE_SDLUI) || defined(USE_SDL2UI) || defined(USE_HEADLESSUI))
     unsigned int           poll_state = axis->device->status & JOY_POLL_MASK;
 
     if (poll_state == JOY_POLL_NONE) {
         return;
-    } else if (poll_state == JOY_POLL_UI) {
-        joystick_ui_event(axis, JOY_INPUT_AXIS, value);
+    }
+
+    if (poll_state == JOY_POLL_UI) {
+        // Report to the UI even if the direction is the same as the previous one, as long as it's not middle
+        joystick_ui_event(axis, JOY_INPUT_AXIS, value, direction != prev);
+        axis->prev = direction;
         return;
     }
 #endif
 
-    direction = joystick_axis_direction(axis, value);
     if (direction == prev) {
         return;
     }
+    axis->prev = direction;
 
     DBG(("joy_axis_event: joy: %s axis: %d value: %d: direction: %d prev: %d",
          axis->device->name, axis->index, value, direction, prev));
@@ -3073,8 +3102,6 @@ void joy_axis_event(joystick_axis_t *axis, int32_t value)
     if (direction == JOY_AXIS_NEGATIVE) {
         joy_perform_event(&axis->mapping.negative, joyport, 1);
     }
-
-    axis->prev = direction;
 }
 
 
@@ -3128,7 +3155,7 @@ void joy_button_event(joystick_button_t *button, int32_t value)
     if (poll_state == JOY_POLL_NONE) {
         return;
     } else if (poll_state == JOY_POLL_UI) {
-        joystick_ui_event(button, JOY_INPUT_BUTTON, value);
+        joystick_ui_event(button, JOY_INPUT_BUTTON, value, true);
         return;
     }
 #endif
@@ -3160,7 +3187,7 @@ void joy_hat_event(joystick_hat_t *hat, int32_t value)
     if (poll_state == JOY_POLL_NONE) {
         return;
     } else if (poll_state == JOY_POLL_UI) {
-        joystick_ui_event(hat, JOY_INPUT_HAT, value);
+        joystick_ui_event(hat, JOY_INPUT_HAT, value, true);
         return;
     }
 #endif

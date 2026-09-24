@@ -437,6 +437,9 @@
 /* This version provides ReSID support. */
 #undef HAVE_RESID
 
+/* This version provides ReSIDfp support. */
+#undef HAVE_RESIDFP
+
 /* This version provides ReSID-DTV support. */
 #undef HAVE_RESID_DTV
 

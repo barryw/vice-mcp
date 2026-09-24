@@ -850,6 +850,7 @@ void machine_specific_powerup(void)
 {
     tapeport_powerup();
     joyport_powerup();
+    mem_powerup();
 }
 
 void machine_specific_shutdown(void)
@@ -864,6 +865,8 @@ void machine_specific_shutdown(void)
 #ifdef HAVE_MOUSE
     mouse_shutdown();
 #endif
+
+    sid_cmdline_options_shutdown();
 
     /* close the video chip(s) */
     vicii_shutdown();

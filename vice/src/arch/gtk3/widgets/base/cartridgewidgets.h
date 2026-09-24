@@ -59,9 +59,15 @@ GtkWidget *cart_image_widget_append_check(GtkWidget  *widget,
                                           const char *resource,
                                           const char *text);
 
+GtkWidget *cart_image_widget_append_filename_check(GtkWidget  *widget,
+                                                   const char *resource,
+                                                   const char *text);
+
+void       cart_image_widget_set_save_button_label(GtkWidget  *widget,
+                                                   const char *text);
+
 void       cart_image_widget_update_sensitivity(GtkWidget *widget);
 
 void       cart_image_widgets_shutdown(void);
 
 #endif
-

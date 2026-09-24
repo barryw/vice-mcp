@@ -99,6 +99,7 @@
 #include "settings_gmod2.h"
 #include "settings_gmod2c128.h"
 #include "settings_gmod3.h"
+#include "settings_magicdeskplus.h"
 #include "settings_host_display.h"
 #include "settings_hotkeys.h"
 #include "settings_hvsc.h"
@@ -329,6 +330,9 @@ static ui_settings_tree_node_t c64_cartridges[] = {
     { CARTRIDGE_NAME_GMOD3,
       "gmod3",
       settings_gmod3_widget_create, NULL },
+    { CARTRIDGE_NAME_MAGIC_DESK_PLUS,
+      "magicdeskplus",
+      settings_magicdeskplus_widget_create, NULL },
     { CARTRIDGE_NAME_MEGABYTER,
       "megabyter",
       settings_megabyter_widget_create, NULL },
@@ -471,6 +475,9 @@ static ui_settings_tree_node_t scpu64_cartridges[] = {
     { CARTRIDGE_NAME_GMOD3,
       "gmod3",
       settings_gmod3_widget_create, NULL },
+    { CARTRIDGE_NAME_MAGIC_DESK_PLUS,
+      "magicdeskplus",
+      settings_magicdeskplus_widget_create, NULL },
     { CARTRIDGE_NAME_MEGABYTER,
       "megabyter",
       settings_megabyter_widget_create, NULL },
@@ -603,6 +610,9 @@ static ui_settings_tree_node_t c128_cartridges[] = {
     { CARTRIDGE_NAME_GMOD3,
       "gmod3",
       settings_gmod3_widget_create, NULL },
+    { CARTRIDGE_NAME_MAGIC_DESK_PLUS,
+      "magicdeskplus",
+      settings_magicdeskplus_widget_create, NULL },
     { CARTRIDGE_NAME_MEGABYTER,
       "megabyter",
       settings_megabyter_widget_create, NULL },
@@ -2209,7 +2219,7 @@ static void on_tree_selection_changed(GtkTreeSelection *selection,
     if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
         gchar *name = NULL;
         gchar *parent_name = NULL;
-        GtkWidget *(*callback)(void *) = NULL;
+        GtkWidget *(*callback)(GtkWidget *) = NULL;
         const char *id;
 
         gtk_tree_model_get(model, &iter, COLUMN_NAME, &name, -1);
