@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v3.13.1](https://github.com/barryw/vice-mcp/compare/692c319f5679cb6f1f8aec65e289c39e81f153be..v3.13.1) - 2026-09-24
+#### Bug Fixes
+- (**mcp**) answer ping and pause while a step or frame advance waits - ([692c319](https://github.com/barryw/vice-mcp/commit/692c319f5679cb6f1f8aec65e289c39e81f153be)) - Barry Walker, Claude Opus 5.5 (1M context)
+
+- - -
+
 ## [v3.13.0](https://github.com/barryw/vice-mcp/compare/962d86c0e5fe9ca0baaf928602d20080537fbb88..v3.13.0) - 2026-09-24
 #### Features
 - (**mcp**) add vice.frame.advance, run N frames from a stopped machine - ([962d86c](https://github.com/barryw/vice-mcp/commit/962d86c0e5fe9ca0baaf928602d20080537fbb88)) - Aaron Bell
