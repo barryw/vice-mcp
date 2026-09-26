@@ -100,6 +100,22 @@ void mcp_set_step_active(int active)
     mcp_step_active = active;
 }
 
+/* A stop that vice.execution.pause has asked for and its trap has not yet
+ * taken. Any hold takes it (mcp_hold_paused()), since the machine is then
+ * stopped, which is all that was asked; a vice.execution.run withdraws it.
+ * Defined here for the same reason as mcp_step_active. */
+static int mcp_pause_pending = 0;
+
+int mcp_is_pause_pending(void)
+{
+    return mcp_pause_pending;
+}
+
+void mcp_set_pause_pending(int pending)
+{
+    mcp_pause_pending = pending;
+}
+
 /* When a checkpoint (breakpoint/watchpoint) fires and MCP is active,
  * suppress the interactive monitor and pause instead. */
 static int mcp_checkpoint_active = 0;
@@ -150,9 +166,14 @@ static void mcp_mark_checkpoint_if_active(void)
  * dispatches through the mainlock while ui_pause_active() is set, so the
  * flag is raised through ui_pause_enable() and the loop keeps yielding the
  * mainlock. This is the same construct monitor_startup() uses for
- * pause_on_exit_mon, with a sleep so the headless build does not spin. */
+ * pause_on_exit_mon, with a sleep so the headless build does not spin.
+ *
+ * A stop vice.execution.pause asked for is taken by this hold, whatever
+ * caused it: its trap, still queued, must not stop the machine again once
+ * a client resumes it. */
 void mcp_hold_paused(void)
 {
+    mcp_pause_pending = 0;
     if (!ui_pause_active()) {
         ui_pause_enable();
     }

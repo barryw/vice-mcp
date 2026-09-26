@@ -428,7 +428,12 @@ Check if VICE is responding. No parameters.
 Resume execution. No parameters.
 
 #### `vice.execution.pause`
-Pause execution. No parameters.
+Pause execution at the next instruction boundary. No parameters. The call
+returns once the machine is held there, so the registers read after it are
+the CPU's and a register set holds. If it has not stopped within 2 seconds,
+the reply carries `timed_out: true` and the machine stops at its next
+instruction boundary. Inside the monitor, the stop is taken when the
+monitor closes.
 
 #### `vice.execution.step`
 Step one or more instructions. On a stopped machine the call returns
