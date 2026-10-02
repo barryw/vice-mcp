@@ -95,6 +95,7 @@
 #include "mainlock.h"
 #include "mixerwidget.h"
 #include "monitor.h"
+#include "mousedrv.h"
 #include "resources.h"
 #include "settings_keyboard.h"
 #include "settings_rom.h"
@@ -647,6 +648,14 @@ static int set_monitor_font(const gchar *font_description, void *param)
     return 0;
 }
 
+/* Apply terminal colours on the UI thread without holding mainlock. */
+static gboolean set_monitor_bg_impl(gpointer color)
+{
+    uimon_set_background_color(color);
+    g_free(color);
+    return G_SOURCE_REMOVE;
+}
+
 /** \brief  Resource handler: set monitor background color for VTE-based monitor
  *
  * \param[in]   color   Gdk RGBA color string
@@ -660,10 +669,17 @@ static int set_monitor_bg(const gchar *color, void *param)
 
     if (gdk_rgba_parse(&rgba, color)) {
         util_string_set(&ui_resources.monitor_bg, color);
-        uimon_set_background_color(color);
+        gdk_threads_add_timeout(0, set_monitor_bg_impl, g_strdup(color));
         return 0;
     }
     return -1;
+}
+
+static gboolean set_monitor_fg_impl(gpointer color)
+{
+    uimon_set_foreground_color(color);
+    g_free(color);
+    return G_SOURCE_REMOVE;
 }
 
 /** \brief  Resource handler: set monitor foreground color for VTE-based monitor
@@ -679,7 +695,7 @@ static int set_monitor_fg(const gchar *color, void *param)
 
     if (gdk_rgba_parse(&rgba, color)) {
         util_string_set(&ui_resources.monitor_fg, color);
-        uimon_set_foreground_color(color);
+        gdk_threads_add_timeout(0, set_monitor_fg_impl, g_strdup(color));
         return 0;
     }
     return -1;
@@ -1171,7 +1187,19 @@ static gboolean ui_action_dispatch_impl(gpointer data)
 {
     ui_action_map_t *map = data;
 
+    /* Obtain the mainlock if the action is not unlocked */
+    if (!map->unlocked) {
+        mainlock_obtain();
+    }
+
+    /* Call the action handler */
     map->handler(map);
+
+    /* Release the mainlock if it was obtained */
+    if (!map->unlocked) {
+        mainlock_release();
+    }
+
     return G_SOURCE_REMOVE;
 }
 
@@ -1916,7 +1944,7 @@ void ui_create_main_window(video_canvas_t *canvas)
                                   G_CALLBACK(on_window_state_event), NULL);
     }
     /* This event never returns so must not hold the vice lock */
-    g_signal_connect(new_window, "delete-event",
+    g_signal_connect_unlocked(new_window, "delete-event",
                      G_CALLBACK(on_delete_event), NULL);
     g_signal_connect_unlocked(new_window, "configure-event",
                      G_CALLBACK(on_window_configure_event),
@@ -2640,6 +2668,10 @@ static void pause_loop(void *param)
        being mapped to a controller button */
     joystick();
 
+    /* Drain mouse events while paused to avoid queue growth and apply button
+       releases. Mouse events do not map to UI actions. */
+    mousedrv_poll();
+
     if (ui_pause_loop_iteration()) {
         /*
          * Still paused, schedule another run. Doing it this way allows
@@ -2662,21 +2694,45 @@ int ui_pause_active(void)
 
 
 /** \brief  Pause emulation
+ *
+ * Obtains the mainlock when called from the UI thread.
  */
 void ui_pause_enable(void)
 {
+    bool obtain_lock = !mainlock_is_vice_thread();
+
+    if (obtain_lock) {
+        mainlock_obtain();
+    }
+
     if (!is_paused) {
         is_paused = 1;
         vsync_on_vsync_do(pause_loop, NULL);
+    }
+
+    if (obtain_lock) {
+        mainlock_release();
     }
 }
 
 
 /** \brief  Unpause emulation
+ *
+ * Obtains the mainlock when called from the UI thread.
  */
 void ui_pause_disable(void)
 {
+    bool obtain_lock = !mainlock_is_vice_thread();
+
+    if (obtain_lock) {
+        mainlock_obtain();
+    }
+
     is_paused = 0;
+
+    if (obtain_lock) {
+        mainlock_release();
+    }
 }
 
 /** \brief  The pause loop should trigger the monitor

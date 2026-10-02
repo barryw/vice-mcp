@@ -857,6 +857,17 @@ static ui_action_map_t action_mappings[ACTION_ID_COUNT];
  */
 static bool dialog_active = false;
 
+/* Protect action state without holding the lock while dispatching handlers. */
+#ifdef USE_VICE_THREAD
+#include <pthread.h>
+static pthread_mutex_t action_lock = PTHREAD_MUTEX_INITIALIZER;
+#define ACTION_LOCK()   pthread_mutex_lock(&action_lock)
+#define ACTION_UNLOCK() pthread_mutex_unlock(&action_lock)
+#else
+#define ACTION_LOCK()
+#define ACTION_UNLOCK()
+#endif
+
 /** \brief  UI action dispatch handler
  *
  * Function to trigger the action handler on the proper thread in a UI.
@@ -906,6 +917,7 @@ void ui_actions_init(void)
         map->blocks       = false;
         map->dialog       = false;
         map->uithread     = false;
+        map->unlocked     = false;
         map->is_busy      = false;
         map->vice_keysym  = 0;
         map->vice_modmask = 0;
@@ -974,6 +986,7 @@ void ui_actions_register(const ui_action_map_t *mappings)
         entry->blocks   = map->blocks;
         entry->dialog   = map->dialog;
         entry->uithread = map->uithread;
+        entry->unlocked = map->unlocked;
         entry->is_busy  = false;
         map++;;
     }
@@ -1000,6 +1013,8 @@ void ui_action_trigger(int action)
         const char *name = ui_action_get_name(action);
 #endif
 
+        ACTION_LOCK();
+
        /* handle blocking actions */
         if (map->blocks) {
             if (map->is_busy) {
@@ -1007,10 +1022,9 @@ void ui_action_trigger(int action)
 #ifdef DEBUG_ACTIONS
                 printf("%s(): blocking action %s is still busy\n", __func__, name);
 #endif
+                ACTION_UNLOCK();
                 return;
             }
-            /* mark action busy */
-            map->is_busy = true;
         }
 
         /* handle dialogs, only one can be active at a time */
@@ -1022,6 +1036,7 @@ void ui_action_trigger(int action)
 #ifdef DEBUG_ACTIONS
                 printf("%s(): a dialog is already active, exiting\n", __func__);
 #endif
+                ACTION_UNLOCK();
                 return;
             }
 #ifdef DEBUG_ACTIONS
@@ -1029,6 +1044,12 @@ void ui_action_trigger(int action)
 #endif
             dialog_active = true;
         }
+
+        /* Mark action busy only after all checks have passed. */
+        if (map->blocks) {
+            map->is_busy = true;
+        }
+        ACTION_UNLOCK();
 
         /* pass to dispatch handler */
         if (dispatch_handler != NULL) {
@@ -1064,6 +1085,7 @@ void ui_action_finish(int action)
 #endif
 
     if (map != NULL) {
+        ACTION_LOCK();
         /* clear all state flags for the action */
 #ifdef DEBUG_ACTIONS
         printf("%s(): clearing state flags.", __func__);
@@ -1076,6 +1098,7 @@ void ui_action_finish(int action)
 #endif
             dialog_active = false;
         }
+        ACTION_UNLOCK();
     }
 }
 
