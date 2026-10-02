@@ -92,6 +92,11 @@ extern void test_monitor_inside_set(int inside);
 extern int ui_pause_active(void);
 extern void ui_pause_enable(void);
 extern int test_ui_pause_disable_count(void);
+extern int mcp_is_pause_pending(void);
+
+/* Test trap helpers from vice_stubs.c */
+extern void test_traps_defer(int defer);
+extern int test_traps_run(void);
 
 /* Test vsync helpers from vice_stubs.c */
 extern int test_vsync_pending(void);
@@ -1184,6 +1189,112 @@ TEST(execution_step_held_times_out_paused)
 
     cJSON_Delete(params);
     cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* On a running machine execution.pause stops it through its own trap, at
+ * the next instruction boundary, and replies once it is held. These tests
+ * hold the trap back, as a machine that has not reached the boundary yet
+ * does, and run it from a second thread. The pause flag must not go up
+ * before the trap runs: ui_pause_enable() queues VICE's own pause loop for
+ * the next vsync, and a vsync that came first stopped the machine there,
+ * part way through an instruction. */
+typedef struct {
+    int flag_before;    /* the pause flag was up before the trap ran */
+    int traps;          /* traps run at the boundary */
+} test_pause_emu_t;
+
+static void *test_pause_emu_thread(void *arg)
+{
+    test_pause_emu_t *emu = (test_pause_emu_t *)arg;
+    struct timespec ms = { 0, 50000000L };   /* 50 ms */
+
+    nanosleep(&ms, NULL);
+    emu->flag_before = ui_pause_active();
+    emu->traps = test_traps_run();
+    return NULL;
+}
+
+/* Test: execution.pause raises the pause flag at the stop, not before it,
+ * and replies after it */
+TEST(execution_pause_raises_the_flag_at_the_stop)
+{
+    test_pause_emu_t emu = { 0, 0 };
+    pthread_t thread;
+    cJSON *response;
+
+    test_ui_pause_reset();
+    test_traps_defer(1);
+    pthread_create(&thread, NULL, test_pause_emu_thread, &emu);
+    response = mcp_tool_execution_pause(NULL);
+    pthread_join(thread, NULL);
+    test_traps_defer(0);
+    ASSERT_NOT_NULL(response);
+    ASSERT_INT_EQ(emu.flag_before, 0);
+    ASSERT_INT_EQ(emu.traps, 1);
+    ASSERT_TRUE(ui_pause_active());
+    ASSERT_INT_EQ(mcp_is_pause_pending(), 0);
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "timed_out") == NULL);
+
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* Test: a machine that does not reach an instruction boundary within 2 s
+ * gets a reply that says so, and the stop stays asked for */
+TEST(execution_pause_times_out_when_the_machine_does_not_stop)
+{
+    struct timespec start, end;
+    cJSON *response;
+    long elapsed_ms;
+    int pending, traps;
+
+    test_ui_pause_reset();
+    test_traps_defer(1);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    response = mcp_tool_execution_pause(NULL);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    elapsed_ms = (long)(end.tv_sec - start.tv_sec) * 1000L
+        + (end.tv_nsec - start.tv_nsec) / 1000000L;
+    pending = mcp_is_pause_pending();
+    traps = test_traps_run();
+    test_traps_defer(0);
+    ASSERT_NOT_NULL(response);
+    ASSERT_TRUE(elapsed_ms >= 1900);
+    ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "timed_out")));
+    ASSERT_INT_EQ(pending, 1);
+    ASSERT_INT_EQ(traps, 1);
+    ASSERT_TRUE(ui_pause_active());
+    ASSERT_INT_EQ(mcp_is_pause_pending(), 0);
+
+    cJSON_Delete(response);
+    test_ui_pause_reset();
+}
+
+/* Test: a stop execution.pause has asked for and not had yet (inside the
+ * monitor, which runs no trap until it closes) is withdrawn by
+ * execution.run, so that its trap leaves the resumed machine running */
+TEST(execution_run_withdraws_a_pending_pause)
+{
+    cJSON *response;
+    int traps;
+
+    test_ui_pause_reset();
+    test_traps_defer(1);
+    test_monitor_inside_set(1);
+    response = mcp_tool_execution_pause(NULL);
+    test_monitor_inside_set(0);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+    response = mcp_tool_execution_run(NULL);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(response);
+    traps = test_traps_run();
+    test_traps_defer(0);
+    ASSERT_INT_EQ(traps, 1);
+    ASSERT_INT_EQ(ui_pause_active(), 0);
+    ASSERT_INT_EQ(mcp_is_pause_pending(), 0);
+
     test_ui_pause_reset();
 }
 
@@ -8880,6 +8991,9 @@ int main(void)
     RUN_TEST(execution_step_held_replies_after_the_step);
     RUN_TEST(execution_step_held_stopped_by_checkpoint);
     RUN_TEST(execution_step_held_times_out_paused);
+    RUN_TEST(execution_pause_raises_the_flag_at_the_stop);
+    RUN_TEST(execution_pause_times_out_when_the_machine_does_not_stop);
+    RUN_TEST(execution_run_withdraws_a_pending_pause);
 
     /* UI Pause state tests (critical for pause without monitor popup) */
     RUN_TEST(execution_pause_enables_ui_pause);

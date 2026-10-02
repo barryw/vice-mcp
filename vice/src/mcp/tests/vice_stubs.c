@@ -394,6 +394,20 @@ void mcp_set_step_active(int active)
     test_mcp_step_active = active;
 }
 
+/* A stop vice.execution.pause has asked for and not yet taken; the real
+ * state lives in monitor.c, next to the step flag */
+static int test_mcp_pause_pending = 0;
+
+int mcp_is_pause_pending(void)
+{
+    return test_mcp_pause_pending;
+}
+
+void mcp_set_pause_pending(int pending)
+{
+    test_mcp_pause_pending = pending;
+}
+
 int vdrive_read_sector(void *vdrive, uint8_t *buf, unsigned int track, unsigned int sector)
 {
     (void)vdrive;
@@ -790,13 +804,47 @@ bool monitor_is_inside_monitor(void)
     return test_inside_monitor ? true : false;
 }
 
+/* Traps a test has asked to hold back, as a machine that has not reached
+ * the next instruction boundary yet would */
+#define TEST_TRAPS_MAX 8
+static int test_traps_deferred = 0;
+static int test_trap_count = 0;
+static void (*test_trap_funcs[TEST_TRAPS_MAX])(uint16_t, void *data);
+static void *test_trap_data[TEST_TRAPS_MAX];
+
 void interrupt_maincpu_trigger_trap(void (*trap_func)(uint16_t, void *data), void *data)
 {
+    if (trap_func == NULL) {
+        return;
+    }
+    if (test_traps_deferred && test_trap_count < TEST_TRAPS_MAX) {
+        test_trap_funcs[test_trap_count] = trap_func;
+        test_trap_data[test_trap_count] = data;
+        test_trap_count++;
+        return;
+    }
     /* For tests, execute the trap handler immediately (simulates main thread)
      * This makes the trap-based dispatch work in test environment */
-    if (trap_func != NULL) {
-        trap_func(0, data);
+    trap_func(0, data);
+}
+
+/* Test helper: hold traps back from now on (1), or run them at once (0) */
+void test_traps_defer(int defer)
+{
+    test_traps_deferred = defer;
+}
+
+/* Test helper: the machine reaches the next instruction boundary; run the
+ * traps held back, in order. Returns how many ran. */
+int test_traps_run(void)
+{
+    int i, n = test_trap_count;
+
+    test_trap_count = 0;
+    for (i = 0; i < n; i++) {
+        test_trap_funcs[i](0, test_trap_data[i]);
     }
+    return n;
 }
 
 /* Snapshot stubs for testing */
@@ -1175,9 +1223,13 @@ int test_ui_pause_disable_count(void)
     return test_ui_pause_disables;
 }
 
-/* mcp_hold_paused() lives in monitor.c; in tests a hold returns at once */
+/* mcp_hold_paused() lives in monitor.c. Like the real one it takes a
+ * pending pause and raises the pause flag; in tests the hold then returns
+ * at once, leaving the machine held. */
 void mcp_hold_paused(void)
 {
+    test_mcp_pause_pending = 0;
+    test_ui_pause_state = 1;
 }
 
 /* mcp_cancel_step() lives in monitor.c; here it drops the step flag, as
