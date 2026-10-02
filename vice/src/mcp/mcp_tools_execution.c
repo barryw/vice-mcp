@@ -67,6 +67,10 @@ cJSON* mcp_tool_execution_run(cJSON *params)
         ui_pause_disable();
     }
 
+    /* Withdraw a stop vice.execution.pause asked for and has not had: its
+     * trap would stop the machine this call resumes */
+    mcp_set_pause_pending(0);
+
     /* Also signal monitor to exit if in monitor mode */
     exit_mon = exit_mon_continue;
 
@@ -81,44 +85,87 @@ cJSON* mcp_tool_execution_run(cJSON *params)
     return response;
 }
 
+/* How long a pause waits for the machine to stop: far beyond the next
+ * instruction boundary at any speed short of a stopped machine. */
+#define MCP_PAUSE_TIMEOUT_S 2
+
 /* Trap handler: runs on the emulator thread at the next instruction
- * boundary and holds it there until a client calls vice.execution.run.
- * Only while the pause flag is still up: vice.execution.pause can land
- * while a step or a frame advance is stopping the machine, which then
- * holds before this trap runs, and a vice.execution.run drops the flag
- * before the trap gets its turn. mcp_hold_paused() would raise the flag
- * again and stop the machine that was just told to run. */
+ * boundary, takes the stop mcp_request_pause() asked for, and holds there
+ * until a client resumes the machine. A request that has gone is left
+ * alone: a vice.execution.run withdrew it, or another stop (a checkpoint,
+ * a step, a frame advance) took it first, and holding would stop the
+ * machine again after it has been resumed. */
 static void mcp_pause_trap(uint16_t addr, void *data)
 {
     (void)addr;
     (void)data;
-    if (ui_pause_active()) {
+    if (mcp_is_pause_pending()) {
         mcp_hold_paused();
     }
+}
+
+/* Ask the running machine to stop at the next instruction boundary. Call
+ * with the mainlock.
+ *
+ * The pause flag is not raised here: mcp_hold_paused() raises it, on the
+ * emulator thread, at the stop. ui_pause_enable() also queues VICE's own
+ * pause loop for the next vsync, and the emulator thread yields the
+ * mainlock at the end of every raster line, the frame's last included,
+ * where the vsync follows in the same cycle. A pause taken there met the
+ * vsync before the next instruction boundary, and the machine stopped in
+ * the pause loop, part way through an instruction: the registers were the
+ * export of an earlier trap, a register set was lost at the next one, a
+ * snapshot saved held the VIC-II between two frames (loaded later, it
+ * draws every line one row low from then on), and a snapshot loaded left
+ * the CPU's registers as they were. */
+static void mcp_request_pause(void)
+{
+    mcp_set_pause_pending(1);
+    interrupt_maincpu_trigger_trap(mcp_pause_trap, NULL);
+}
+
+/* mcp_request_pause(), then wait for the hold, giving the mainlock up so
+ * that the emulator thread can reach the trap. Call with the mainlock, off
+ * the emulator thread. Returns 1 once the machine is held; 0 if it was not
+ * within MCP_PAUSE_TIMEOUT_S, when the request stays and the machine stops
+ * at its next instruction boundary. */
+static int mcp_pause_and_wait(void)
+{
+    tick_t start;
+
+    mcp_request_pause();
+    mainlock_release();
+    start = tick_now();
+    while (!ui_pause_active()
+           && tick_now_delta(start) < MCP_PAUSE_TIMEOUT_S * tick_per_second()) {
+        tick_sleep(tick_per_second() / 5000);   /* 0.2 ms */
+    }
+    mainlock_obtain();
+    return ui_pause_active();
 }
 
 cJSON* mcp_tool_execution_pause(cJSON *params)
 {
     cJSON *response;
+    int timed_out = 0;
 
     (void)params;  /* Unused */
 
     log_message(mcp_tools_log, "Handling vice.execution.pause");
 
-    /* Use UI pause to stop the emulator without entering monitor mode.
-     * This keeps the emulator window visible (no monitor popup) while
-     * still stopping CPU execution. The transport layer acquires the
-     * mainlock when dispatching during UI pause for thread safety.
-     *
-     * ui_pause_enable() only raises the flag: the GTK3 UI honours it at the
-     * next vsync and the headless UI never does. Queue a trap as well, so
-     * the emulator thread stops at the next instruction boundary. A trap
-     * scheduled from inside a trap (this tool usually runs in one) is run
-     * on the next cycle by interrupt_do_trap(). */
+    /* Stop at the next instruction boundary, held on the emulator thread
+     * in mcp_hold_paused(), without the monitor window, and reply once the
+     * machine is held: the registers are then exported, and a call that
+     * follows finds it stopped. The transport dispatches this tool with the
+     * mainlock, or inside the monitor without it; the monitor runs no
+     * trap until it closes, so there the request is left to take effect
+     * then. */
     if (!ui_pause_active()) {
-        log_message(mcp_tools_log, "Enabling UI pause");
-        ui_pause_enable();
-        interrupt_maincpu_trigger_trap(mcp_pause_trap, NULL);
+        if (monitor_is_inside_monitor()) {
+            mcp_request_pause();
+        } else if (!mcp_pause_and_wait()) {
+            timed_out = 1;
+        }
     }
 
     response = cJSON_CreateObject();
@@ -127,7 +174,14 @@ cJSON* mcp_tool_execution_pause(cJSON *params)
     }
 
     cJSON_AddStringToObject(response, "status", "ok");
-    cJSON_AddStringToObject(response, "message", "Execution paused");
+    if (timed_out) {
+        cJSON_AddBoolToObject(response, "timed_out", true);
+        cJSON_AddStringToObject(response, "message",
+            "The machine had not stopped within 2 s; it stops at its next "
+            "instruction boundary");
+    } else {
+        cJSON_AddStringToObject(response, "message", "Execution paused");
+    }
 
     return response;
 }
@@ -217,8 +271,7 @@ cJSON* mcp_tool_execution_step(cJSON *params)
              * way vice.execution.pause does. */
             timed_out = 1;
             mcp_cancel_step();
-            ui_pause_enable();
-            interrupt_maincpu_trigger_trap(mcp_pause_trap, NULL);
+            mcp_pause_and_wait();
         } else if (mcp_is_step_active()) {
             /* Held, but not by the step, which clears the flag before it
              * holds (monitor_check_icount()): a checkpoint got there first.
@@ -253,8 +306,8 @@ cJSON* mcp_tool_execution_step(cJSON *params)
             "machine is paused there");
     }
     if (timed_out) {
-        /* No PC: the machine stops at the next instruction boundary, after
-         * this reply has gone. */
+        /* No PC: the machine stopped wherever the step had run to, not
+         * where the step ends. */
         cJSON_AddBoolToObject(response, "timed_out", true);
         cJSON_AddStringToObject(response, "message",
             "The step did not finish within 2 s; the rest of it was dropped "
@@ -365,9 +418,9 @@ static int mcp_timespec_before(const struct timespec *a, const struct timespec *
 /* Run `frames` frames and stop at the first instruction boundary after the
  * last. Called with the machine in UI pause and the mainlock held by this
  * thread; gives the lock up while the frames run and holds it again on
- * return, with the machine stopped, or on MCP_FRAME_TIMED_OUT asked to
- * stop at the next instruction boundary. *done is set to the number of
- * frames that ended. */
+ * return, with the machine stopped (on MCP_FRAME_TIMED_OUT, by a pause at
+ * the next instruction boundary). *done is set to the number of frames
+ * that ended. */
 static mcp_frame_end_t mcp_frame_advance_run(int frames, int *done)
 {
     struct timespec deadline, now, wake;
@@ -447,8 +500,7 @@ static mcp_frame_end_t mcp_frame_advance_run(int frames, int *done)
              * pending callback from stopping it again later. */
             log_message(mcp_tools_log, "vice.frame.advance: no frame boundary within %d ms, pausing",
                         MCP_FRAME_ADVANCE_TIMEOUT_MS);
-            ui_pause_enable();
-            interrupt_maincpu_trigger_trap(mcp_pause_trap, NULL);
+            mcp_pause_and_wait();
         }
     }
 

@@ -270,8 +270,14 @@ int mcp_is_step_active(void);
 void mcp_clear_step_active(void);
 void mcp_set_step_active(int active);
 
+/* A stop vice.execution.pause has asked for and not yet taken: set with
+ * the mainlock, taken by mcp_hold_paused() on the emulator thread. */
+int mcp_is_pause_pending(void);
+void mcp_set_pause_pending(int pending);
+
 /* Hold the emulator thread where it is until an MCP client resumes it
- * with ui_pause_disable(). Must be called on the emulator thread. */
+ * with ui_pause_disable(). Must be called on the emulator thread. Takes a
+ * pending pause. */
 void mcp_hold_paused(void);
 
 /* Drop a step that has not finished, so that it cannot stop the machine
