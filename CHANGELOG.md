@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v3.13.2](https://github.com/barryw/vice-mcp/compare/fbb23fd0733ac6f7fa0d3e643e8ca0d7cdced01c..v3.13.2) - 2026-10-02
+#### Bug Fixes
+- (**mcp**) stop a pause between two instructions, not inside the vsync - ([dbbeced](https://github.com/barryw/vice-mcp/commit/dbbeced826fc9897f67d99ad9292aba264198092)) - Aaron Bell, Claude Opus 5.5
+
+- - -
+
 ## [v3.13.1](https://github.com/barryw/vice-mcp/compare/692c319f5679cb6f1f8aec65e289c39e81f153be..v3.13.1) - 2026-09-24
 #### Bug Fixes
 - (**mcp**) answer ping and pause while a step or frame advance waits - ([692c319](https://github.com/barryw/vice-mcp/commit/692c319f5679cb6f1f8aec65e289c39e81f153be)) - Barry Walker, Claude Opus 5.5 (1M context)
