@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v3.13.4](https://github.com/barryw/vice-mcp/compare/75308e9568c1e141bfcc2d833a7af4d30a3815c2..v3.13.4) - 2026-10-29
+#### Bug Fixes
+- (**mcp**) read chip state from I/O bank - ([75308e9](https://github.com/barryw/vice-mcp/commit/75308e9568c1e141bfcc2d833a7af4d30a3815c2)) - Barry Walker
+
+- - -
+
 ## [v3.13.3](https://github.com/barryw/vice-mcp/compare/eaf4b8d5fd30893ff5f394fe14d78ea924c0f6c9..v3.13.3) - 2026-10-29
 #### Bug Fixes
 - (**mcp**) read A, X, Y and SP conditions from the computer's CPU - ([eaf4b8d](https://github.com/barryw/vice-mcp/commit/eaf4b8d5fd30893ff5f394fe14d78ea924c0f6c9)) - Aaron Bell, Claude Opus 5.5
