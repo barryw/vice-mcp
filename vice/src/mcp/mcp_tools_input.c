@@ -28,6 +28,7 @@
 
 #include "arch/shared/hotkeys/vhkkeysyms.h"
 #include "charset.h"
+#include "joyport/joyport.h"
 #include "joyport/joystick.h"
 #include "kbdbuf.h"
 #include "keyboard.h"
@@ -576,6 +577,38 @@ cJSON* mcp_tool_joystick_set(cJSON *params)
     cJSON_AddNumberToObject(response, "port", port + 1);
     cJSON_AddNumberToObject(response, "value", value);
 
+    return response;
+}
+
+cJSON* mcp_tool_paddle_set(cJSON *params)
+{
+    cJSON *port_item = params ? cJSON_GetObjectItem(params, "port") : NULL;
+    cJSON *x_item = params ? cJSON_GetObjectItem(params, "x") : NULL;
+    cJSON *y_item = params ? cJSON_GetObjectItem(params, "y") : NULL;
+    cJSON *response;
+
+    if (!cJSON_IsNumber(port_item) || port_item->valuedouble != port_item->valueint ||
+        (port_item->valueint != 1 && port_item->valueint != 2)) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Port must be 1 or 2");
+    }
+    if (!cJSON_IsNumber(x_item) || x_item->valuedouble != x_item->valueint ||
+        x_item->valueint < 0 || x_item->valueint > 255 ||
+        !cJSON_IsNumber(y_item) || y_item->valuedouble != y_item->valueint ||
+        y_item->valueint < 0 || y_item->valueint > 255) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Paddle x and y must be integers from 0 to 255");
+    }
+    if (joyport_set_paddle_values(port_item->valueint - 1, x_item->valueint, y_item->valueint) < 0) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, "Paddle port unavailable on this machine");
+    }
+
+    response = cJSON_CreateObject();
+    if (response == NULL) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddNumberToObject(response, "port", port_item->valueint);
+    cJSON_AddNumberToObject(response, "x", x_item->valueint);
+    cJSON_AddNumberToObject(response, "y", y_item->valueint);
     return response;
 }
 

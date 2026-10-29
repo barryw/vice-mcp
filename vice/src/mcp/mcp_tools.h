@@ -159,6 +159,7 @@ extern cJSON* mcp_tool_keyboard_restore(cJSON *params);
 extern cJSON* mcp_tool_keyboard_chord(cJSON *params);
 extern cJSON* mcp_tool_keyboard_matrix(cJSON *params);
 extern cJSON* mcp_tool_joystick_set(cJSON *params);
+extern cJSON* mcp_tool_paddle_set(cJSON *params);
 extern cJSON* mcp_tool_joystick_tap(cJSON *params);
 
 /* Tool handlers - Snapshot Management */
