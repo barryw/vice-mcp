@@ -101,6 +101,7 @@ static int machine_has_cia(void)
 cJSON* mcp_tool_sprite_get(cJSON *params)
 {
     cJSON *response, *sprite_obj, *sprite_item;
+    int io_bank;
     int sprite_num = -1;  /* -1 = all sprites */
     int i;
     int start;
@@ -111,6 +112,11 @@ cJSON* mcp_tool_sprite_get(cJSON *params)
     /* Validate machine has VIC-II (sprites only available on C64/C128/DTV) */
     if (!machine_has_vicii()) {
         return mcp_error(-32000, "Sprites not available on this machine");
+    }
+
+    io_bank = mem_bank_from_name("io");
+    if (io_bank < 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "I/O bank unavailable");
     }
 
     /* Check if specific sprite requested */
@@ -140,12 +146,12 @@ cJSON* mcp_tool_sprite_get(cJSON *params)
 
     /* Read global VIC-II sprite registers once before the loop */
     {
-        uint8_t enable_reg = mem_bank_peek(0, VICII_SPRITE_ENABLE, NULL);
-        uint8_t x_msb_reg = mem_bank_peek(0, VICII_SPRITE_X_MSB, NULL);
-        uint8_t multicolor_reg = mem_bank_peek(0, VICII_SPRITE_MULTICOLOR, NULL);
-        uint8_t expand_x_reg = mem_bank_peek(0, VICII_SPRITE_EXPAND_X, NULL);
-        uint8_t expand_y_reg = mem_bank_peek(0, VICII_SPRITE_EXPAND_Y, NULL);
-        uint8_t priority_reg = mem_bank_peek(0, VICII_SPRITE_PRIORITY, NULL);
+        uint8_t enable_reg = mem_bank_peek(io_bank, VICII_SPRITE_ENABLE, NULL);
+        uint8_t x_msb_reg = mem_bank_peek(io_bank, VICII_SPRITE_X_MSB, NULL);
+        uint8_t multicolor_reg = mem_bank_peek(io_bank, VICII_SPRITE_MULTICOLOR, NULL);
+        uint8_t expand_x_reg = mem_bank_peek(io_bank, VICII_SPRITE_EXPAND_X, NULL);
+        uint8_t expand_y_reg = mem_bank_peek(io_bank, VICII_SPRITE_EXPAND_Y, NULL);
+        uint8_t priority_reg = mem_bank_peek(io_bank, VICII_SPRITE_PRIORITY, NULL);
 
         for (i = start; i <= end; i++) {
             uint16_t x;
@@ -154,9 +160,9 @@ cJSON* mcp_tool_sprite_get(cJSON *params)
             char sprite_key[16];
 
             /* Read per-sprite VIC-II registers */
-            x = mem_bank_peek(0, VICII_BASE + (i * 2), NULL);  /* $D000, $D002, $D004, ... */
-            y = mem_bank_peek(0, VICII_BASE + (i * 2) + 1, NULL);  /* $D001, $D003, $D005, ... */
-            color = mem_bank_peek(0, VICII_SPRITE_COLOR_BASE + i, NULL);  /* $D027-$D02E */
+            x = mem_bank_peek(io_bank, VICII_BASE + (i * 2), NULL);  /* $D000, $D002, $D004, ... */
+            y = mem_bank_peek(io_bank, VICII_BASE + (i * 2) + 1, NULL);  /* $D001, $D003, $D005, ... */
+            color = mem_bank_peek(io_bank, VICII_SPRITE_COLOR_BASE + i, NULL);  /* $D027-$D02E */
 
             /* Build sprite object */
             sprite_obj = cJSON_CreateObject();
@@ -351,6 +357,7 @@ cJSON* mcp_tool_sprite_set(cJSON *params)
 cJSON* mcp_tool_vicii_get_state(cJSON *params)
 {
     cJSON *response, *registers_obj;
+    int io_bank;
     int i;
     uint8_t d011;
     uint8_t d012;
@@ -364,40 +371,45 @@ cJSON* mcp_tool_vicii_get_state(cJSON *params)
         return mcp_error(-32000, "VIC-II not available on this machine");
     }
 
+    io_bank = mem_bank_from_name("io");
+    if (io_bank < 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "I/O bank unavailable");
+    }
+
     response = cJSON_CreateObject();
     if (response == NULL) {
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
     }
 
     /* Read key VIC-II registers using peek to avoid side effects */
-    d011 = mem_bank_peek(0, VICII_BASE + 0x11, NULL);  /* Control register 1 */
-    d012 = mem_bank_peek(0, VICII_BASE + 0x12, NULL);  /* Raster line */
+    d011 = mem_bank_peek(io_bank, VICII_BASE + 0x11, NULL);  /* Control register 1 */
+    d012 = mem_bank_peek(io_bank, VICII_BASE + 0x12, NULL);  /* Raster line */
 
     /* Add computed/useful state */
     cJSON_AddNumberToObject(response, "raster_line", d012 | ((d011 & 0x80) << 1));  /* 9-bit raster */
-    cJSON_AddNumberToObject(response, "video_mode", ((d011 & 0x60) | (mem_bank_peek(0, VICII_BASE + 0x16, NULL) & 0x10)) >> 4);
+    cJSON_AddNumberToObject(response, "video_mode", ((d011 & 0x60) | (mem_bank_peek(io_bank, VICII_BASE + 0x16, NULL) & 0x10)) >> 4);
     cJSON_AddBoolToObject(response, "screen_enabled", (d011 & 0x10) != 0);
     cJSON_AddBoolToObject(response, "25_rows", (d011 & 0x08) != 0);
     cJSON_AddNumberToObject(response, "y_scroll", d011 & 0x07);
-    cJSON_AddNumberToObject(response, "x_scroll", mem_bank_peek(0, VICII_BASE + 0x16, NULL) & 0x07);
+    cJSON_AddNumberToObject(response, "x_scroll", mem_bank_peek(io_bank, VICII_BASE + 0x16, NULL) & 0x07);
 
     /* Border colors */
-    cJSON_AddNumberToObject(response, "border_color", mem_bank_peek(0, VICII_BASE + 0x20, NULL));
-    cJSON_AddNumberToObject(response, "background_color_0", mem_bank_peek(0, VICII_BASE + 0x21, NULL));
-    cJSON_AddNumberToObject(response, "background_color_1", mem_bank_peek(0, VICII_BASE + 0x22, NULL));
-    cJSON_AddNumberToObject(response, "background_color_2", mem_bank_peek(0, VICII_BASE + 0x23, NULL));
-    cJSON_AddNumberToObject(response, "background_color_3", mem_bank_peek(0, VICII_BASE + 0x24, NULL));
+    cJSON_AddNumberToObject(response, "border_color", mem_bank_peek(io_bank, VICII_BASE + 0x20, NULL));
+    cJSON_AddNumberToObject(response, "background_color_0", mem_bank_peek(io_bank, VICII_BASE + 0x21, NULL));
+    cJSON_AddNumberToObject(response, "background_color_1", mem_bank_peek(io_bank, VICII_BASE + 0x22, NULL));
+    cJSON_AddNumberToObject(response, "background_color_2", mem_bank_peek(io_bank, VICII_BASE + 0x23, NULL));
+    cJSON_AddNumberToObject(response, "background_color_3", mem_bank_peek(io_bank, VICII_BASE + 0x24, NULL));
 
     /* Sprite collisions - peek to avoid clearing on read */
-    cJSON_AddNumberToObject(response, "sprite_sprite_collision", mem_bank_peek(0, VICII_BASE + 0x1E, NULL));
-    cJSON_AddNumberToObject(response, "sprite_background_collision", mem_bank_peek(0, VICII_BASE + 0x1F, NULL));
+    cJSON_AddNumberToObject(response, "sprite_sprite_collision", mem_bank_peek(io_bank, VICII_BASE + 0x1E, NULL));
+    cJSON_AddNumberToObject(response, "sprite_background_collision", mem_bank_peek(io_bank, VICII_BASE + 0x1F, NULL));
 
     /* IRQ status - peek to avoid clearing on read */
-    cJSON_AddNumberToObject(response, "irq_status", mem_bank_peek(0, VICII_BASE + 0x19, NULL));
-    cJSON_AddNumberToObject(response, "irq_enabled", mem_bank_peek(0, VICII_BASE + 0x1A, NULL));
+    cJSON_AddNumberToObject(response, "irq_status", mem_bank_peek(io_bank, VICII_BASE + 0x19, NULL));
+    cJSON_AddNumberToObject(response, "irq_enabled", mem_bank_peek(io_bank, VICII_BASE + 0x1A, NULL));
 
     /* Memory pointers */
-    cJSON_AddNumberToObject(response, "memory_pointers", mem_bank_peek(0, VICII_BASE + 0x18, NULL));
+    cJSON_AddNumberToObject(response, "memory_pointers", mem_bank_peek(io_bank, VICII_BASE + 0x18, NULL));
 
     /* Add all registers as array for completeness */
     registers_obj = cJSON_CreateArray();
@@ -407,7 +419,7 @@ cJSON* mcp_tool_vicii_get_state(cJSON *params)
     }
 
     for (i = 0; i < 0x2F; i++) {
-        cJSON_AddItemToArray(registers_obj, cJSON_CreateNumber(mem_bank_peek(0, VICII_BASE + i, NULL)));
+        cJSON_AddItemToArray(registers_obj, cJSON_CreateNumber(mem_bank_peek(io_bank, VICII_BASE + i, NULL)));
     }
 
     cJSON_AddItemToObject(response, "registers", registers_obj);
@@ -418,6 +430,7 @@ cJSON* mcp_tool_vicii_get_state(cJSON *params)
 cJSON* mcp_tool_sid_get_state(cJSON *params)
 {
     cJSON *response, *voices_array, *voice_obj;
+    int io_bank;
     int v;
 
     (void)params;  /* Unused */
@@ -427,6 +440,11 @@ cJSON* mcp_tool_sid_get_state(cJSON *params)
     /* Validate machine has SID */
     if (!machine_has_sid()) {
         return mcp_error(-32000, "SID not available on this machine");
+    }
+
+    io_bank = mem_bank_from_name("io");
+    if (io_bank < 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "I/O bank unavailable");
     }
 
     response = cJSON_CreateObject();
@@ -449,11 +467,11 @@ cJSON* mcp_tool_sid_get_state(cJSON *params)
         uint8_t sustain_release;
         int base = SID_BASE + (v * 7);
 
-        freq = mem_bank_peek(0, base + 0, NULL) | (mem_bank_peek(0, base + 1, NULL) << 8);
-        pulse_width = mem_bank_peek(0, base + 2, NULL) | (mem_bank_peek(0, base + 3, NULL) << 8);
-        control = mem_bank_peek(0, base + 4, NULL);
-        attack_decay = mem_bank_peek(0, base + 5, NULL);
-        sustain_release = mem_bank_peek(0, base + 6, NULL);
+        freq = mem_bank_peek(io_bank, base + 0, NULL) | (mem_bank_peek(io_bank, base + 1, NULL) << 8);
+        pulse_width = mem_bank_peek(io_bank, base + 2, NULL) | (mem_bank_peek(io_bank, base + 3, NULL) << 8);
+        control = mem_bank_peek(io_bank, base + 4, NULL);
+        attack_decay = mem_bank_peek(io_bank, base + 5, NULL);
+        sustain_release = mem_bank_peek(io_bank, base + 6, NULL);
 
         voice_obj = cJSON_CreateObject();
         if (voice_obj == NULL) {
@@ -485,11 +503,11 @@ cJSON* mcp_tool_sid_get_state(cJSON *params)
 
     /* Filter and volume - use mem_bank_peek since SID registers are write-only */
     {
-        uint8_t reg17 = mem_bank_peek(0, SID_BASE + 0x17, NULL);
-        uint8_t reg18 = mem_bank_peek(0, SID_BASE + 0x18, NULL);
+        uint8_t reg17 = mem_bank_peek(io_bank, SID_BASE + 0x17, NULL);
+        uint8_t reg18 = mem_bank_peek(io_bank, SID_BASE + 0x18, NULL);
 
-        cJSON_AddNumberToObject(response, "filter_cutoff_low", mem_bank_peek(0, SID_BASE + 0x15, NULL));
-        cJSON_AddNumberToObject(response, "filter_cutoff_high", mem_bank_peek(0, SID_BASE + 0x16, NULL));
+        cJSON_AddNumberToObject(response, "filter_cutoff_low", mem_bank_peek(io_bank, SID_BASE + 0x15, NULL));
+        cJSON_AddNumberToObject(response, "filter_cutoff_high", mem_bank_peek(io_bank, SID_BASE + 0x16, NULL));
         cJSON_AddNumberToObject(response, "filter_resonance", (reg17 >> 4) & 0x0F);
         cJSON_AddBoolToObject(response, "filter_voice3", (reg17 & 0x04) != 0);
         cJSON_AddBoolToObject(response, "filter_voice2", (reg17 & 0x02) != 0);
@@ -508,6 +526,7 @@ cJSON* mcp_tool_sid_get_state(cJSON *params)
 cJSON* mcp_tool_cia_get_state(cJSON *params)
 {
     cJSON *response, *cia1_obj, *cia2_obj, *cia_item;
+    int io_bank;
     int cia;
 
     log_message(mcp_tools_log, "Handling vice.cia.get_state");
@@ -515,6 +534,11 @@ cJSON* mcp_tool_cia_get_state(cJSON *params)
     /* Validate machine has CIA chips */
     if (!machine_has_cia()) {
         return mcp_error(-32000, "CIA not available on this machine");
+    }
+
+    io_bank = mem_bank_from_name("io");
+    if (io_bank < 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, "I/O bank unavailable");
     }
 
     /* Note: cJSON_GetObjectItem safely returns NULL when params is NULL */
@@ -543,22 +567,22 @@ cJSON* mcp_tool_cia_get_state(cJSON *params)
             cJSON_Delete(response); \
             return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory"); \
         } \
-        cJSON_AddNumberToObject(obj, "port_a", mem_bank_peek(0, base + 0, NULL)); \
-        cJSON_AddNumberToObject(obj, "port_b", mem_bank_peek(0, base + 1, NULL)); \
-        cJSON_AddNumberToObject(obj, "ddr_a", mem_bank_peek(0, base + 2, NULL)); \
-        cJSON_AddNumberToObject(obj, "ddr_b", mem_bank_peek(0, base + 3, NULL)); \
-        timer_a = mem_bank_peek(0, base + 4, NULL) | (mem_bank_peek(0, base + 5, NULL) << 8); \
-        timer_b = mem_bank_peek(0, base + 6, NULL) | (mem_bank_peek(0, base + 7, NULL) << 8); \
+        cJSON_AddNumberToObject(obj, "port_a", mem_bank_peek(io_bank, base + 0, NULL)); \
+        cJSON_AddNumberToObject(obj, "port_b", mem_bank_peek(io_bank, base + 1, NULL)); \
+        cJSON_AddNumberToObject(obj, "ddr_a", mem_bank_peek(io_bank, base + 2, NULL)); \
+        cJSON_AddNumberToObject(obj, "ddr_b", mem_bank_peek(io_bank, base + 3, NULL)); \
+        timer_a = mem_bank_peek(io_bank, base + 4, NULL) | (mem_bank_peek(io_bank, base + 5, NULL) << 8); \
+        timer_b = mem_bank_peek(io_bank, base + 6, NULL) | (mem_bank_peek(io_bank, base + 7, NULL) << 8); \
         cJSON_AddNumberToObject(obj, "timer_a", timer_a); \
         cJSON_AddNumberToObject(obj, "timer_b", timer_b); \
-        cJSON_AddNumberToObject(obj, "tod_10ths", mem_bank_peek(0, base + 8, NULL)); \
-        cJSON_AddNumberToObject(obj, "tod_seconds", mem_bank_peek(0, base + 9, NULL)); \
-        cJSON_AddNumberToObject(obj, "tod_minutes", mem_bank_peek(0, base + 10, NULL)); \
-        cJSON_AddNumberToObject(obj, "tod_hours", mem_bank_peek(0, base + 11, NULL)); \
-        cJSON_AddNumberToObject(obj, "serial_data", mem_bank_peek(0, base + 12, NULL)); \
-        cJSON_AddNumberToObject(obj, "interrupt_control", mem_bank_peek(0, base + 13, NULL)); \
-        cJSON_AddNumberToObject(obj, "control_a", mem_bank_peek(0, base + 14, NULL)); \
-        cJSON_AddNumberToObject(obj, "control_b", mem_bank_peek(0, base + 15, NULL)); \
+        cJSON_AddNumberToObject(obj, "tod_10ths", mem_bank_peek(io_bank, base + 8, NULL)); \
+        cJSON_AddNumberToObject(obj, "tod_seconds", mem_bank_peek(io_bank, base + 9, NULL)); \
+        cJSON_AddNumberToObject(obj, "tod_minutes", mem_bank_peek(io_bank, base + 10, NULL)); \
+        cJSON_AddNumberToObject(obj, "tod_hours", mem_bank_peek(io_bank, base + 11, NULL)); \
+        cJSON_AddNumberToObject(obj, "serial_data", mem_bank_peek(io_bank, base + 12, NULL)); \
+        cJSON_AddNumberToObject(obj, "interrupt_control", mem_bank_peek(io_bank, base + 13, NULL)); \
+        cJSON_AddNumberToObject(obj, "control_a", mem_bank_peek(io_bank, base + 14, NULL)); \
+        cJSON_AddNumberToObject(obj, "control_b", mem_bank_peek(io_bank, base + 15, NULL)); \
     } while (0)
 
     if (cia == 0 || cia == 1) {
