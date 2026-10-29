@@ -300,6 +300,25 @@ void joystick_set_value_absolute_now(unsigned int joyport, uint16_t value)
     (void)value;
 }
 
+static int paddle_set_calls;
+static int paddle_port;
+static uint8_t paddle_x, paddle_y;
+
+int joyport_set_paddle_values(int port, uint8_t x, uint8_t y)
+{
+    paddle_set_calls++;
+    paddle_port = port;
+    paddle_x = x;
+    paddle_y = y;
+    return 0;
+}
+
+void test_paddle_reset(void) { paddle_set_calls = 0; }
+int test_paddle_set_calls(void) { return paddle_set_calls; }
+int test_paddle_port(void) { return paddle_port; }
+int test_paddle_x(void) { return paddle_x; }
+int test_paddle_y(void) { return paddle_y; }
+
 /* Phase 2.4: Disk management stubs */
 int file_system_attach_disk(unsigned int unit, unsigned int drive, const char *filename)
 {

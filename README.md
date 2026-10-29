@@ -64,7 +64,7 @@ and consistent parameter naming.
 | **Disk** | `vice.disk.attach` `vice.disk.detach` `vice.disk.list` `vice.disk.read_sector` | Mount D64/D71/D81 images, browse directories, read raw sectors |
 | **Machine** | `vice.machine.reset` `vice.machine.config.get` `vice.machine.config.set` `vice.autostart` | Hard/soft reset, resource control (warp, speed, model), program loading |
 | **Display** | `vice.display.screenshot` `vice.display.get_dimensions` | Screen capture to file or base64, display geometry |
-| **Input** | `vice.keyboard.type` `vice.keyboard.petscii` `vice.keyboard.key_press` `vice.keyboard.key_release` `vice.keyboard.restore` `vice.keyboard.matrix` `vice.keyboard.chord` `vice.joystick.set` `vice.joystick.tap` | Keyboard and joystick — text typing, individual keys, direct matrix, RESTORE/NMI |
+| **Input** | `vice.keyboard.type` `vice.keyboard.petscii` `vice.keyboard.key_press` `vice.keyboard.key_release` `vice.keyboard.restore` `vice.keyboard.matrix` `vice.keyboard.chord` `vice.joystick.set` `vice.joystick.tap` `vice.paddle.set` | Keyboard, joystick, and paddle input — text typing, individual keys, direct matrix, RESTORE/NMI |
 | **Debug** | `vice.disassemble` `vice.symbols.load` `vice.symbols.lookup` `vice.watch.add` `vice.backtrace` `vice.cycles.stopwatch` | Disassembly, symbol files, call stack, cycle-accurate timing |
 | **Snapshots** | `vice.snapshot.save` `vice.snapshot.load` `vice.snapshot.list` | Full emulator state save/restore with JSON metadata |
 
@@ -811,6 +811,15 @@ Tap joystick.
 | `fire` | boolean | | Fire button (default: false) |
 | `duration_frames` | number | | Tap duration in frames (default: 3) |
 | `duration_ms` | number | | Tap duration in ms (default: 0) |
+
+#### `vice.paddle.set`
+Set both paddle positions on a C64 control port. The values feed SID POTX/POTY reads at `$D419`/`$D41A` through VICE's normal port selection and sampling. `255` means an open paddle input; analog SID reads may vary slightly due to VICE's paddle noise model. After a port is set, MCP values override attached paddle or mouse input on that port until VICE exits.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `port` | number | yes | Control port 1 or 2 |
+| `x` | number | yes | X position, integer 0-255 |
+| `y` | number | yes | Y position, integer 0-255 |
 
 ---
 

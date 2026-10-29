@@ -1679,6 +1679,10 @@ EXPECTED_SCHEMAS = {
                         "fire": "boolean"},
         "required": [],
     },
+    "vice.paddle.set": {
+        "properties": {"port": "number", "x": "number", "y": "number"},
+        "required": ["port", "x", "y"],
+    },
     "vice.joystick.tap": {
         "properties": {"port": "number", "direction": "string",
                         "fire": "boolean", "duration_frames": "number",

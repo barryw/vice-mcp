@@ -50,6 +50,12 @@ extern cJSON* mcp_tool_keyboard_type(cJSON *params);
 extern cJSON* mcp_tool_keyboard_key_press(cJSON *params);
 extern cJSON* mcp_tool_keyboard_key_release(cJSON *params);
 extern cJSON* mcp_tool_joystick_set(cJSON *params);
+extern cJSON* mcp_tool_paddle_set(cJSON *params);
+extern void test_paddle_reset(void);
+extern int test_paddle_set_calls(void);
+extern int test_paddle_port(void);
+extern int test_paddle_x(void);
+extern int test_paddle_y(void);
 
 /* Test symbol table helpers from vice_stubs.c */
 extern void test_symbol_table_clear(void);
@@ -921,6 +927,51 @@ TEST(joystick_set_dispatch_works)
     ASSERT_NOT_NULL(response);
 
     cJSON_Delete(response);
+}
+
+TEST(paddle_set_validates_and_sets_both_ports)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON *response;
+    int port;
+
+    test_paddle_reset();
+    cJSON_AddNumberToObject(params, "port", 1);
+    cJSON_AddNumberToObject(params, "x", 0);
+    cJSON_AddNumberToObject(params, "y", 128);
+    for (port = 1; port <= 2; port++) {
+        cJSON_SetNumberValue(cJSON_GetObjectItem(params, "port"), port);
+        cJSON_SetNumberValue(cJSON_GetObjectItem(params, "x"), port == 1 ? 0 : 255);
+        response = mcp_tools_dispatch("vice.paddle.set", params);
+        ASSERT_NOT_NULL(response);
+        ASSERT_TRUE(cJSON_GetObjectItem(response, "code") == NULL);
+        ASSERT_INT_EQ(cJSON_GetObjectItem(response, "port")->valueint, port);
+        ASSERT_INT_EQ(test_paddle_port(), port - 1);
+        ASSERT_INT_EQ(test_paddle_x(), port == 1 ? 0 : 255);
+        ASSERT_INT_EQ(test_paddle_y(), 128);
+        cJSON_Delete(response);
+    }
+    ASSERT_INT_EQ(test_paddle_set_calls(), 2);
+
+    cJSON_SetNumberValue(cJSON_GetObjectItem(params, "x"), 256);
+    response = mcp_tool_paddle_set(params);
+    ASSERT_INT_EQ(cJSON_GetObjectItem(response, "code")->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(test_paddle_set_calls(), 2);
+    cJSON_Delete(response);
+
+    cJSON_SetNumberValue(cJSON_GetObjectItem(params, "x"), 12.5);
+    response = mcp_tool_paddle_set(params);
+    ASSERT_INT_EQ(cJSON_GetObjectItem(response, "code")->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(test_paddle_set_calls(), 2);
+    cJSON_Delete(response);
+
+    cJSON_SetNumberValue(cJSON_GetObjectItem(params, "x"), 12);
+    cJSON_SetNumberValue(cJSON_GetObjectItem(params, "port"), 3);
+    response = mcp_tool_paddle_set(params);
+    ASSERT_INT_EQ(cJSON_GetObjectItem(response, "code")->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(test_paddle_set_calls(), 2);
+    cJSON_Delete(response);
+    cJSON_Delete(params);
 }
 
 /* ===================================================================
@@ -9110,6 +9161,7 @@ int main(void)
     RUN_TEST(keyboard_key_press_dispatch_works);
     RUN_TEST(keyboard_key_release_dispatch_works);
     RUN_TEST(joystick_set_dispatch_works);
+    RUN_TEST(paddle_set_validates_and_sets_both_ports);
 
     /* Execution control tests */
     RUN_TEST(execution_run_returns_ok);
