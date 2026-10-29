@@ -443,6 +443,7 @@ int screenshot_save(const char *drvname, const char *filename, void *canvas)
 static int test_checkpoint_counter = 0;
 static int test_checkpoint_last_num = -1;
 static int test_checkpoint_last_has_condition = 0;
+static void *test_checkpoint_last_condition_node = NULL;  /* cond_node_t* */
 
 /* Simulated checkpoint structure for testing
  * MUST match layout of mon_checkpoint_t from mon_breakpoint.h exactly!
@@ -490,6 +491,7 @@ void test_checkpoint_reset(void)
     test_checkpoint_counter = 0;
     test_checkpoint_last_num = -1;
     test_checkpoint_last_has_condition = 0;
+    test_checkpoint_last_condition_node = NULL;
     for (i = 0; i < MAX_TEST_CHECKPOINTS; i++) {
         test_checkpoints[i].checknum = 0;
         test_checkpoints[i].enabled = 1;  /* Default to enabled */
@@ -531,6 +533,12 @@ int test_checkpoint_has_condition(void)
     return test_checkpoint_last_has_condition;
 }
 
+/* The condition most recently set on a checkpoint (a cond_node_t*), or NULL */
+const void *test_checkpoint_last_condition(void)
+{
+    return test_checkpoint_last_condition_node;
+}
+
 /* Phase 2.1: Checkpoint/Breakpoint stubs */
 int mon_breakpoint_add_checkpoint(unsigned int start, unsigned int end, int stop, int operation, int temporary, int do_print)
 {
@@ -538,6 +546,7 @@ int mon_breakpoint_add_checkpoint(unsigned int start, unsigned int end, int stop
     /* Return incrementing checkpoint number for testing */
     test_checkpoint_last_num = ++test_checkpoint_counter;
     test_checkpoint_last_has_condition = 0;  /* Reset condition flag for new checkpoint */
+    test_checkpoint_last_condition_node = NULL;
 
     /* Store checkpoint in our test array */
     if (test_checkpoint_last_num > 0 && test_checkpoint_last_num <= MAX_TEST_CHECKPOINTS) {
@@ -601,11 +610,11 @@ void mon_breakpoint_set_ignore_count(unsigned int id, unsigned int count)
 void mon_breakpoint_set_checkpoint_condition(int brk_num, void *cnode)
 {
     (void)brk_num;
-    (void)cnode;
-    /* Track that a condition was set */
+    /* Track that a condition was set, and keep it for the tests to inspect */
     if (cnode != NULL) {
         test_checkpoint_last_has_condition = 1;
     }
+    test_checkpoint_last_condition_node = cnode;
 }
 
 /* Autostart stubs */

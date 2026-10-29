@@ -113,6 +113,7 @@ extern uint8_t test_memory_get_byte(uint16_t addr);
 extern void test_checkpoint_reset(void);
 extern int test_checkpoint_get_last_num(void);
 extern int test_checkpoint_has_condition(void);
+extern const void *test_checkpoint_last_condition(void);
 extern int test_checkpoint_last_stop(void);
 extern int test_checkpoint_last_ops(void);
 
@@ -3310,6 +3311,72 @@ TEST(watch_add_with_pc_condition)
 
     cJSON_Delete(params);
     cJSON_Delete(response);
+}
+
+/* Layout of cond_node_t from monitor/montypes.h, to look inside a parsed
+ * condition. reg_num is a MON_REG: memory space in the high 16 bits,
+ * register in the low 16 (new_reg()). */
+typedef struct test_cond_node_s {
+    int operation;
+    int value;
+    int banknum;
+    unsigned int reg_num;
+    bool is_reg;
+    bool is_parenthized;
+    struct test_cond_node_s *child1;
+    struct test_cond_node_s *child2;
+} test_cond_node_t;
+
+/* Test: a register condition names the computer's memory space. The monitor
+ * reads A, X, Y and SP through the interface of the register's memory space,
+ * and space 0 (e_default_space) has none: a condition built without one took
+ * the emulator down at the checkpoint's first hit. */
+TEST(checkpoint_set_condition_register_in_computer_space)
+{
+    static const struct {
+        const char *condition;
+        int reg_id;     /* e_A .. e_SP from monitor/montypes.h */
+        int value;
+    } cases[] = {
+        { "A == $02",    0x00, 0x02 },
+        { "X == $00",    0x01, 0x00 },
+        { "Y = 0x10",    0x02, 0x10 },
+        { "PC == $C000", 0x03, 0xC000 },
+        { "SP == 255",   0x04, 0xFF },
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        cJSON *response, *params, *status_item;
+        const test_cond_node_t *cond;
+        int checkpoint_num;
+
+        test_checkpoint_reset();
+        checkpoint_num = mon_breakpoint_add_checkpoint(0xC000, 0xC000, 1, 4 /* e_exec */, 0, 0);
+
+        params = cJSON_CreateObject();
+        cJSON_AddNumberToObject(params, "checkpoint_num", checkpoint_num);
+        cJSON_AddStringToObject(params, "condition", cases[i].condition);
+
+        response = mcp_tools_dispatch("vice.checkpoint.set_condition", params);
+        ASSERT_NOT_NULL(response);
+
+        status_item = cJSON_GetObjectItem(response, "status");
+        ASSERT_NOT_NULL(status_item);
+        ASSERT_STR_EQ(status_item->valuestring, "ok");
+
+        cond = test_checkpoint_last_condition();
+        ASSERT_NOT_NULL(cond);
+        ASSERT_NOT_NULL(cond->child1);
+        ASSERT_NOT_NULL(cond->child2);
+        ASSERT_TRUE(cond->child1->is_reg);
+        ASSERT_INT_EQ((int)(cond->child1->reg_num >> 16), 1);  /* e_comp_space */
+        ASSERT_INT_EQ((int)(cond->child1->reg_num & 0xffff), cases[i].reg_id);
+        ASSERT_INT_EQ(cond->child2->value, cases[i].value);
+
+        cJSON_Delete(params);
+        cJSON_Delete(response);
+    }
 }
 
 /* Test: disassemble with hex string address */
@@ -9086,6 +9153,7 @@ int main(void)
     RUN_TEST(watch_add_with_invalid_condition);
     RUN_TEST(watch_add_without_condition);
     RUN_TEST(watch_add_with_pc_condition);
+    RUN_TEST(checkpoint_set_condition_register_in_computer_space);
     RUN_TEST(disassemble_with_hex_address);
 
     /* Snapshot tests */
