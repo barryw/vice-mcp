@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v3.13.3](https://github.com/barryw/vice-mcp/compare/eaf4b8d5fd30893ff5f394fe14d78ea924c0f6c9..v3.13.3) - 2026-10-29
+#### Bug Fixes
+- (**mcp**) read A, X, Y and SP conditions from the computer's CPU - ([eaf4b8d](https://github.com/barryw/vice-mcp/commit/eaf4b8d5fd30893ff5f394fe14d78ea924c0f6c9)) - Aaron Bell, Claude Opus 5.5
+
+- - -
+
 ## [v3.13.2](https://github.com/barryw/vice-mcp/compare/fbb23fd0733ac6f7fa0d3e643e8ca0d7cdced01c..v3.13.2) - 2026-10-02
 #### Bug Fixes
 - (**mcp**) stop a pause between two instructions, not inside the vsync - ([dbbeced](https://github.com/barryw/vice-mcp/commit/dbbeced826fc9897f67d99ad9292aba264198092)) - Aaron Bell, Claude Opus 5.5
