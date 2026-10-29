@@ -632,7 +632,9 @@ cond_node_t* parse_simple_condition(const char *condition_str)
     }
     memset(node->child1, 0, sizeof(cond_node_t));
     node->child1->is_reg = true;
-    node->child1->reg_num = reg_num;
+    /* The computer's register. The monitor reads it through the interface of
+       the register's memory space, and e_default_space (0) has none. */
+    node->child1->reg_num = new_reg(e_comp_space, reg_num);
     node->child1->banknum = -1;
     node->child1->child1 = NULL;
     node->child1->child2 = NULL;
