@@ -33,6 +33,7 @@
 
 #include "c64cart.h"
 #include "c64cartmem.h"
+#include "c64cartsystem.h"
 #include "debug.h"
 #include "maincpu.h"
 #include "mem.h"
@@ -47,83 +48,105 @@
 
 /*-----------------------------------------------------------------------*/
 
+/* VIC cycle */
 inline static uint8_t fetch_phi1(int addr)
 {
     uint8_t *p;
+    int res = CART_READ_C64MEM;
 
     addr = ((addr + vicii.vbank_phi1) & vicii.vaddr_mask_phi1) | vicii.vaddr_offset_phi1;
 
     if (export.ultimax_phi1) {
         uint8_t value;
-        /* $3000..$3fff     ROMH */
+        /* $3000-$3fff ROMH */
         if ((addr & 0x3fff) >= 0x3000) {
-            if (ultimax_romh_phi1_read((uint16_t)(0x1000 + (addr & 0xfff)), &value)) {
-                return value;
-            }
-        /* $0800-$0fff (?) Cartridge RAM */
+            res = ultimax_romh_phi1_read((uint16_t)(0x1000 + (addr & 0xfff)), &value);
+        /* $0800-$0fff RAM (C64) Cartridge RAM (MAX Machine) */
         } else if (((addr & 0x3fff) >= 0x800) && ((addr & 0x3fff) <= 0x0fff)) {
-            if (ultimax_ram_phi1_read(addr, &value)) {
-                return value;
-            }
+            res = ultimax_ram_phi1_read(addr, &value);
+        /* $1000-$1fff RAM or "blank" (MAX Machine) */
+        } else if (((addr & 0x3fff) >= 0x1000) && ((addr & 0x3fff) <= 0x1fff)) {
+            res = ultimax_chargen_phi1_read(addr, &value);
+        /* $0000-$07ff RAM */
+        } else if (((addr & 0x3fff) >= 0x0000) && ((addr & 0x3fff) <= 0x07ff)) {
+            res = ultimax_0000_07ff_phi1_read(addr, &value);
+        /* $2000-$2fff RAM or "blank" (MAX Machine) */
+        } else if (((addr & 0x3fff) >= 0x2000) && ((addr & 0x3fff) <= 0x2fff)) {
+            res = ultimax_2000_2fff_phi1_read(addr, &value);
         }
-        p = vicii.ram_base_phi1 + addr;
-        return *p;
-#if 0
-        if (ultimax_romh_phi1_read((uint16_t)(0x1000 + (addr & 0xfff)), &value)) {
-            if ((addr & 0x3fff) >= 0x3000) {
-                return value;
-            } else {
+
+        switch (res) {
+            default:
+            case CART_READ_C64MEM:
+            case CART_READ_THROUGH:
+                /* regular ultimax fetch */
                 p = vicii.ram_base_phi1 + addr;
                 return *p;
-            }
+            case CART_READ_VALID:
+                /* use value from above read function */
+                return value;
+            case CART_READ_THROUGH_NO_ULTIMAX:
+                /* fall through and use the regular (NOT ultimax) fetch */
+                break;
         }
-#endif
     }
 
     if ((addr & vicii.vaddr_chargen_mask_phi1) == vicii.vaddr_chargen_value_phi1) {
+        /* fetch from chargen */
         p = mem_chargen_rom_ptr + (addr & 0xfff);
     } else {
+        /* fetch from RAM */
         p = vicii.ram_base_phi1 + addr;
     }
     return *p;
 }
 
+/* CPU cycle */
 inline static uint8_t fetch_phi2(int addr)
 {
     uint8_t *p;
+    int res = CART_READ_THROUGH;
 
     addr = ((addr + vicii.vbank_phi2) & vicii.vaddr_mask_phi2) | vicii.vaddr_offset_phi2;
 
     if (export.ultimax_phi2) {
         uint8_t value;
-        /* $3000..$3fff     ROMH */
+        /* $3000-$3fff ROMH */
         if ((addr & 0x3fff) >= 0x3000) {
-            if (ultimax_romh_phi2_read((uint16_t)(0x1000 + (addr & 0xfff)), &value)) {
-                return value;
-            }
-        /* $0800-$0fff (?) Cartridge RAM */
+            res = ultimax_romh_phi2_read((uint16_t)(0x1000 + (addr & 0xfff)), &value);
+        /* $0800-$0fff RAM (C64) Cartridge RAM (MAX Machine) */
         } else if (((addr & 0x3fff) >= 0x800) && ((addr & 0x3fff) <= 0x0fff)) {
-            if (ultimax_ram_phi2_read(addr, &value)) {
-                return value;
-            }
+            res = ultimax_ram_phi2_read(addr, &value);
+        /* $1000-$1fff RAM or "blank" (MAX Machine) */
+        } else if (((addr & 0x3fff) >= 0x1000) && ((addr & 0x3fff) <= 0x1fff)) {
+            res = ultimax_chargen_phi2_read(addr, &value);
+        /* $0000-$07ff RAM */
+        } else if (((addr & 0x3fff) >= 0x0000) && ((addr & 0x3fff) <= 0x07ff)) {
+            res = ultimax_0000_07ff_phi2_read(addr, &value);
+        /* $2000-$2fff RAM or "blank" (MAX Machine) */
+        } else if (((addr & 0x3fff) >= 0x2000) && ((addr & 0x3fff) <= 0x2fff)) {
+            res = ultimax_2000_2fff_phi2_read(addr, &value);
         }
-        p = vicii.ram_base_phi2 + addr;
-        return *p;
-#if 0
-        if (ultimax_romh_phi2_read((uint16_t)(0x1000 + (addr & 0xfff)), &value)) {
-            if ((addr & 0x3fff) >= 0x3000) {
-                return value;
-            } else {
+
+        switch (res) {
+            default:
+                /* regular ultimax fetch */
                 p = vicii.ram_base_phi2 + addr;
                 return *p;
-            }
+            case CART_READ_VALID:
+                /* use value from above read function */
+                return value;
+            case CART_READ_THROUGH_NO_ULTIMAX:
+                /* fall through and use the regular (NOT ultimax) fetch */
+                break;
         }
-#endif
     }
 
     if ((addr & vicii.vaddr_chargen_mask_phi2) == vicii.vaddr_chargen_value_phi2) {
+        /* fetch from chargen */
         p = mem_chargen_rom_ptr + (addr & 0xfff);
     } else {
+        /* fetch from RAM */
         p = vicii.ram_base_phi2 + addr;
     }
 

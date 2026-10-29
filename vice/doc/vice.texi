@@ -1307,6 +1307,17 @@ Set the random seed (for debugging).
 Put the specified string into the keyboard buffer. Note that you can specify
 specific keycodes by using C-style escaped hexcodes ("\x0a").
 
+@findex -keybuf-after-load, +keybuf-after-load
+@item -keybuf-after-load
+@itemx +keybuf-after-load
+If enabled, fill the keyboard buffer after autoload/start.
+
+@findex -keybuf-delay
+@item -keybuf-delay <cycles>
+Set additional keyboard buffer delay
+(@code{KbdbufDelay}).
+(0: use default)
+
 @findex -console
 @item -console
 Console mode (for music playback, or for running the emulator test programs)
@@ -1855,7 +1866,7 @@ full (256 char) character set is computed by inverting.
 @file{chargen-901237-01.bin}, character generator ROM for the C6x0 (4KiB)
 
 @item
-@file{chargen-901232-01.bin}, character generator ROM for the C7x0 (4KiB)
+@file{chargen-901232-02.bin}, character generator ROM for the C7x0 (4KiB)
 
 @end itemize
 
@@ -6426,12 +6437,6 @@ Enable/disable user defined keyset
 (@code{KeySetEnable=1}, @code{KeySetEnable=0})
 (all emulators except vsid).
 
-@findex -keybuf-delay
-@item -keybuf-delay <value>
-Set additional keyboard buffer delay
-(@code{KbdbufDelay}).
-(0: use default)
-
 @end table
 
 @node Sound settings, Drive settings, Control port settings, Settings and resources
@@ -8910,6 +8915,9 @@ Set the device attached to the second tape port (xpet only, see table below):
 @item 8
 @tab PetSpeed dongle
 @tab xpet (port 1 only)
+@item 9
+@tab CASCOM packet-radio modem
+@tab x64, x64sc, x128
 @end multitable
 
 @table @code
@@ -8938,6 +8946,100 @@ parameters.
 @vindex TapecartTCRTFilename
 @item TapecartTCRTFilename
 String specifying the file name of the current tapecart image.
+
+@end table
+
+@table @code
+
+@vindex CascomMode
+@item CascomMode
+Integer specifying the CASCOM operating mode. 0: loopback self-test
+(TX bits are reflected back onto the RX lines), 1: audio (AFSK modem to
+and from the host soundcard), 2: network (AXUDP frame gateway).
+
+@vindex CascomTxRate
+@item CascomTxRate
+Integer specifying the host sample rate in Hz of the TX (output) audio
+stream in audio mode. (Default: 48000)
+
+@vindex CascomRxRate
+@item CascomRxRate
+Integer specifying the host sample rate in Hz of the RX (input) audio
+stream in audio mode. (Default: 48000)
+
+@vindex CascomTxAudioDev
+@item CascomTxAudioDev
+String specifying a substring of the host audio output device name used
+for TX audio in audio mode. An empty string selects the system default
+device.
+
+@vindex CascomRxAudioDev
+@item CascomRxAudioDev
+String specifying a substring of the host audio input device name used
+for RX audio in audio mode. An empty string selects the system default
+device.
+
+@vindex CascomMarkFreq
+@item CascomMarkFreq
+Integer specifying the mark (logical 1) tone frequency in Hz.
+(Default: 1200)
+
+@vindex CascomSpaceFreq
+@item CascomSpaceFreq
+Integer specifying the space (logical 0) tone frequency in Hz.
+(Default: 2200)
+
+@vindex CascomBaud
+@item CascomBaud
+Integer specifying the data rate in baud. (Default: 1200)
+
+@vindex CascomTxGain
+@item CascomTxGain
+Integer (0-100) specifying the TX audio output level in percent.
+(Default: 60)
+
+@vindex CascomTxGate
+@item CascomTxGate
+Boolean specifying whether TX audio is gated by PTT: when enabled, tones
+are only emitted while the emulated modem is keyed, with a short fade to
+avoid clicks - like a real radio. When disabled, the modem outputs a
+continuous tone like a bare TCM3105. (Default: on)
+
+@vindex CascomPttDevice
+@item CascomPttDevice
+String specifying the host serial device used to key a radio (PTT):
+a tty path on *nix (e.g. a USB-serial adapter), a COM port name on
+Windows. An empty string disables PTT keying.
+
+@vindex CascomPttLine
+@item CascomPttLine
+Integer specifying the serial control line used for PTT. 0: RTS, 1: DTR.
+
+@vindex CascomPttInvert
+@item CascomPttInvert
+Boolean specifying whether the PTT keying polarity is inverted.
+
+@vindex CascomNetPeer
+@item CascomNetPeer
+String specifying the peer host name or IP address that reconstructed
+AX.25 frames are sent to in network mode. An empty string disables
+sending.
+
+@vindex CascomNetPort
+@item CascomNetPort
+Integer specifying the UDP port of the AXUDP peer. (Default: 10093)
+
+@vindex CascomNetListenPort
+@item CascomNetListenPort
+Integer specifying the local UDP port to listen on for incoming AXUDP
+frames. (Default: 10093)
+
+@vindex CascomNetRxFilter
+@item CascomNetRxFilter
+String specifying an optional comma-separated list of callsigns; an
+incoming frame is only passed to the emulated machine if its AX.25
+destination or source call matches (SSID ignored). An empty string
+accepts all frames.
 
 @end table
 
@@ -8987,7 +9089,148 @@ Specify the tapecart log level. The default level of 0 only logs
 errors. Level 1 additionally logs mode changes and command bytes and
 level 2 adds details of command parameters.
 
+@findex -cascommode
+@item -cascommode <0-2>
+Set the CASCOM modem operating mode
+(0: loopback self-test, 1: audio AFSK, 2: AXUDP network gateway)
+(@code{CascomMode}).
+
+@findex -cascomtxrate
+@item -cascomtxrate <Hz>
+Set the CASCOM TX host audio sample rate
+(@code{CascomTxRate}).
+
+@findex -cascomrxrate
+@item -cascomrxrate <Hz>
+Set the CASCOM RX host audio sample rate
+(@code{CascomRxRate}).
+
+@findex -cascomtxaudiodev
+@item -cascomtxaudiodev <name>
+Set the CASCOM TX (output) audio device name substring, empty for the
+system default
+(@code{CascomTxAudioDev}).
+
+@findex -cascomrxaudiodev
+@item -cascomrxaudiodev <name>
+Set the CASCOM RX (input) audio device name substring, empty for the
+system default
+(@code{CascomRxAudioDev}).
+
+@findex -cascommarkfreq
+@item -cascommarkfreq <Hz>
+Set the CASCOM mark tone frequency
+(@code{CascomMarkFreq}).
+
+@findex -cascomspacefreq
+@item -cascomspacefreq <Hz>
+Set the CASCOM space tone frequency
+(@code{CascomSpaceFreq}).
+
+@findex -cascombaud
+@item -cascombaud <baud>
+Set the CASCOM data rate
+(@code{CascomBaud}).
+
+@findex -cascomtxgain
+@item -cascomtxgain <0-100>
+Set the CASCOM TX audio level in percent
+(@code{CascomTxGain}).
+
+@findex -cascomtxgate, +cascomtxgate
+@item -cascomtxgate
+@itemx +cascomtxgate
+Enable/Disable gating the CASCOM TX audio by PTT (tones only while
+keyed, with a short fade / continuous tone)
+(@code{CascomTxGate=1}, @code{CascomTxGate=0}).
+
+@findex -cascompttdevice
+@item -cascompttdevice <device>
+Set the CASCOM PTT serial device (tty path or COM port), empty to
+disable PTT
+(@code{CascomPttDevice}).
+
+@findex -cascompttline
+@item -cascompttline <0-1>
+Set the CASCOM PTT serial control line (0: RTS, 1: DTR)
+(@code{CascomPttLine}).
+
+@findex -cascompttinvert, +cascompttinvert
+@item -cascompttinvert
+@itemx +cascompttinvert
+Enable/Disable inverted CASCOM PTT keying polarity
+(@code{CascomPttInvert=1}, @code{CascomPttInvert=0}).
+
+@findex -cascomnetpeer
+@item -cascomnetpeer <host>
+Set the CASCOM network peer host that reconstructed AX.25 frames are
+sent to, empty to disable sending
+(@code{CascomNetPeer}).
+
+@findex -cascomnetport
+@item -cascomnetport <port>
+Set the CASCOM AXUDP peer UDP port
+(@code{CascomNetPort}).
+
+@findex -cascomnetlistenport
+@item -cascomnetlistenport <port>
+Set the CASCOM local UDP listen port
+(@code{CascomNetListenPort}).
+
+@findex -cascomnetrxfilter
+@item -cascomnetrxfilter <calls>
+Set the CASCOM RX callsign accept-list (comma separated, empty accepts
+all frames)
+(@code{CascomNetRxFilter}).
+
 @end table
+
+@c @node FIXME
+@subsection CASCOM usage
+
+The CASCOM device emulates a BayCom-compatible TCM3105 AFSK packet-radio
+modem on the cassette port, as used by DIGICOM 64 and similar C64/C128
+packet-radio software. It can operate as a real 1200-baud Bell-202
+soundcard modem (with optional serial-line PTT to key a radio), or as a
+frame-level gateway to AX.25-over-UDP peers (AXUDP, e.g. ax25ipd).
+
+Select the CASCOM device on tape port 1 (in the settings UI under Tape
+port devices, or with @code{-tapeport1device cascom}), choose an
+operating mode and boot your packet-radio software (e.g. DIGICOM 64).
+The software drives the modem exactly as it would the real
+cassette-port hardware.
+
+Audio mode works a real transceiver, or a host soundmodem:
+
+@example
+x64sc -tapeport1device cascom -cascommode 1 \
+  -cascomtxaudiodev "USB Audio" -cascomrxaudiodev "USB Audio" \
+  -cascompttdevice /dev/ttyUSB0 -cascompttline 0
+@end example
+
+@noindent
+connects the modem to the given host audio devices; with the audio and
+PTT lines wired to a transceiver this is a complete 1200-baud packet
+station. Without a radio, point both audio devices at a virtual audio
+cable shared with a host soundmodem such as Direwolf to exchange AX.25
+frames with host APRS/packet tools.
+
+Network mode exchanges AX.25 frames with an AXUDP peer, for example an
+ax25ipd gateway or a HamNet digipeater:
+
+@example
+x64sc -tapeport1device cascom -cascommode 2 \
+  -cascomnetpeer 44.0.0.1 -cascomnetport 10093 -cascomnetlistenport 10093
+@end example
+
+@noindent
+sends every frame the emulated software transmits to the peer as a UDP
+datagram and plays received datagrams back into the emulated modem at
+the configured baud rate.
+
+Loopback mode (@code{-cascommode 0}) needs no host resources at all: it
+reflects transmitted bits back to the receiver, which the packet
+software's loopback/test functions detect.
 
 @c -----------------------------------------------------------------------------
 
@@ -12763,8 +13006,32 @@ Boolean specifying whether the built-in SID filters must be emulated.
 
 @vindex SidModel
 @item SidModel
-Integer specifying what model of the SID must be emulated.
+Integer specifying what model of the SID must be emulated; with more than
+one SID, the model of the first.
 (0: 6581, 1: 8580, 2: 8580D, 3: DTVSID)
+
+@vindex Sid2Model
+@vindex Sid3Model
+@vindex Sid4Model
+@vindex Sid5Model
+@vindex Sid6Model
+@vindex Sid7Model
+@vindex Sid8Model
+@vindex Sid9Model
+@vindex Sid10Model
+@item Sid2Model
+@itemx Sid3Model
+@itemx Sid4Model
+@itemx Sid5Model
+@itemx Sid6Model
+@itemx Sid7Model
+@itemx Sid8Model
+@itemx Sid9Model
+@itemx Sid10Model
+Integer specifying the model of the second to tenth SID, for each SID the
+machine is set up with. Used by the software SID engines
+(x64, x64sc, xscpu64, x128 and vsid only).
+(-1: same as the first SID, 0: 6581, 1: 8580, 2: 8580D)
 
 @vindex SidEngine
 @item SidEngine
@@ -13061,9 +13328,32 @@ Specify engine for the emulated SID chip
 
 @findex -sidmodel
 @item -sidmodel <model>
-Specify model for the emulated SID chip
+Specify model for the emulated SID chip, or the first of several
 (@code{SidModel}).
 (6581: 0, 8580: 1, ReSID 8580 + digiboost: 2, DTVSID: 3)
+
+@findex -sid2model
+@findex -sid3model
+@findex -sid4model
+@findex -sid5model
+@findex -sid6model
+@findex -sid7model
+@findex -sid8model
+@findex -sid9model
+@findex -sid10model
+@item -sid2model <model>
+@itemx -sid3model <model>
+@itemx -sid4model <model>
+@itemx -sid5model <model>
+@itemx -sid6model <model>
+@itemx -sid7model <model>
+@itemx -sid8model <model>
+@itemx -sid9model <model>
+@itemx -sid10model <model>
+Specify the model of the second to tenth SID chip
+(@code{Sid2Model} to @code{Sid10Model})
+(x64, x64sc, xscpu64, x128 and vsid only).
+(same as the first SID: -1, 6581: 0, 8580: 1, 8580 + digiboost: 2)
 
 @findex -sidfilters, +sidfilters
 @item -sidfilters
@@ -20967,6 +21257,48 @@ Print out list of attached expansion port devices.
 Put the specified string into the keyboard buffer. Note that you can specify
 specific keycodes by using C-style escaped hexcodes ("\x0a").
 
+@item keymatrix [<row> <col> [<frames>|on|off|toggle]]
+@itemx keymatrix restore [<frames>|on|off|toggle]
+@itemx keymatrix clear
+@itemx km ...
+Press or release a key directly in the emulated keyboard matrix. Unlike
+@code{keybuf} this also works for programs that scan the keyboard themselves
+instead of using the KERNAL. @code{<row>} and @code{<col>} select the
+position in the matrix as used by the keyboard map files (see @ref{Keymap
+files}); on the C128 rows 8-10 are the extra keys scanned through the
+VIC-IIe (K0-K2).
+
+The key stays pressed until it is released with @code{off} or
+@code{clear}. If @code{<frames>} is given it is released again
+automatically after that many frames, counted at the end of each frame.
+@code{toggle} inverts the current state of the key. @code{restore} does the
+same for the RESTORE key (on machines that have one). @code{clear} releases
+all keys pressed with this command.
+
+Keys pressed this way are kept apart from the host keyboard: they are
+pressed immediately, without the small random delay applied to host key
+presses, and are neither pressed nor released by host key events. Without
+arguments the current matrix is shown, with @code{#} marking keys pressed
+by this command and @code{*} keys pressed on the host keyboard.
+
+Note that like all numbers in the monitor, @code{<frames>} uses the current
+radix, so @code{keymatrix 1 4 +50} presses the key for 50 frames, while
+@code{keymatrix 1 4 50} presses it for 80 frames when the radix is
+hexadecimal (the default).
+
+@item joystick [<port> <value> [<frames>]]
+@itemx joystick clear
+@itemx joy ...
+Set the value of a joystick port. The value is ORed into the value of the
+host joystick and uses the bits 1 = up, 2 = down, 4 = left, 8 = right,
+$10 = fire and $20-$800 = fire 2-8. Port 1 is control port 1; the
+additional ports (for example of userport joystick adapters) are numbered
+as in the joystick settings. The value is kept until it is changed or
+cleared with @code{joystick clear}, or for @code{<frames>} frames if
+given. Like @code{keymatrix}, this works without delay and independently
+of the host joystick. Note that the port must have a joystick device
+attached. Without arguments the current values of all ports are shown.
+
 
 @end table
 
@@ -21823,6 +22155,7 @@ mentioned above.
 * MON_CMD_ADVANCE_INSTRUCTIONS::
 * MON_CMD_KEYBOARD_FEED::
 * MON_CMD_EXECUTE_UNTIL_RETURN::
+* MON_CMD_KEYMATRIX_SET::
 * MON_CMD_PING::
 * MON_CMD_BANKS_AVAILABLE::
 * MON_CMD_REGISTERS_AVAILABLE::
@@ -21831,6 +22164,7 @@ mentioned above.
 * MON_CMD_CPUHISTORY_GET::
 * MON_CMD_PALETTE_GET::
 * MON_CMD_JOYPORT_SET::
+* MON_CMD_JOYSTICK_SET::
 * MON_CMD_USERPORT_SET::
 * MON_CMD_EXIT::
 * MON_CMD_QUIT::
@@ -22484,6 +22818,45 @@ Currently empty.
 @end example
 @*
 
+@node MON_CMD_KEYMATRIX_SET
+@subsection Keymatrix set (0x74)
+
+Press or release a key in the keyboard matrix.
+
+This command is the same as "keymatrix" in the text monitor.
+
+Minimum VICE version: 3.11
+
+Command body:
+
+@example
+RW | CL | ST | FR FR
+@end example
+@*
+
+@table @strong
+@item RW: 1 byte: Row in the keyboard matrix, or 0xff for the RESTORE key
+
+@item CL: 1 byte: Column in the keyboard matrix (ignored for RESTORE)
+
+@item ST: 1 byte: State
+0x00: released, 0x01: pressed
+
+@item FR: 2 bytes: Release the key again after this many frames, 0 keeps it pressed
+
+@end table
+
+Response type:
+
+0x74: MON_RESPONSE_KEYMATRIX_SET
+
+Response body:
+
+@example
+Currently empty.
+@end example
+@*
+
 @node MON_CMD_PING
 @subsection Ping (0x81)
 
@@ -22913,6 +23286,45 @@ PN PN | PV PV
 Response type:
 
 0xa2: MON_RESPONSE_JOYPORT_SET
+
+Response body:
+
+@example
+Currently empty.
+@end example
+@*
+
+@node MON_CMD_JOYSTICK_SET
+@subsection Joystick set (0xa3)
+
+Set the joystick value of a port, which is ORed into the value of the host
+joystick. Unlike the joyport set command, this works with the regular
+joystick device.
+
+This command is the same as "joystick" in the text monitor.
+
+Minimum VICE version: 3.11
+
+Command body:
+
+@example
+PN | PV PV | FR FR
+@end example
+@*
+
+@table @strong
+@item PN: 1 byte: The port, starting at 1 for control port 1
+
+@item PV: 2 bytes: Joystick bits
+1 = up, 2 = down, 4 = left, 8 = right, 0x10 = fire, 0x20-0x800 = fire 2-8
+
+@item FR: 2 bytes: Clear the value again after this many frames, 0 keeps it
+
+@end table
+
+Response type:
+
+0xa3: MON_RESPONSE_JOYSTICK_SET
 
 Response body:
 

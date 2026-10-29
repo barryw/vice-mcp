@@ -71,6 +71,9 @@ struct sound_s
     /* speed factor */
     int factor;
 
+    /* number of the SID, 0 for the first */
+    int chipno;
+
     /* libresidfp does not have a public interface to the internal state of the
      * emulated SID, so we keep a mirror of the written register values here */
     int sid_register[0x20];
@@ -99,7 +102,7 @@ static short *getbuf(int len)
     return buf;
 }
 
-static sound_t *residfp_open(uint8_t *sidstate)
+static sound_t *residfp_open(uint8_t *sidstate, int chipno)
 {
     sound_t *psid;
     int i;
@@ -107,6 +110,7 @@ static sound_t *residfp_open(uint8_t *sidstate)
     DBG(("residfp_open"));
 
     psid = new sound_t;
+    psid->chipno = chipno;
     psid->sid = new reSIDfp::SID;
 
     for (i = 0x00; i <= 0x18; i++) {
@@ -138,9 +142,7 @@ static int residfp_init(sound_t *psid, int speed, int cycles_per_sec, int factor
         return 0;
     }
 
-    if (resources_get_int("SidModel", &model) < 0) {
-        return 0;
-    }
+    model = sid_get_chip_model(psid->chipno);
     /*printf("residfp_init SidFilters:%d SidModel:%d\n", filters_enabled, model);*/
 
     /*
@@ -275,6 +277,14 @@ static int residfp_calculate_samples(sound_t *psid, float *pbuf, int nr, CLOCK *
     int int_delta_t = (int)*delta_t;
     int i;
 
+    /* Advance digital SID state while low-speed playback is muted. */
+    if (sound_not_sensible_speed_to_play()) {
+        psid->sid->clockDigital((unsigned int)*delta_t);
+        *delta_t = 0;
+        /* clockDigial does not have a return value */
+        return 0;
+    }
+
     /* Tried not to mess with resid during 64-bit conversion. clock(...) wants to modify *delta_t ... */
 
     if (psid->factor == 1000) {
@@ -302,6 +312,14 @@ static int residfp_calculate_samples(sound_t *psid, short *pbuf, int nr, int int
     short *tmp_buf;
     int retval = 0;
     int int_delta_t = (int)*delta_t;
+
+    /* Advance digital SID state while low-speed playback is muted. */
+    if (sound_not_sensible_speed_to_play()) {
+        psid->sid->clockDigital((unsigned int)*delta_t);
+        *delta_t = 0;
+        /* clockDigial does not have a return value */
+        return 0;
+    }
 
     /* Tried not to mess with resid during 64-bit conversion. clock(...) wants to modify *delta_t ... */
     if ((nr > 0) && (int_delta_t > 0)) {
