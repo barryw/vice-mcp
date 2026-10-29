@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v3.14.0](https://github.com/barryw/vice-mcp/compare/998b5a743decae0d689db988162f83dab50e134a..v3.14.0) - 2026-10-29
+#### Features
+- (**mcp**) add paddle position control for both C64 ports - ([998b5a7](https://github.com/barryw/vice-mcp/commit/998b5a743decae0d689db988162f83dab50e134a)) - Barry Walker
+
+- - -
+
 ## [v3.13.4](https://github.com/barryw/vice-mcp/compare/75308e9568c1e141bfcc2d833a7af4d30a3815c2..v3.13.4) - 2026-10-29
 #### Bug Fixes
 - (**mcp**) read chip state from I/O bank - ([75308e9](https://github.com/barryw/vice-mcp/commit/75308e9568c1e141bfcc2d833a7af4d30a3815c2)) - Barry Walker
