@@ -40,6 +40,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <errno.h>
+#include <limits.h>
 
 #ifdef HAVE_STRINGS_H
 #include <strings.h>
@@ -187,7 +188,7 @@ void mcp_hold_paused(void)
 }
 #endif
 
-/*#define DEBUG_MONITOR*/
+/* #define DEBUG_MONITOR */
 
 #ifdef DEBUG_MONITOR
 #define DBG(x)  log_printf x
@@ -1085,6 +1086,7 @@ void mon_set_mem_val_ex(MEMSPACE mem, int bank, uint16_t mem_addr, uint8_t val)
 /* exit monitor, G XXXX  */
 void mon_jump(MON_ADDR addr)
 {
+    DBG(("mon_jump"));
     mon_evaluate_default_addr(&addr);
     (monitor_cpu_for_memspace[addr_memspace(addr)]->mon_register_set_val)(addr_memspace(addr), e_PC, (uint16_t)(addr_location(addr)));
     exit_mon = exit_mon_change_flow;
@@ -1093,6 +1095,7 @@ void mon_jump(MON_ADDR addr)
 /* exit monitor, G (not G XXXX)  */
 void mon_go(void)
 {
+    DBG(("mon_go"));
     exit_mon = exit_mon_continue;
     mon_console_suspend_on_leaving = 0;
 
@@ -1105,6 +1108,7 @@ void mon_go(void)
 /* exit monitor, close monitor window  */
 void mon_exit(void)
 {
+    DBG(("mon_exit"));
     exit_mon = exit_mon_continue;
     mon_console_close_on_leaving = 1;
 
@@ -1122,6 +1126,7 @@ void mon_exit(void)
 */
 void mon_quit(void)
 {
+    DBG(("mon_quit"));
     exit_mon = exit_mon_quit_vice;
 }
 
@@ -1692,6 +1697,8 @@ void monitor_init(monitor_interface_t *maincpu_interface_init,
     unsigned int dnr;
     monitor_cpu_type_list_t *monitor_cpu_type_list_ptr;
 
+    DBG(("monitor_init"));
+
     /* Set to 1 to get parsing debug information via "yydebug". Requires YYDEBUG
        defined as 1 in mon_parse.y (which is why we can keep it 1 here all times) */
     set_yydebug(1);
@@ -1797,6 +1804,8 @@ void monitor_shutdown(void)
     monitor_cpu_type_list_t *list, *list_next;
     supported_cpu_type_list_t *slist, *slist_next;
     int i;
+
+    DBG(("monitor_shutdown"));
 
     if (inside_monitor) {
         /* Can happen if VICE thread exited while monitor open */
@@ -1928,6 +1937,11 @@ static int set_monitor_log_enabled(int val, void *param)
 static int monitorchislines = 0;
 static int set_monitor_chis_lines(int val, void *param)
 {
+    /* a hack in monitor_cpuhistory_allocate() multiplies lines by 5,
+       clamp to a value that will not overflow */
+    if (val > (INT_MAX - 1) / 5) {
+        return -1;
+    }
     /* 10 lines minimum */
     if (val < 10) {
         val = 10;
@@ -2705,6 +2719,7 @@ void mon_clear_symbol_table(MEMSPACE mem)
 
 void mon_instructions_step(int count)
 {
+    DBG(("mon_instructions_step count:%d", count));
     if (count >= 0) {
         mon_out("Stepping through the next %d instruction(s).\n", count);
     }
@@ -2721,6 +2736,7 @@ void mon_instructions_step(int count)
 
 void mon_instructions_next(int count)
 {
+    DBG(("mon_instructions_next count:%d", count));
     if (count >= 0) {
         mon_out("Nexting through the next %d instruction(s).\n", count);
         instruction_count = count;
@@ -2740,6 +2756,7 @@ void mon_instructions_next(int count)
 
 void mon_instruction_return(void)
 {
+    DBG(("mon_instruction_return"));
     instruction_count = 1;
     /* clear abuse of the ?: operator: */
     wait_for_return_level = (int)(
@@ -2755,11 +2772,13 @@ void mon_instruction_return(void)
 
 void mon_stack_up(int count)
 {
+    DBG(("mon_stack_up count:%d", count));
     mon_out("Going up %d stack frame(s).\n", (count >= 0) ? count : 1);
 }
 
 void mon_stack_down(int count)
 {
+    DBG(("mon_stack_down count:%d", count));
     mon_out("Going down %d stack frame(s).\n", (count >= 0) ? count : 1);
 }
 
@@ -2958,6 +2977,7 @@ int mon_read_snapshot(const char *name, int even_mode)
 
 void monitor_watch_push_load_addr(uint16_t addr, MEMSPACE mem)
 {
+    /*DBG(("monitor_watch_push_load_addr addr:%04x", addr));*/
     if (inside_monitor) {
         return;
     }
@@ -2973,6 +2993,7 @@ void monitor_watch_push_load_addr(uint16_t addr, MEMSPACE mem)
 
 void monitor_watch_push_store_addr(uint16_t addr, MEMSPACE mem)
 {
+    /*DBG(("monitor_watch_push_store_addr addr:%04x", addr));*/
     if (inside_monitor) {
         return;
     }
@@ -2992,6 +3013,7 @@ static bool watchpoints_check_loads(MEMSPACE mem, unsigned int lastpc, unsigned 
     unsigned count, n;
     uint16_t addr = 0;
 
+    /*DBG(("watchpoints_check_loads lastpc:%04x pc:%04x", lastpc, pc));*/
     count = watch_load_count[mem];
     /* check from index 0 upwards, so when more than one checkpoint was triggered
        they get printed in the right order */
@@ -3011,6 +3033,7 @@ static bool watchpoints_check_stores(MEMSPACE mem, unsigned int lastpc, unsigned
     unsigned count, n;
     uint16_t addr = 0;
 
+    /*DBG(("watchpoints_check_stores lastpc:%04x pc:%04x", lastpc, pc));*/
     count = watch_store_count[mem];
     /* check from index 0 upwards, so when more than one checkpoint was triggered
        they get printed in the right order */
@@ -3030,6 +3053,7 @@ static bool watchpoints_check_stores(MEMSPACE mem, unsigned int lastpc, unsigned
 /* called by cpu core */
 void monitor_check_icount(uint16_t pc)
 {
+    /*DBG(("monitor_check_icount pc:%04x instruction_count:%d", pc, instruction_count));*/
     if (!instruction_count) {
         return;
     }
@@ -3084,6 +3108,7 @@ void monitor_check_icount(uint16_t pc)
     }
 #endif
 
+    DBG(("monitor_check_icount calls monitor_startup"));
     monitor_startup(e_default_space);
 }
 
@@ -3110,6 +3135,7 @@ void mcp_cancel_step(void)
 /* called by cpu core */
 void monitor_check_icount_interrupt(void)
 {
+    DBG(("monitor_check_icount_interrupt"));
     /* This is a helper for monitor_check_icount.
     It's called whenever a IRQ or NMI is executed
     and the monitor_mask[default_memspace] | MI_STEP is
@@ -3127,6 +3153,7 @@ void monitor_check_icount_interrupt(void)
  */
 int monitor_check_breakpoints(MEMSPACE mem, uint16_t addr)
 {
+    /*DBG(("monitor_check_breakpoints addr:%04x", addr));*/
     int hit = mon_breakpoint_check_checkpoint(mem, addr, 0, e_exec); /* FIXME */
 #ifdef HAVE_MCP_SERVER
     if (hit) {
@@ -3139,11 +3166,13 @@ int monitor_check_breakpoints(MEMSPACE mem, uint16_t addr)
 /* called by macro DO_INTERRUPT() in 6510(dtv)core.c */
 void monitor_check_watchpoints(MEMSPACE mem, unsigned int lastpc, unsigned int pc)
 {
+    /*DBG(("monitor_check_watchpoints lastpc:%04x pc:%04x", lastpc, pc));*/
     while (watch_load_count[mem]) {
         if (watchpoints_check_loads(mem, lastpc, pc)) {
 #ifdef HAVE_MCP_SERVER
             mcp_mark_checkpoint_if_active();
 #endif
+            DBG(("monitor_check_watchpoints calls monitor_startup"));
             monitor_startup(mem);
         }
     }
@@ -3153,6 +3182,7 @@ void monitor_check_watchpoints(MEMSPACE mem, unsigned int lastpc, unsigned int p
 #ifdef HAVE_MCP_SERVER
             mcp_mark_checkpoint_if_active();
 #endif
+            DBG(("monitor_check_watchpoints calls monitor_startup"));
             monitor_startup(mem);
         }
     }
@@ -3269,6 +3299,8 @@ static void monitor_open(void)
     unsigned int dnr;
     int i;
 
+    DBG(("monitor_open"));
+
     mon_console_suspend_on_leaving = 1;
     mon_console_close_on_leaving = 0;
 
@@ -3289,7 +3321,7 @@ static void monitor_open(void)
             uimon_set_interface(mon_interfaces, NUM_MEMSPACES);
         }
     }
-    DBG(("monitor_open console_mode:%d console_log:%p", console_mode, console_log));
+    DBG(("monitor_open console_mode:%d console_log:%p", console_mode, (void*)console_log));
 
     if (console_log == NULL) {
         log_error(LOG_DEFAULT, "monitor_open: could not open monitor console.");
@@ -3423,6 +3455,8 @@ static void monitor_process(char *cmd)
 {
     char *trimmed_command;
 
+    DBG(("monitor_process cmd:%s", cmd));
+
     mon_stop_output = 0;
 
     if (cmd == NULL) {
@@ -3472,6 +3506,7 @@ static void monitor_process(char *cmd)
 
 static void monitor_close(bool check_exit)
 {
+    DBG(("monitor_close check_exit:%d", check_exit));
 #ifdef FEATURE_CPUMEMHISTORY
     memmap_state &= ~(MEMMAP_STATE_IN_MONITOR);
 #endif
@@ -3511,13 +3546,15 @@ static void monitor_close(bool check_exit)
         console_log = NULL;
     }
 
-    DBG(("monitor_close console_log:%p", console_log));
+    DBG(("monitor_close console_log:%p", (void*)console_log));
     vsync_suspend_speed_eval();
 }
 
 static int check_for_breakpoint(MEMSPACE mem)
 {
     int reg_pc;
+
+    DBG(("check_for_breakpoint"));
 
     if (mem == e_default_space) {
         mem = default_memspace;
@@ -3533,7 +3570,7 @@ void monitor_startup(MEMSPACE mem)
     char prompt[40];
     char *p;
 
-    DBG(("monitor_startup console_log:%p", console_log));
+    DBG(("monitor_startup console_log:%p", (void*)console_log));
 
     if (inside_monitor) {
         /*
@@ -3614,11 +3651,14 @@ void monitor_startup(MEMSPACE mem)
 
 static void monitor_trap(uint16_t addr, void *unused_data)
 {
+    DBG(("monitor_trap addr:%04x", addr));
+    DBG(("monitor_trap calls monitor_startup"));
     monitor_startup(e_default_space);
 }
 
 void monitor_startup_trap(void)
 {
+    DBG(("monitor_startup_trap"));
     if (!inside_monitor) {
         interrupt_maincpu_trigger_trap(monitor_trap, 0);
     }

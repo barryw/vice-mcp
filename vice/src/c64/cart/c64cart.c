@@ -478,6 +478,7 @@ static int set_cartridge_type(int val, void *param)
         case CARTRIDGE_IDE64:
         case CARTRIDGE_KINGSOFT:
         case CARTRIDGE_KCS_POWER:
+        case CARTRIDGE_LT_KERNAL:
         case CARTRIDGE_MACH5:
         case CARTRIDGE_MAGIC_DESK:
         case CARTRIDGE_MAGIC_DESK_PLUS:
@@ -485,6 +486,7 @@ static int set_cartridge_type(int val, void *param)
         case CARTRIDGE_MAGIC_FORMEL:
         case CARTRIDGE_MAGIC_VOICE:
         case CARTRIDGE_MAX_BASIC:
+        case CARTRIDGE_MEGABYTER:
         case CARTRIDGE_MIKRO_ASSEMBLER:
         case CARTRIDGE_MMC64:
         case CARTRIDGE_MMC_REPLAY:
@@ -519,6 +521,7 @@ static int set_cartridge_type(int val, void *param)
         case CARTRIDGE_WARPSPEED:
         case CARTRIDGE_WESTERMANN:
         case CARTRIDGE_ZAXXON:
+        case CARTRIDGE_ZIPPCODE48:
             break;
         default:
             /* FIXME: perhaps make this a call via the c128cartridge interface */
@@ -526,7 +529,9 @@ static int set_cartridge_type(int val, void *param)
                 (val == CARTRIDGE_C128_MAKEID(CARTRIDGE_C128_GENERIC)) ||
                 (val == CARTRIDGE_C128_MAKEID(CARTRIDGE_C128_WARPSPEED128)) ||
                 (val == CARTRIDGE_C128_MAKEID(CARTRIDGE_C128_PARTNER128)) ||
-                (val == CARTRIDGE_C128_MAKEID(CARTRIDGE_C128_COMAL80))
+                (val == CARTRIDGE_C128_MAKEID(CARTRIDGE_C128_COMAL80)) ||
+                (val == CARTRIDGE_C128_MAKEID(CARTRIDGE_C128_MAGICDESK128)) ||
+                (val == CARTRIDGE_C128_MAKEID(CARTRIDGE_C128_GMOD2C128))
                 )) {
                 break;
             } else {
@@ -1127,8 +1132,9 @@ int cartridge_attach_image(int type, const char *filename)
     }
     DBG(("CART: cartridge_attach_image type: %d ID: %d", type, carttype));
 
-    /* allocate temporary array */
+    /* allocate temporary array filled with 0xff */
     rawcart = lib_malloc(C64CART_IMAGE_LIMIT);
+    memset(rawcart, 0xff, C64CART_IMAGE_LIMIT);
 
 /*  cart should always be detached. there is no reason for doing fancy checks
     here, and it will cause problems incase a cart MUST be detached before

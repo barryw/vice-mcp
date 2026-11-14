@@ -357,12 +357,11 @@ void interrupt_do_trap(interrupt_cpu_status_t *cs, uint16_t address)
         cs->trap_func[cs->traps_next](address, cs->trap_data[cs->traps_next]);
         /* Don't increment this before the trap func above has exectued! */
         cs->traps_next++;
+        /* Keep the queue tail stable when a later callback schedules a trap. */
+        cs->traps_count--;
     }
 
-    if (cs->traps_count > traps_this_cycle) {
-        /* Executuing a trap scheduled another trap! Run them next cycle */
-        cs->traps_count -= traps_this_cycle;
-    } else {
+    if (cs->traps_count == 0) {
         /* All traps have been executed */
         cs->global_pending_int &= ~IK_TRAP;
         cs->traps_next = 0;

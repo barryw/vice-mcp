@@ -274,6 +274,7 @@ m4_foreach([flag],
             [-Wunreachable-code],
             [-Wmacro-redefined],
             [-Werror=implicit-function-declaration],
+            [-Wundef],
             [-Wfatal-errors],
             [-fdiagnostics-absolute-paths],
             [-Wshorten-64-to-32],
@@ -3002,8 +3003,7 @@ if test x"$is_unix" = "xyes"; then
     if test x"$LIBIEEE1284_HEADERS_PRESENT" = "xyes"; then
       AC_CHECK_LIB(ieee1284, ieee1284_find_ports,[LIBS="-lieee1284 $LIBS"; PARSID_SUPPORT=yes],,)
       if test x"$PARSID_SUPPORT" = "xyes"; then
-        AC_DEFINE(HAVE_LIBIEEE1284,
-                  [Define to 1 if you have the 'ieee1284' library (-lieee1284).])
+        AC_DEFINE(HAVE_LIBIEEE1284,,[Define to 1 if you have the 'ieee1284' library (-lieee1284).])
         HAVE_LIBIEEE1284_SUPPORT="yes"
       else
         AC_MSG_ERROR([libieee1284 is missing])

@@ -247,6 +247,13 @@ cJSON* mcp_tool_display_get_dimensions(cJSON *params)
     /* Get canvas dimensions from draw buffer */
     width = canvas->draw_buffer->canvas_physical_width;
     height = canvas->draw_buffer->canvas_physical_height;
+    /* Headless canvases have no physical window; use the visible image size. */
+    if (width == 0) {
+        width = canvas->draw_buffer->visible_width;
+    }
+    if (height == 0) {
+        height = canvas->draw_buffer->visible_height;
+    }
 
     response = cJSON_CreateObject();
     if (response == NULL) {

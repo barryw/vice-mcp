@@ -6,7 +6,7 @@ Tests validate the JSON-RPC 2.0 protocol over HTTP POST to /mcp on localhost:651
 Tools are called via:
     {"jsonrpc":"2.0","method":"tools/call","params":{"name":"vice.TOOL_NAME","arguments":{...}},"id":1}
 
-For each of the 63 tools this suite tests:
+For each advertised tool this suite tests:
     1. Valid params produce correct response structure
     2. Invalid params (wrong types, missing required) produce proper error responses
     3. inputSchema from tools/list matches what the handler actually expects
@@ -267,7 +267,7 @@ class TestBaseProtocol:
     def test_tools_list(self, mcp, tools_list):
         """tools/list should return an array of tool definitions."""
         assert isinstance(tools_list, list)
-        assert len(tools_list) > 50  # We expect 63+ tools
+        assert len(tools_list) > 50
 
     def test_tools_list_structure(self, tools_list):
         """Each tool in tools/list must have name, description, and inputSchema."""
@@ -338,6 +338,19 @@ class TestExecution:
         time.sleep(0.1)
         result = mcp.call_tool_result("vice.execution.step", {"count": 5})
         assert result["status"] == "ok"
+
+    @pytest.mark.stateful
+    def test_repeated_pause_and_step(self, mcp):
+        """Traps queued while pausing must not corrupt the next trap batch."""
+        for _ in range(20):
+            mcp.call_tool_result("vice.execution.run")
+            mcp.call_tool_result("vice.execution.pause")
+            step = mcp.call_tool_result("vice.execution.step")
+            assert step["completed"] is True
+            assert mcp.call_tool_result("vice.ping")["execution"] == "paused"
+            registers = mcp.call_tool_result("vice.registers.get")
+            assert registers["PC"] == step["PC"]
+            assert mcp.call_tool_result("vice.registers.get") == registers
 
     def test_step_invalid_count_type(self, mcp):
         """Step with string count should return error or ignore gracefully."""
@@ -457,15 +470,11 @@ class TestMemory:
         read_result = mcp.call_tool_result("vice.memory.read", {
             "address": addr, "size": 4,
         })
-        # Verify data matches (may be in hex or array form)
-        if "data" in read_result:
-            read_data = read_result["data"]
-            if isinstance(read_data, str):
-                # Hex string like "DEADBEEF" or "de ad be ef"
-                clean = read_data.replace(" ", "").lower()
-                assert clean == "deadbeef"
-            elif isinstance(read_data, list):
-                assert read_data == test_data
+        assert read_result["data"] == [f"{byte:02X}" for byte in test_data]
+        compact = mcp.call_tool_result("vice.memory.read", {
+            "address": addr, "size": 4, "encoding": "hex",
+        })
+        assert compact["data_hex"] == "DEADBEEF"
 
     def test_memory_write_missing_address(self, mcp):
         """Write without address should fail."""
@@ -520,7 +529,11 @@ class TestMemory:
             "end": "$040F",
             "pattern": [0xAA],
         })
-        assert result.get("status") == "ok"
+        assert result == {"bytes_written": 16, "pattern_repetitions": 16}
+        readback = mcp.call_tool_result("vice.memory.read", {
+            "address": "$0400", "size": 16,
+        })
+        assert readback["data"] == ["AA"] * 16
 
     def test_memory_fill_missing_params(self, mcp):
         """Fill without start/end/pattern should fail."""
@@ -549,23 +562,6 @@ class TestMemory:
             "range2_start": "$0500",
         })
         assert "differences" in result or "diff_count" in result or "identical" in result
-
-    def test_memory_map_no_params(self, mcp):
-        """Memory map with no params should return the full map."""
-        mcp.call_tool("vice.execution.pause")
-        time.sleep(0.1)
-        result = mcp.call_tool_result("vice.memory.map")
-        assert "regions" in result or "map" in result
-
-    def test_memory_map_with_range(self, mcp):
-        """Memory map with start/end should scope the result."""
-        mcp.call_tool("vice.execution.pause")
-        time.sleep(0.1)
-        result = mcp.call_tool_result("vice.memory.map", {
-            "start": "$C000",
-            "end": "$DFFF",
-        })
-        assert "regions" in result or "map" in result
 
     def test_memory_read_with_bank(self, mcp):
         """Reading with explicit bank parameter should work."""
@@ -713,7 +709,7 @@ class TestCheckpointGroups:
         result = mcp.call_tool_result("vice.checkpoint.group.create", {
             "name": "test_group_proto",
         })
-        assert result.get("status") == "ok"
+        assert result == {"created": True, "name": "test_group_proto"}
 
     def test_group_create_missing_name(self, mcp):
         """Create group without name should fail."""
@@ -732,7 +728,7 @@ class TestCheckpointGroups:
             "group": "test_grp_add",
             "checkpoint_ids": [cp_num],
         })
-        assert result.get("status") == "ok"
+        assert result["added"] == 1
 
     def test_group_add_missing_group(self, mcp):
         """Add to group without group name should fail."""
@@ -749,7 +745,7 @@ class TestCheckpointGroups:
             "group": "test_grp_toggle",
             "enabled": False,
         })
-        assert result.get("status") == "ok"
+        assert result["affected_count"] == 0  # The group has no checkpoints.
 
     def test_group_toggle_missing_params(self, mcp):
         """Toggle group without required params should fail."""
@@ -766,62 +762,6 @@ class TestCheckpointGroups:
 
 
 # ---------------------------------------------------------------------------
-# Test: Auto-Snapshot on Checkpoint
-# ---------------------------------------------------------------------------
-
-class TestAutoSnapshot:
-    """Tests for checkpoint auto-snapshot configuration."""
-
-    @pytest.mark.stateful
-    def test_set_auto_snapshot(self, mcp):
-        """Configure auto-snapshot on a checkpoint should succeed."""
-        mcp.call_tool("vice.execution.pause")
-        time.sleep(0.1)
-        add = mcp.call_tool_result("vice.checkpoint.add", {"start": "$8000"})
-        cp_num = add.get("checkpoint_num") or add.get("id") or add.get("number")
-        result = mcp.call_tool_result("vice.checkpoint.set_auto_snapshot", {
-            "checkpoint_id": cp_num,
-            "snapshot_prefix": "test_auto",
-        })
-        assert result.get("status") == "ok"
-
-    def test_set_auto_snapshot_missing_id(self, mcp):
-        """Set auto-snapshot without checkpoint_id should fail."""
-        error = mcp.call_tool_error("vice.checkpoint.set_auto_snapshot", {
-            "snapshot_prefix": "test",
-        })
-        assert error["code"] == ERROR_INVALID_PARAMS
-
-    def test_set_auto_snapshot_missing_prefix(self, mcp):
-        """Set auto-snapshot without prefix should fail."""
-        error = mcp.call_tool_error("vice.checkpoint.set_auto_snapshot", {
-            "checkpoint_id": 1,
-        })
-        assert error["code"] == ERROR_INVALID_PARAMS
-
-    @pytest.mark.stateful
-    def test_clear_auto_snapshot(self, mcp):
-        """Clear auto-snapshot should succeed."""
-        mcp.call_tool("vice.execution.pause")
-        time.sleep(0.1)
-        add = mcp.call_tool_result("vice.checkpoint.add", {"start": "$8010"})
-        cp_num = add.get("checkpoint_num") or add.get("id") or add.get("number")
-        mcp.call_tool("vice.checkpoint.set_auto_snapshot", {
-            "checkpoint_id": cp_num,
-            "snapshot_prefix": "test_clear",
-        })
-        result = mcp.call_tool_result("vice.checkpoint.clear_auto_snapshot", {
-            "checkpoint_id": cp_num,
-        })
-        assert result.get("status") == "ok"
-
-    def test_clear_auto_snapshot_missing_id(self, mcp):
-        """Clear auto-snapshot without checkpoint_id should fail."""
-        error = mcp.call_tool_error("vice.checkpoint.clear_auto_snapshot", {})
-        assert error["code"] == ERROR_INVALID_PARAMS
-
-
-# ---------------------------------------------------------------------------
 # Test: Sprites
 # ---------------------------------------------------------------------------
 
@@ -833,15 +773,16 @@ class TestSprites:
         mcp.call_tool("vice.execution.pause")
         time.sleep(0.1)
         result = mcp.call_tool_result("vice.sprite.get")
-        assert "sprites" in result
-        assert len(result["sprites"]) == 8
+        assert set(result) == {f"sprite_{i}" for i in range(8)}
+        assert [result[f"sprite_{i}"]["sprite"] for i in range(8)] == list(range(8))
 
     def test_sprite_get_single(self, mcp):
         """Get a single sprite by number should work."""
         mcp.call_tool("vice.execution.pause")
         time.sleep(0.1)
         result = mcp.call_tool_result("vice.sprite.get", {"sprite": 0})
-        assert "sprites" in result or "x" in result or "enabled" in result
+        assert result["sprite_data"]["sprite"] == 0
+        assert {"x", "y", "enabled"}.issubset(result["sprite_data"])
 
     def test_sprite_get_invalid_number(self, mcp):
         """Get sprite with out-of-range number should fail."""
@@ -1415,7 +1356,7 @@ class TestCyclesStopwatch:
         result = mcp.call_tool_result("vice.cycles.stopwatch", {
             "action": "reset",
         })
-        assert result.get("status") == "ok"
+        assert result["cycles"] == 0
 
     @pytest.mark.stateful
     def test_stopwatch_read(self, mcp):
@@ -1452,70 +1393,28 @@ class TestCyclesStopwatch:
 
 
 # ---------------------------------------------------------------------------
-# Test: Tracing
+# Test: Removed and Unimplemented Tools
 # ---------------------------------------------------------------------------
 
-class TestTracing:
-    """Tests for vice.trace.start and trace.stop."""
-
-    @pytest.mark.stateful
-    def test_trace_start(self, mcp, tmp_path):
-        """Start a trace should succeed and return a trace_id."""
-        result = mcp.call_tool_result("vice.trace.start", {
-            "output_file": str(tmp_path / "trace_test.log"),
-        })
-        assert "trace_id" in result or result.get("status") == "ok"
-
-    def test_trace_start_missing_output_file(self, mcp):
-        """Start trace without output_file should fail."""
-        error = mcp.call_tool_error("vice.trace.start", {})
-        assert error["code"] == ERROR_INVALID_PARAMS
-
-    def test_trace_stop_missing_trace_id(self, mcp):
-        """Stop trace without trace_id should fail."""
-        error = mcp.call_tool_error("vice.trace.stop", {})
-        assert error["code"] == ERROR_INVALID_PARAMS
-
-    def test_trace_stop_invalid_trace_id(self, mcp):
-        """Stop trace with bogus trace_id should fail."""
-        error = mcp.call_tool_error("vice.trace.stop", {
-            "trace_id": "nonexistent_id",
-        })
-        assert error["code"] in (ERROR_INVALID_PARAMS, ERROR_INVALID_VALUE,
-                                  ERROR_NOT_IMPLEMENTED)
-
-
-# ---------------------------------------------------------------------------
-# Test: Interrupt Logging
-# ---------------------------------------------------------------------------
-
-class TestInterruptLogging:
-    """Tests for interrupt log start/stop/read."""
-
-    @pytest.mark.stateful
-    def test_interrupt_log_start(self, mcp):
-        """Start interrupt logging should succeed."""
-        result = mcp.call_tool_result("vice.interrupt.log.start")
-        assert "log_id" in result or result.get("status") == "ok"
-
-    @pytest.mark.stateful
-    def test_interrupt_log_start_with_types(self, mcp):
-        """Start interrupt logging with type filter should succeed."""
-        result = mcp.call_tool_result("vice.interrupt.log.start", {
-            "types": ["irq", "nmi"],
-            "max_entries": 500,
-        })
-        assert "log_id" in result or result.get("status") == "ok"
-
-    def test_interrupt_log_stop_missing_id(self, mcp):
-        """Stop interrupt log without log_id should fail."""
-        error = mcp.call_tool_error("vice.interrupt.log.stop", {})
-        assert error["code"] == ERROR_INVALID_PARAMS
-
-    def test_interrupt_log_read_missing_id(self, mcp):
-        """Read interrupt log without log_id should fail."""
-        error = mcp.call_tool_error("vice.interrupt.log.read", {})
-        assert error["code"] == ERROR_INVALID_PARAMS
+@pytest.mark.parametrize("tool_name", [
+    "vice.memory.map",
+    "vice.checkpoint.set_auto_snapshot",
+    "vice.checkpoint.clear_auto_snapshot",
+    "vice.trace.start",
+    "vice.trace.stop",
+    "vice.interrupt.log.start",
+    "vice.interrupt.log.stop",
+    "vice.interrupt.log.read",
+])
+@pytest.mark.parametrize("use_alias", [False, True])
+def test_unimplemented_tool_is_not_advertised_or_callable(mcp, tools_by_name,
+                                                        tool_name, use_alias):
+    """Tools without working implementations must not promise success."""
+    client_name = tool_name.replace(".", "_")
+    assert client_name not in tools_by_name
+    name = client_name if use_alias else tool_name
+    assert mcp.call_tool_error(name)["code"] == ERROR_METHOD_NOT_FOUND
+    assert mcp.direct_call_error(name)["code"] == ERROR_METHOD_NOT_FOUND
 
 
 # ---------------------------------------------------------------------------
@@ -1523,7 +1422,7 @@ class TestInterruptLogging:
 # ---------------------------------------------------------------------------
 
 # Expected schemas for all tools, based on C source code analysis.
-# Maps tool_name -> {properties: {name: type, ...}, required: [name, ...]}
+# Maps advertised tool name -> {properties: {name: type, ...}, required: [name, ...]}
 # type values: "number", "string", "boolean", "array", "unknown"
 
 EXPECTED_SCHEMAS = {
@@ -1532,264 +1431,239 @@ EXPECTED_SCHEMAS = {
                         "clientInfo": "unknown"},
         "required": [],
     },
-    "notifications/initialized": {"properties": {}, "required": []},
-    "tools/list": {"properties": {}, "required": []},
-    "vice.ping": {"properties": {}, "required": []},
-    "vice.execution.run": {"properties": {}, "required": []},
-    "vice.execution.pause": {"properties": {}, "required": []},
-    "vice.execution.step": {
+    "notifications_initialized": {"properties": {}, "required": []},
+    "tools_list": {"properties": {}, "required": []},
+    "vice_ping": {"properties": {}, "required": []},
+    "vice_execution_run": {"properties": {}, "required": []},
+    "vice_execution_pause": {"properties": {}, "required": []},
+    "vice_execution_step": {
         "properties": {"count": "number", "stepOver": "boolean"},
         "required": [],
     },
-    "vice.registers.get": {"properties": {}, "required": []},
-    "vice.registers.set": {
+    "vice_frame_advance": {
+        "properties": {"frames": "number"},
+        "required": [],
+    },
+    "vice_registers_get": {"properties": {}, "required": []},
+    "vice_registers_set": {
         "properties": {"register": "string", "value": "number"},
         "required": ["register", "value"],
     },
-    "vice.memory.read": {
-        "properties": {"address": "string", "size": "number", "bank": "string"},
+    "vice_memory_read": {
+        "properties": {"address": "string", "size": "number", "bank": "string",
+                        "encoding": "string"},
         "required": ["address", "size"],
     },
-    "vice.memory.write": {
+    "vice_memory_write": {
         "properties": {"address": "string", "data": "array"},
         "required": ["address", "data"],
     },
-    "vice.memory.banks": {"properties": {}, "required": []},
-    "vice.memory.search": {
+    "vice_memory_banks": {"properties": {}, "required": []},
+    "vice_memory_search": {
         "properties": {"start": "string", "end": "string", "pattern": "array",
                         "mask": "array", "max_results": "number"},
         "required": ["start", "end", "pattern"],
     },
-    "vice.checkpoint.add": {
+    "vice_checkpoint_add": {
         "properties": {"start": "string", "end": "string", "stop": "boolean",
                         "load": "boolean", "store": "boolean", "exec": "boolean"},
         "required": ["start"],
     },
-    "vice.checkpoint.delete": {
+    "vice_checkpoint_delete": {
         "properties": {"checkpoint_num": "number"},
         "required": ["checkpoint_num"],
     },
-    "vice.checkpoint.list": {"properties": {}, "required": []},
-    "vice.checkpoint.toggle": {
+    "vice_checkpoint_list": {"properties": {}, "required": []},
+    "vice_checkpoint_toggle": {
         "properties": {"checkpoint_num": "number", "enabled": "boolean"},
         "required": ["checkpoint_num", "enabled"],
     },
-    "vice.checkpoint.set_condition": {
+    "vice_checkpoint_set_condition": {
         "properties": {"checkpoint_num": "number", "condition": "string"},
         "required": ["checkpoint_num", "condition"],
     },
-    "vice.checkpoint.set_ignore_count": {
+    "vice_checkpoint_set_ignore_count": {
         "properties": {"checkpoint_num": "number", "count": "number"},
         "required": ["checkpoint_num", "count"],
     },
-    "vice.sprite.get": {
+    "vice_sprite_get": {
         "properties": {"sprite": "number"},
         "required": [],
     },
-    "vice.sprite.set": {
+    "vice_sprite_set": {
         "properties": {"sprite": "number", "x": "number", "y": "number",
                         "enabled": "boolean", "multicolor": "boolean",
                         "expand_x": "boolean", "expand_y": "boolean",
                         "priority_foreground": "boolean", "color": "number"},
         "required": ["sprite"],
     },
-    "vice.vicii.get_state": {"properties": {}, "required": []},
-    "vice.vicii.set_state": {
+    "vice_vicii_get_state": {"properties": {}, "required": []},
+    "vice_vicii_set_state": {
         "properties": {"registers": "array"},
         "required": [],
     },
-    "vice.sid.get_state": {"properties": {}, "required": []},
-    "vice.sid.set_state": {
+    "vice_sid_get_state": {"properties": {}, "required": []},
+    "vice_sid_set_state": {
         "properties": {"registers": "array"},
         "required": [],
     },
-    "vice.cia.get_state": {
+    "vice_cia_get_state": {
         "properties": {"cia": "number"},
         "required": [],
     },
-    "vice.cia.set_state": {
+    "vice_cia_set_state": {
         "properties": {"cia1_registers": "array", "cia2_registers": "array"},
         "required": [],
     },
-    "vice.disk.attach": {
+    "vice_disk_attach": {
         "properties": {"unit": "number", "path": "string"},
         "required": ["unit", "path"],
     },
-    "vice.disk.detach": {
+    "vice_disk_detach": {
         "properties": {"unit": "number"},
         "required": ["unit"],
     },
-    "vice.disk.list": {
+    "vice_disk_list": {
         "properties": {"unit": "number"},
         "required": ["unit"],
     },
-    "vice.disk.read_sector": {
+    "vice_disk_read_sector": {
         "properties": {"unit": "number", "track": "number", "sector": "number"},
         "required": ["unit", "track", "sector"],
     },
-    "vice.autostart": {
+    "vice_autostart": {
         "properties": {"path": "string", "program": "string",
                         "run": "boolean", "index": "number"},
         "required": ["path"],
     },
-    "vice.machine.reset": {
+    "vice_machine_reset": {
         "properties": {"mode": "string", "run_after": "boolean"},
         "required": [],
     },
-    "vice.display.screenshot": {
+    "vice_display_screenshot": {
         "properties": {"path": "string", "format": "string",
                         "return_base64": "boolean"},
         "required": [],
     },
-    "vice.display.get_dimensions": {"properties": {}, "required": []},
-    "vice.keyboard.type": {
+    "vice_display_get_dimensions": {"properties": {}, "required": []},
+    "vice_keyboard_type": {
         "properties": {"text": "string", "petscii_upper": "boolean"},
         "required": ["text"],
     },
-    "vice.keyboard.petscii": {
+    "vice_keyboard_petscii": {
         "properties": {"data": "array"},
         "required": ["data"],
     },
-    "vice.keyboard.key_press": {
+    "vice_keyboard_key_press": {
         "properties": {"key": "string", "modifiers": "array",
                         "hold_frames": "number", "hold_ms": "number"},
         "required": ["key"],
     },
-    "vice.keyboard.key_release": {
+    "vice_keyboard_key_release": {
         "properties": {"key": "string", "modifiers": "array"},
         "required": ["key"],
     },
-    "vice.keyboard.restore": {
+    "vice_keyboard_restore": {
         "properties": {"pressed": "boolean"},
         "required": [],
     },
-    "vice.keyboard.matrix": {
+    "vice_keyboard_matrix": {
         "properties": {"key": "string", "row": "number", "col": "number",
                         "pressed": "boolean", "hold_frames": "number",
                         "hold_ms": "number"},
         "required": [],
     },
-    "vice.keyboard.chord": {
+    "vice_keyboard_chord": {
         "properties": {"keys": "array", "hold_frames": "number",
                         "hold_ms": "number"},
         "required": ["keys"],
     },
-    "vice.joystick.set": {
+    "vice_joystick_set": {
         "properties": {"port": "number", "direction": "string",
                         "fire": "boolean"},
         "required": [],
     },
-    "vice.paddle.set": {
+    "vice_paddle_set": {
         "properties": {"port": "number", "x": "number", "y": "number"},
         "required": ["port", "x", "y"],
     },
-    "vice.joystick.tap": {
+    "vice_joystick_tap": {
         "properties": {"port": "number", "direction": "string",
                         "fire": "boolean", "duration_frames": "number",
                         "duration_ms": "number"},
         "required": [],
     },
-    "vice.disassemble": {
+    "vice_disassemble": {
         "properties": {"address": "string", "count": "number",
                         "show_symbols": "boolean"},
         "required": ["address"],
     },
-    "vice.symbols.load": {
+    "vice_symbols_load": {
         "properties": {"path": "string", "format": "string"},
         "required": ["path"],
     },
-    "vice.symbols.lookup": {
+    "vice_symbols_lookup": {
         "properties": {"name": "string", "address": "number"},
         "required": [],
     },
-    "vice.watch.add": {
+    "vice_watch_add": {
         "properties": {"address": "string", "size": "number",
-                        "type": "string", "condition": "string"},
+                        "type": "string", "load": "boolean", "store": "boolean",
+                        "stop": "boolean", "condition": "string"},
         "required": ["address"],
     },
-    "vice.backtrace": {
+    "vice_backtrace": {
         "properties": {"depth": "number"},
         "required": [],
     },
-    "vice.run_until": {
+    "vice_run_until": {
         "properties": {"address": "string", "cycles": "number"},
         "required": [],
     },
-    "vice.snapshot.save": {
+    "vice_snapshot_save": {
         "properties": {"name": "string", "description": "string",
                         "include_roms": "boolean", "include_disks": "boolean"},
         "required": ["name"],
     },
-    "vice.snapshot.load": {
+    "vice_snapshot_load": {
         "properties": {"name": "string"},
         "required": ["name"],
     },
-    "vice.snapshot.list": {"properties": {}, "required": []},
-    "vice.cycles.stopwatch": {
+    "vice_snapshot_list": {"properties": {}, "required": []},
+    "vice_cycles_stopwatch": {
         "properties": {"action": "string"},
         "required": ["action"],
     },
-    "vice.memory.fill": {
+    "vice_memory_fill": {
         "properties": {"start": "string", "end": "string", "pattern": "array"},
         "required": ["start", "end", "pattern"],
     },
-    "vice.memory.compare": {
+    "vice_memory_compare": {
         "properties": {"mode": "string", "range1_start": "string",
                         "range1_end": "string", "range2_start": "string",
                         "snapshot_name": "string", "start": "string",
                         "end": "string", "max_differences": "number"},
         "required": ["mode"],
     },
-    "vice.checkpoint.group.create": {
+    "vice_checkpoint_group_create": {
         "properties": {"name": "string", "checkpoint_ids": "array"},
         "required": ["name"],
     },
-    "vice.checkpoint.group.add": {
+    "vice_checkpoint_group_add": {
         "properties": {"group": "string", "checkpoint_ids": "array"},
         "required": ["group", "checkpoint_ids"],
     },
-    "vice.checkpoint.group.toggle": {
+    "vice_checkpoint_group_toggle": {
         "properties": {"group": "string", "enabled": "boolean"},
         "required": ["group", "enabled"],
     },
-    "vice.checkpoint.group.list": {"properties": {}, "required": []},
-    "vice.checkpoint.set_auto_snapshot": {
-        "properties": {"checkpoint_id": "number", "snapshot_prefix": "string",
-                        "max_snapshots": "number", "include_disks": "boolean"},
-        "required": ["checkpoint_id", "snapshot_prefix"],
-    },
-    "vice.checkpoint.clear_auto_snapshot": {
-        "properties": {"checkpoint_id": "number"},
-        "required": ["checkpoint_id"],
-    },
-    "vice.trace.start": {
-        "properties": {"output_file": "string", "pc_filter_start": "number",
-                        "pc_filter_end": "number", "max_instructions": "number",
-                        "include_registers": "boolean"},
-        "required": ["output_file"],
-    },
-    "vice.trace.stop": {
-        "properties": {"trace_id": "string"},
-        "required": ["trace_id"],
-    },
-    "vice.interrupt.log.start": {
-        "properties": {"types": "array", "max_entries": "number"},
-        "required": [],
-    },
-    "vice.interrupt.log.stop": {
-        "properties": {"log_id": "string"},
-        "required": ["log_id"],
-    },
-    "vice.interrupt.log.read": {
-        "properties": {"log_id": "string", "since_index": "number"},
-        "required": ["log_id"],
-    },
-    "vice.machine.config.get": {"properties": {}, "required": []},
-    "vice.machine.config.set": {
+    "vice_checkpoint_group_list": {"properties": {}, "required": []},
+    "vice_machine_config_get": {"properties": {}, "required": []},
+    "vice_machine_config_set": {
         "properties": {"resources": "string"},
         "required": ["resources"],
     },
-    "vice.sprite.inspect": {
+    "vice_sprite_inspect": {
         "properties": {"sprite_number": "number", "format": "string"},
         "required": ["sprite_number"],
     },
@@ -1824,7 +1698,7 @@ class TestSchemaConsistency:
     Previously several tools had schema bugs where tools/list returned empty
     params while the handler actually accepted parameters. Those bugs have
     been fixed (vic.sprite.get, vicii.set_state, sid.set_state, cia.set_state,
-    keyboard.restore, memory.map, sprite.inspect now report correct schemas).
+    keyboard.restore, sprite.inspect now report correct schemas).
     """
 
     def test_all_expected_tools_present(self, tools_by_name):
@@ -1834,7 +1708,7 @@ class TestSchemaConsistency:
 
     def test_no_unexpected_tools(self, tools_by_name):
         """Every tool in tools/list (except tools/call) should be in EXPECTED_SCHEMAS."""
-        server_names = set(tools_by_name.keys()) - {"tools/call"}
+        server_names = set(tools_by_name.keys()) - {"tools_call"}
         expected_names = set(EXPECTED_SCHEMAS.keys())
         unexpected = server_names - expected_names
         assert not unexpected, f"Unexpected tools from server: {unexpected}"
@@ -1842,8 +1716,7 @@ class TestSchemaConsistency:
     @pytest.mark.parametrize("tool_name", sorted(EXPECTED_SCHEMAS.keys()))
     def test_schema_properties_present(self, tools_by_name, tool_name):
         """Verify the declared inputSchema has the expected property names."""
-        if tool_name not in tools_by_name:
-            pytest.skip(f"Tool {tool_name} not in tools/list")
+        assert tool_name in tools_by_name, f"Tool {tool_name} not in tools/list"
         expected = EXPECTED_SCHEMAS[tool_name]
         schema = tools_by_name[tool_name]["inputSchema"]
         server_props = set((schema.get("properties") or {}).keys())
@@ -1857,8 +1730,7 @@ class TestSchemaConsistency:
     @pytest.mark.parametrize("tool_name", sorted(EXPECTED_SCHEMAS.keys()))
     def test_schema_property_types(self, tools_by_name, tool_name):
         """Verify each property in the declared schema has the expected type."""
-        if tool_name not in tools_by_name:
-            pytest.skip(f"Tool {tool_name} not in tools/list")
+        assert tool_name in tools_by_name, f"Tool {tool_name} not in tools/list"
         expected = EXPECTED_SCHEMAS[tool_name]
         schema = tools_by_name[tool_name]["inputSchema"]
         server_props = schema.get("properties") or {}
@@ -1875,8 +1747,7 @@ class TestSchemaConsistency:
     @pytest.mark.parametrize("tool_name", sorted(EXPECTED_SCHEMAS.keys()))
     def test_schema_required_fields(self, tools_by_name, tool_name):
         """Verify the declared schema has the correct required fields."""
-        if tool_name not in tools_by_name:
-            pytest.skip(f"Tool {tool_name} not in tools/list")
+        assert tool_name in tools_by_name, f"Tool {tool_name} not in tools/list"
         expected = EXPECTED_SCHEMAS[tool_name]
         schema = tools_by_name[tool_name]["inputSchema"]
         server_required = set(schema.get("required") or [])
@@ -1897,10 +1768,7 @@ class TestSchemaConsistency:
 
     def test_schema_count_matches_registry(self, tools_list):
         """The number of tools in tools/list should match our expected count."""
-        # We expect at least 63 tools (the 63 in user spec + tools/call = 64)
-        assert len(tools_list) >= 63, (
-            f"Expected at least 63 tools, got {len(tools_list)}"
-        )
+        assert len(tools_list) == len(EXPECTED_SCHEMAS) + 1  # Includes tools_call.
 
 
 # ---------------------------------------------------------------------------
@@ -1920,7 +1788,7 @@ class TestPreviouslyBuggySchemas:
         Previously: tools/list said empty params.
         Handler requires: sprite_number (0-7), optional format.
         """
-        schema = tools_by_name["vice.sprite.inspect"]["inputSchema"]
+        schema = tools_by_name["vice_sprite_inspect"]["inputSchema"]
         props = schema.get("properties", {})
         assert "sprite_number" in props, (
             "REGRESSION: vice.sprite.inspect schema should declare sprite_number"
@@ -1936,28 +1804,10 @@ class TestPreviouslyBuggySchemas:
         Previously: tools/list said empty params.
         Handler accepts: optional sprite (0-7).
         """
-        schema = tools_by_name["vice.sprite.get"]["inputSchema"]
+        schema = tools_by_name["vice_sprite_get"]["inputSchema"]
         props = schema.get("properties", {})
         assert "sprite" in props, (
             "REGRESSION: vice.sprite.get schema should declare sprite"
-        )
-
-    def test_memory_map_has_params(self, tools_by_name):
-        """vice.memory.map MUST declare start, end, granularity params.
-
-        Previously: tools/list said empty params.
-        Handler accepts: optional start, end, granularity.
-        """
-        schema = tools_by_name["vice.memory.map"]["inputSchema"]
-        props = schema.get("properties", {})
-        assert "start" in props, (
-            "REGRESSION: vice.memory.map schema should declare start"
-        )
-        assert "end" in props, (
-            "REGRESSION: vice.memory.map schema should declare end"
-        )
-        assert "granularity" in props, (
-            "REGRESSION: vice.memory.map schema should declare granularity"
         )
 
     def test_keyboard_restore_has_pressed_param(self, tools_by_name):
@@ -1966,7 +1816,7 @@ class TestPreviouslyBuggySchemas:
         Previously: tools/list said empty params.
         Handler accepts: optional pressed boolean.
         """
-        schema = tools_by_name["vice.keyboard.restore"]["inputSchema"]
+        schema = tools_by_name["vice_keyboard_restore"]["inputSchema"]
         props = schema.get("properties", {})
         assert "pressed" in props, (
             "REGRESSION: vice.keyboard.restore schema should declare pressed"
@@ -1978,7 +1828,7 @@ class TestPreviouslyBuggySchemas:
         Previously: tools/list said empty params.
         Handler accepts: registers array [{offset, value}].
         """
-        schema = tools_by_name["vice.vicii.set_state"]["inputSchema"]
+        schema = tools_by_name["vice_vicii_set_state"]["inputSchema"]
         props = schema.get("properties", {})
         assert "registers" in props, (
             "REGRESSION: vice.vicii.set_state schema should declare registers"
@@ -1990,7 +1840,7 @@ class TestPreviouslyBuggySchemas:
         Previously: tools/list said empty params.
         Handler accepts: registers array and voice params.
         """
-        schema = tools_by_name["vice.sid.set_state"]["inputSchema"]
+        schema = tools_by_name["vice_sid_set_state"]["inputSchema"]
         props = schema.get("properties", {})
         assert "registers" in props, (
             "REGRESSION: vice.sid.set_state schema should declare registers"
@@ -2002,7 +1852,7 @@ class TestPreviouslyBuggySchemas:
         Previously: tools/list said empty params.
         Handler accepts: cia1_registers, cia2_registers arrays.
         """
-        schema = tools_by_name["vice.cia.set_state"]["inputSchema"]
+        schema = tools_by_name["vice_cia_set_state"]["inputSchema"]
         props = schema.get("properties", {})
         assert "cia1_registers" in props, (
             "REGRESSION: vice.cia.set_state schema should declare cia1_registers"

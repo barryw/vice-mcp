@@ -63,6 +63,12 @@
  */
 #define ARRAY_LEN(arr)  (sizeof (arr) / sizeof (arr[0]) )
 
+/** \brief  Maximum nesting depth of !include directives
+ *
+ * Guards against a file including itself (directly or indirectly).
+ */
+#define VHK_INCLUDE_DEPTH_MAX   16
+
 /** \brief  Object for mapping of !DEBUG arguments to boolean
  */
 typedef struct debug_args_s {
@@ -495,6 +501,11 @@ static bool vhk_parser_get_keysym_and_modmask(const char  *line,
             vhk_parser_error("parse error: unknown modifier '%s'.", curpos);
             return false;
         }
+        if (*end != VHK_MODIFIER_CLOSE) {
+            vhk_parser_error("parse error: missing '%c' after modifier.",
+                             VHK_MODIFIER_CLOSE);
+            return false;
+        }
         /* add found modifier to final mask */
         v_mask |= v_mod;
         a_mask |= ui_hotkeys_arch_modifier_to_arch(v_mod);
@@ -697,6 +708,12 @@ static bool vhk_parser_do_include(const char *line)
         return false;
     }
 
+    if (reader.depth >= VHK_INCLUDE_DEPTH_MAX) {
+        vhk_parser_error("!include nested more than %d levels",
+                         VHK_INCLUDE_DEPTH_MAX);
+        return false;
+    }
+
     path = parse_quoted_argument(line);
     if (path == NULL) {
         /* error already logged */
@@ -738,8 +755,8 @@ static bool vhk_parser_do_undef(const char *line)
     /* get combined modifier masks and keyval */
     oldpos = curpos;
     if (!vhk_parser_get_keysym_and_modmask(curpos, &curpos,
-                                           &vice_mask, &vice_key,
-                                           &arch_mask, &arch_key)) {
+                                           &vice_key, &vice_mask,
+                                           &arch_key, &arch_mask)) {
         /* error already logged */
         return false;
     }
@@ -784,7 +801,7 @@ static bool vhk_parser_do_undef(const char *line)
             memcpy(accel_name, oldpos, accel_len);
             accel_name[accel_len] = '\0';
 
-            vhk_parser_warning("hotkey '%s' not found, ignoring.");
+            vhk_parser_warning("hotkey '%s' not found, ignoring.", accel_name);
         }
     }
     return true;

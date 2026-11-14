@@ -391,6 +391,11 @@ static void transfer_ptr_clamp(void)
 {
     // the pointer is allowed to point one byte beyond each of the buffers
     switch (transfer_ptr.region) {
+        case REGION_NONE:
+            /* can occur in a snapshot taken before the first mode change */
+            transfer_ptr.offset = 0;
+            break;
+
         case REGION_TRANSFER_BUFFER:
             if (transfer_ptr.offset > sizeof(transfer_buffer)) {
                 transfer_ptr.offset = sizeof(transfer_buffer);
@@ -2172,7 +2177,8 @@ static int save_tcrt(const char *filename, tapecart_memory_t *tcmem)
 /* update TCRT if updates enabled and changes pending */
 static void update_tcrt(void)
 {
-    if (tcrt_filename && tapecart_memory->changed && tapecart_update_tcrt) {
+    if (tcrt_filename && tapecart_memory &&
+        tapecart_memory->changed && tapecart_update_tcrt) {
         save_tcrt(tcrt_filename, tapecart_memory);
     }
 }
@@ -2668,6 +2674,9 @@ static int tapecart_read_snapshot(int port, struct snapshot_s *s)
     /* restore the levels set by the tapecart */
     set_sense(sense_out_state);
     set_write(write_out_state);
+
+    lib_free(tcrt_filename);
+    tcrt_filename = NULL;
 
     transfer_ptr_clamp();
     return snapshot_module_close(m);
