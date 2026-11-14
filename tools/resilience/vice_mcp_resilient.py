@@ -2,12 +2,14 @@
 Resilience layer for the VICE C64 Emulator MCP Server.
 
 Provides a Python client with retry logic, fallback call paths, client-side
-schema validation, and reliability monitoring for all 63 MCP tools exposed
-by the VICE MCP server at localhost:6510.
+schema validation, and reliability monitoring for the VICE MCP server at
+localhost:6510. It has one method per registered tool; any tool can also be
+called by name with ``ViceMCPClient.call("vice.tool.name", **params)``.
 
 Usage::
 
-    from vice_mcp_resilient import ViceMCPClient, connect
+    # from the repository root
+    from tools.resilience import ViceMCPClient, connect
 
     # Quick start
     vice = connect()
@@ -32,9 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -81,6 +81,11 @@ MCP_ERROR_SNAPSHOT_FAILED = -32004
 # Protocol-level error codes that trigger fallback to direct HTTP
 _PROTOCOL_ERROR_CODES = frozenset(range(-32799, -32599))
 
+# The same request gets the same answer: never retried or re-routed
+_FATAL_ERROR_CODES = frozenset(
+    {JSONRPC_PARSE_ERROR, JSONRPC_INVALID_REQUEST, JSONRPC_INVALID_PARAMS}
+)
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -123,8 +128,7 @@ class ViceMCPValidationError(ViceMCPError):
 #
 # Type strings: "number", "string", "boolean", "array", "object", "any"
 #
-# IMPORTANT: These reflect what the C handlers actually parse, NOT what
-# tools/list returns.  Known discrepancies are noted inline.
+# These reflect what the C handlers actually parse.
 # ---------------------------------------------------------------------------
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "vice.ping": {
@@ -143,7 +147,13 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "required": [],
         "optional": [
             ("count", "number"),
-            ("step_over", "boolean"),
+            ("stepOver", "boolean"),
+        ],
+    },
+    "vice.frame.advance": {
+        "required": [],
+        "optional": [
+            ("frames", "number"),
         ],
     },
     "vice.registers.get": {
@@ -163,7 +173,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             ("size", "number"),
         ],
         "optional": [
-            ("bank", "string"),
+            ("bank", "any"),      # name or number
+            ("encoding", "string"),
         ],
     },
     "vice.memory.write": {
@@ -231,7 +242,6 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         ],
         "optional": [],
     },
-    # NOTE: tools/list says empty schema, but handler accepts optional "sprite"
     "vice.sprite.get": {
         "required": [],
         "optional": [
@@ -250,44 +260,63 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             ("multicolor", "boolean"),
             ("expand_x", "boolean"),
             ("expand_y", "boolean"),
-            ("priority", "boolean"),
-            ("multicolor0", "number"),
-            ("multicolor1", "number"),
-            ("pointer", "number"),
+            ("priority_foreground", "boolean"),
         ],
     },
     "vice.vicii.get_state": {
         "required": [],
         "optional": [],
     },
-    # NOTE: tools/list says empty schema, but handler accepts "registers"
     "vice.vicii.set_state": {
         "required": [],
         "optional": [
             ("registers", "array"),
+            ("border_color", "number"),
+            ("background_color", "number"),
+            ("background_color_1", "number"),
+            ("background_color_2", "number"),
+            ("background_color_3", "number"),
+            ("control_1", "number"),
+            ("control_2", "number"),
+            ("memory_pointers", "number"),
+            ("irq_raster_line", "number"),
+            ("interrupt_enable", "number"),
         ],
     },
     "vice.sid.get_state": {
         "required": [],
         "optional": [],
     },
-    # NOTE: tools/list says empty schema, but handler accepts registers + voice params
     "vice.sid.set_state": {
         "required": [],
         "optional": [
             ("registers", "array"),
+            # each voiceN: frequency, pulse_width, control, attack_decay,
+            # sustain_release
+            ("voice0", "object"),
+            ("voice1", "object"),
+            ("voice2", "object"),
+            ("filter_cutoff", "number"),
+            ("filter_resonance", "number"),
+            ("filter_mode_volume", "number"),
         ],
     },
     "vice.cia.get_state": {
         "required": [],
-        "optional": [],
+        "optional": [
+            ("cia", "number"),
+        ],
     },
-    # NOTE: tools/list says empty schema, but handler accepts CIA register arrays
     "vice.cia.set_state": {
         "required": [],
         "optional": [
             ("cia1_registers", "array"),
             ("cia2_registers", "array"),
+            # port_a, port_b, ddr_a, ddr_b, timer_a_low, timer_a_high,
+            # timer_b_low, timer_b_high, interrupt_control, control_a,
+            # control_b
+            ("cia1", "object"),
+            ("cia2", "object"),
         ],
     },
     "vice.disk.attach": {
@@ -295,13 +324,17 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             ("unit", "number"),
             ("path", "string"),
         ],
-        "optional": [],
+        "optional": [
+            ("drive", "number"),
+        ],
     },
     "vice.disk.detach": {
         "required": [
             ("unit", "number"),
         ],
-        "optional": [],
+        "optional": [
+            ("drive", "number"),
+        ],
     },
     "vice.disk.list": {
         "required": [
@@ -351,12 +384,18 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             ("text", "string"),
         ],
         "optional": [
-            ("petscii_upper", "boolean"),
+            ("petscii_upper", "any"),   # boolean or number
         ],
+    },
+    "vice.keyboard.petscii": {
+        "required": [
+            ("data", "array"),
+        ],
+        "optional": [],
     },
     "vice.keyboard.key_press": {
         "required": [
-            ("key", "string"),
+            ("key", "any"),   # name or key code
         ],
         "optional": [
             ("modifiers", "array"),
@@ -366,13 +405,12 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
     "vice.keyboard.key_release": {
         "required": [
-            ("key", "string"),
+            ("key", "any"),   # name or key code
         ],
         "optional": [
             ("modifiers", "array"),
         ],
     },
-    # NOTE: tools/list says empty schema, but handler accepts optional "pressed"
     "vice.keyboard.restore": {
         "required": [],
         "optional": [
@@ -390,12 +428,31 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             ("hold_ms", "number"),
         ],
     },
+    "vice.keyboard.chord": {
+        "required": [
+            ("keys", "array"),
+        ],
+        "optional": [
+            ("hold_frames", "number"),
+            ("hold_ms", "number"),
+        ],
+    },
     "vice.joystick.set": {
         "required": [],
         "optional": [
             ("port", "number"),
-            ("direction", "string"),
+            ("direction", "any"),   # string or array of strings
             ("fire", "boolean"),
+        ],
+    },
+    "vice.joystick.tap": {
+        "required": [],
+        "optional": [
+            ("port", "number"),
+            ("direction", "any"),   # string or array of strings
+            ("fire", "boolean"),
+            ("duration_frames", "number"),
+            ("duration_ms", "number"),
         ],
     },
     "vice.paddle.set": {
@@ -423,7 +480,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "required": [],
         "optional": [
             ("name", "string"),
-            ("address", "any"),
+            ("address", "number"),
         ],
     },
     "vice.watch.add": {
@@ -433,6 +490,9 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "optional": [
             ("size", "number"),
             ("type", "string"),
+            ("load", "boolean"),    # alternative to type
+            ("store", "boolean"),   # alternative to type
+            ("stop", "boolean"),
             ("condition", "string"),
         ],
     },
@@ -488,21 +548,16 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             ("mode", "string"),
         ],
         "optional": [
-            ("start1", "any"),
-            ("end1", "any"),
-            ("start2", "any"),
+            # mode "ranges"
+            ("range1_start", "any"),
+            ("range1_end", "any"),
+            ("range2_start", "any"),
+            # mode "snapshot"
             ("snapshot_name", "string"),
             ("start", "any"),
             ("end", "any"),
-        ],
-    },
-    # NOTE: tools/list says empty schema, but handler accepts optional params
-    "vice.memory.map": {
-        "required": [],
-        "optional": [
-            ("start", "any"),
-            ("end", "any"),
-            ("granularity", "number"),
+            # both
+            ("max_differences", "number"),
         ],
     },
     "vice.checkpoint.group.create": {
@@ -531,61 +586,16 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "required": [],
         "optional": [],
     },
-    "vice.checkpoint.set_auto_snapshot": {
-        "required": [
-            ("checkpoint_id", "number"),
-            ("snapshot_prefix", "string"),
-        ],
-        "optional": [
-            ("max_snapshots", "number"),
-            ("include_disks", "boolean"),
-        ],
-    },
-    "vice.checkpoint.clear_auto_snapshot": {
-        "required": [
-            ("checkpoint_id", "number"),
-        ],
-        "optional": [],
-    },
-    "vice.trace.start": {
-        "required": [
-            ("output_file", "string"),
-        ],
-        "optional": [
-            ("pc_filter_start", "any"),
-            ("pc_filter_end", "any"),
-            ("max_instructions", "number"),
-            ("include_registers", "boolean"),
-        ],
-    },
-    "vice.trace.stop": {
-        "required": [
-            ("trace_id", "string"),
-        ],
-        "optional": [],
-    },
-    "vice.interrupt.log.start": {
+    "vice.machine.config.get": {
         "required": [],
-        "optional": [
-            ("types", "array"),
-            ("max_entries", "number"),
-        ],
+        "optional": [],
     },
-    "vice.interrupt.log.stop": {
+    "vice.machine.config.set": {
         "required": [
-            ("log_id", "string"),
+            ("resources", "object"),
         ],
         "optional": [],
     },
-    "vice.interrupt.log.read": {
-        "required": [
-            ("log_id", "string"),
-        ],
-        "optional": [
-            ("since_index", "number"),
-        ],
-    },
-    # NOTE: tools/list says empty schema, but handler requires sprite_number
     "vice.sprite.inspect": {
         "required": [
             ("sprite_number", "number"),
@@ -940,6 +950,8 @@ class ViceMCPClient:
 
         1. Try MCP protocol path (tools/call wrapper).
         2. On protocol-level error (-32xxx), retry via direct HTTP.
+           Parse error, invalid request and invalid params fail at once;
+           method not found fails at once on the direct path.
         3. On connection error, retry with exponential back-off.
         4. On timeout, retry with increased timeout.
         """
@@ -987,6 +999,10 @@ class ViceMCPClient:
                     exc.code,
                     exc,
                 )
+                if exc.code in _FATAL_ERROR_CODES or (
+                    fallback_used and exc.code == JSONRPC_METHOD_NOT_FOUND
+                ):
+                    break
                 # Switch to direct fallback path on next retry
                 if not fallback_used:
                     fallback_used = True
@@ -996,15 +1012,15 @@ class ViceMCPClient:
                 if attempt < self.max_retries:
                     time.sleep(self.retry_delay * (2 ** attempt))
 
-            except ViceMCPToolError:
+            except ViceMCPToolError as exc:
                 # Tool-level errors are not retriable -- propagate immediately
                 elapsed = (time.monotonic() - start) * 1000
                 self.monitor.record(
                     tool=tool_name,
                     duration_ms=elapsed,
                     success=False,
-                    error=str(last_error) if last_error else None,
-                    error_code=getattr(last_error, "code", None),
+                    error=str(exc),
+                    error_code=exc.code,
                     retry_count=attempt,
                     fallback_used=fallback_used,
                 )
@@ -1085,9 +1101,7 @@ class ViceMCPClient:
         ViceMCPToolError
             If the server returns a tool-level error.
         ViceMCPConnectionError
-            If all connection attempts fail.
-        ViceMCPTimeoutError
-            If all attempts time out.
+            If all connection attempts fail or time out.
         """
         if self.validate:
             errors = validate_params(tool_name, kwargs)
@@ -1135,8 +1149,21 @@ class ViceMCPClient:
         if count != 1:
             args["count"] = count
         if step_over:
-            args["step_over"] = step_over
+            args["stepOver"] = step_over
         return self.call("vice.execution.step", **args)
+
+    def frame_advance(self, frames: Optional[int] = None) -> Any:
+        """Run whole frames from a stopped machine, then stop again.
+
+        Parameters
+        ----------
+        frames : int, optional
+            Frames to run, 1-1000 (server default 1).
+        """
+        args: Dict[str, Any] = {}
+        if frames is not None:
+            args["frames"] = frames
+        return self.call("vice.frame.advance", **args)
 
     # -- Registers ----------------------------------------------------------
 
@@ -1150,7 +1177,8 @@ class ViceMCPClient:
         Parameters
         ----------
         register : str
-            Register name (e.g. "A", "X", "Y", "SP", "PC", "FL").
+            Register name, upper case: "PC", "A", "X", "Y", "SP", or a
+            flag "N", "V", "B", "D", "I", "Z", "C".
         value : int
             New value for the register.
         """
@@ -1162,7 +1190,8 @@ class ViceMCPClient:
         self,
         address: Union[int, str],
         size: int,
-        bank: Optional[str] = None,
+        bank: Optional[Union[str, int]] = None,
+        encoding: Optional[str] = None,
     ) -> Any:
         """Read a range of memory bytes.
 
@@ -1172,12 +1201,16 @@ class ViceMCPClient:
             Start address (number, "$hex", or symbol name).
         size : int
             Number of bytes to read.
-        bank : str, optional
-            Memory bank name (e.g. "cpu", "ram", "rom", "io").
+        bank : str or int, optional
+            Memory bank name (e.g. "cpu", "ram", "rom", "io") or number.
+        encoding : str, optional
+            "array" (default) or "hex".
         """
         args: Dict[str, Any] = {"address": address, "size": size}
         if bank is not None:
             args["bank"] = bank
+        if encoding is not None:
+            args["encoding"] = encoding
         return self.call("vice.memory.read", **args)
 
     def memory_write(
@@ -1255,44 +1288,48 @@ class ViceMCPClient:
             "vice.memory.fill", start=start, end=end, pattern=list(pattern)
         )
 
-    def memory_compare(self, mode: str, **kwargs: Any) -> Any:
-        """Compare memory regions or memory vs. snapshot.
+    def memory_compare(
+        self,
+        mode: str,
+        range1_start: Optional[Union[int, str]] = None,
+        range1_end: Optional[Union[int, str]] = None,
+        range2_start: Optional[Union[int, str]] = None,
+        snapshot_name: Optional[str] = None,
+        start: Optional[Union[int, str]] = None,
+        end: Optional[Union[int, str]] = None,
+        max_differences: Optional[int] = None,
+    ) -> Any:
+        """Compare two memory ranges, or memory against a saved snapshot.
 
         Parameters
         ----------
         mode : str
-            Comparison mode (e.g. "regions", "snapshot").
-        **kwargs
-            Additional parameters depending on mode (start1, end1, start2,
-            snapshot_name, start, end).
+            "ranges" (needs range1_start, range1_end, range2_start) or
+            "snapshot" (needs snapshot_name, start, end).
+        range1_start, range1_end : int or str, optional
+            First range, inclusive.
+        range2_start : int or str, optional
+            Start of the second range; it is as long as the first.
+        snapshot_name : str, optional
+            Name of a snapshot saved with snapshot_save.
+        start, end : int or str, optional
+            Range to compare against the snapshot, inclusive.
+        max_differences : int, optional
+            Differences to list (server default 100, clamped to 1-10000).
         """
-        return self.call("vice.memory.compare", mode=mode, **kwargs)
-
-    def memory_map(
-        self,
-        start: Optional[Union[int, str]] = None,
-        end: Optional[Union[int, str]] = None,
-        granularity: Optional[int] = None,
-    ) -> Any:
-        """Get memory map showing ROM/RAM/IO regions.
-
-        Parameters
-        ----------
-        start : int or str, optional
-            Start address (default 0x0000).
-        end : int or str, optional
-            End address (default 0xFFFF).
-        granularity : int, optional
-            Granularity of the map in bytes.
-        """
-        args: Dict[str, Any] = {}
-        if start is not None:
-            args["start"] = start
-        if end is not None:
-            args["end"] = end
-        if granularity is not None:
-            args["granularity"] = granularity
-        return self.call("vice.memory.map", **args)
+        args: Dict[str, Any] = {"mode": mode}
+        for key, value in (
+            ("range1_start", range1_start),
+            ("range1_end", range1_end),
+            ("range2_start", range2_start),
+            ("snapshot_name", snapshot_name),
+            ("start", start),
+            ("end", end),
+            ("max_differences", max_differences),
+        ):
+            if value is not None:
+                args[key] = value
+        return self.call("vice.memory.compare", **args)
 
     # -- Checkpoints / Breakpoints ------------------------------------------
 
@@ -1303,7 +1340,7 @@ class ViceMCPClient:
         stop: bool = True,
         load: bool = False,
         store: bool = False,
-        exec_: bool = True,
+        exec_: Optional[bool] = None,
     ) -> Any:
         """Add a checkpoint (breakpoint / watchpoint).
 
@@ -1319,8 +1356,10 @@ class ViceMCPClient:
             Trigger on memory load (default False).
         store : bool
             Trigger on memory store (default False).
-        exec_ : bool
-            Trigger on execution (default True).
+        exec_ : bool, optional
+            Trigger on execution. Unset leaves it to the server, which
+            makes an exec checkpoint only when neither load nor store is
+            set; pass True with load/store for a combined checkpoint.
         """
         args: Dict[str, Any] = {"start": start}
         if end is not None:
@@ -1331,7 +1370,7 @@ class ViceMCPClient:
             args["load"] = load
         if store:
             args["store"] = store
-        if not exec_:
+        if exec_ is not None:
             args["exec"] = exec_
         return self.call("vice.checkpoint.add", **args)
 
@@ -1458,49 +1497,6 @@ class ViceMCPClient:
         """List all checkpoint groups."""
         return self.call("vice.checkpoint.group.list")
 
-    def checkpoint_set_auto_snapshot(
-        self,
-        checkpoint_id: int,
-        snapshot_prefix: str,
-        max_snapshots: Optional[int] = None,
-        include_disks: Optional[bool] = None,
-    ) -> Any:
-        """Configure automatic snapshotting when a checkpoint is hit.
-
-        Parameters
-        ----------
-        checkpoint_id : int
-            Checkpoint ID.
-        snapshot_prefix : str
-            Filename prefix for snapshots.
-        max_snapshots : int, optional
-            Ring buffer size (default 10).
-        include_disks : bool, optional
-            Include disk state in snapshots.
-        """
-        args: Dict[str, Any] = {
-            "checkpoint_id": checkpoint_id,
-            "snapshot_prefix": snapshot_prefix,
-        }
-        if max_snapshots is not None:
-            args["max_snapshots"] = max_snapshots
-        if include_disks is not None:
-            args["include_disks"] = include_disks
-        return self.call("vice.checkpoint.set_auto_snapshot", **args)
-
-    def checkpoint_clear_auto_snapshot(self, checkpoint_id: int) -> Any:
-        """Remove auto-snapshot configuration for a checkpoint.
-
-        Parameters
-        ----------
-        checkpoint_id : int
-            Checkpoint ID.
-        """
-        return self.call(
-            "vice.checkpoint.clear_auto_snapshot",
-            checkpoint_id=checkpoint_id,
-        )
-
     # -- Sprites ------------------------------------------------------------
 
     def sprite_get(self, sprite: Optional[int] = None) -> Any:
@@ -1516,18 +1512,49 @@ class ViceMCPClient:
             args["sprite"] = sprite
         return self.call("vice.sprite.get", **args)
 
-    def sprite_set(self, sprite: int, **kwargs: Any) -> Any:
-        """Set sprite properties.
+    def sprite_set(
+        self,
+        sprite: int,
+        enabled: Optional[bool] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        color: Optional[int] = None,
+        multicolor: Optional[bool] = None,
+        expand_x: Optional[bool] = None,
+        expand_y: Optional[bool] = None,
+        priority_foreground: Optional[bool] = None,
+    ) -> Any:
+        """Set sprite properties; unset ones keep their current value.
 
         Parameters
         ----------
         sprite : int
             Sprite number (0-7).
-        **kwargs
-            Properties to set: enabled, x, y, color, multicolor,
-            expand_x, expand_y, priority, multicolor0, multicolor1, pointer.
+        enabled, multicolor, expand_x, expand_y : bool, optional
+            Per-sprite VIC-II register bits.
+        x : int, optional
+            X position (0-511).
+        y : int, optional
+            Y position (0-255).
+        color : int, optional
+            Sprite color (0-15; 0-255 on the DTV).
+        priority_foreground : bool, optional
+            True draws the sprite in front of the background.
         """
-        return self.call("vice.sprite.set", sprite=sprite, **kwargs)
+        args: Dict[str, Any] = {"sprite": sprite}
+        for key, value in (
+            ("enabled", enabled),
+            ("x", x),
+            ("y", y),
+            ("color", color),
+            ("multicolor", multicolor),
+            ("expand_x", expand_x),
+            ("expand_y", expand_y),
+            ("priority_foreground", priority_foreground),
+        ):
+            if value is not None:
+                args[key] = value
+        return self.call("vice.sprite.set", **args)
 
     def sprite_inspect(
         self,
@@ -1537,20 +1564,15 @@ class ViceMCPClient:
         """Visual representation of sprite bitmap data.
 
         Reads sprite pointer, data, and multicolor settings to render
-        ASCII art, binary, or base64-encoded PNG.
+        ASCII art or binary.
 
         Parameters
         ----------
         sprite_number : int
             Sprite number (0-7).
         format : str, optional
-            Output format: "ascii" (default), "binary", or "png_base64".
-
-        Note
-        ----
-        The MCP server's tools/list incorrectly reports this tool as having
-        no parameters.  The C handler requires ``sprite_number`` and
-        optionally accepts ``format``.
+            Output format: "ascii" (default) or "binary". "png_base64" is
+            accepted but the server returns a placeholder string.
         """
         args: Dict[str, Any] = {"sprite_number": sprite_number}
         if format is not None:
@@ -1564,7 +1586,9 @@ class ViceMCPClient:
         return self.call("vice.vicii.get_state")
 
     def vicii_set_state(
-        self, registers: Optional[Sequence[Dict[str, int]]] = None
+        self,
+        registers: Optional[Sequence[Dict[str, int]]] = None,
+        **named: int,
     ) -> Any:
         """Set VIC-II registers.
 
@@ -1572,13 +1596,12 @@ class ViceMCPClient:
         ----------
         registers : list of dict, optional
             Each dict has ``offset`` and ``value`` keys.
-
-        Note
-        ----
-        The MCP server's tools/list incorrectly reports this tool as having
-        no parameters.  The C handler accepts a ``registers`` array.
+        **named
+            border_color, background_color, background_color_1..3,
+            control_1, control_2, memory_pointers, irq_raster_line,
+            interrupt_enable.
         """
-        args: Dict[str, Any] = {}
+        args: Dict[str, Any] = dict(named)
         if registers is not None:
             args["registers"] = list(registers)
         return self.call("vice.vicii.set_state", **args)
@@ -1588,7 +1611,9 @@ class ViceMCPClient:
         return self.call("vice.sid.get_state")
 
     def sid_set_state(
-        self, registers: Optional[Sequence[Dict[str, int]]] = None
+        self,
+        registers: Optional[Sequence[Dict[str, int]]] = None,
+        **named: Any,
     ) -> Any:
         """Set SID registers.
 
@@ -1596,20 +1621,28 @@ class ViceMCPClient:
         ----------
         registers : list of dict, optional
             Each dict has ``offset`` and ``value`` keys.
-
-        Note
-        ----
-        The MCP server's tools/list incorrectly reports this tool as having
-        no parameters.
+        **named
+            voice0, voice1, voice2 (dicts of frequency, pulse_width,
+            control, attack_decay, sustain_release), filter_cutoff,
+            filter_resonance, filter_mode_volume.
         """
-        args: Dict[str, Any] = {}
+        args: Dict[str, Any] = dict(named)
         if registers is not None:
             args["registers"] = list(registers)
         return self.call("vice.sid.set_state", **args)
 
-    def cia_get_state(self) -> Any:
-        """Get CIA chip state (timers, ports)."""
-        return self.call("vice.cia.get_state")
+    def cia_get_state(self, cia: Optional[int] = None) -> Any:
+        """Get CIA chip state (timers, ports).
+
+        Parameters
+        ----------
+        cia : int, optional
+            1 or 2; both when unset.
+        """
+        args: Dict[str, Any] = {}
+        if cia is not None:
+            args["cia"] = cia
+        return self.call("vice.cia.get_state", **args)
 
     def cia_set_state(self, **kwargs: Any) -> Any:
         """Set CIA registers.
@@ -1618,18 +1651,18 @@ class ViceMCPClient:
         ----------
         **kwargs
             ``cia1_registers`` and/or ``cia2_registers``, each a list of
-            dicts with ``offset`` and ``value`` keys.
-
-        Note
-        ----
-        The MCP server's tools/list incorrectly reports this tool as having
-        no parameters.
+            dicts with ``offset`` and ``value`` keys; and/or ``cia1`` /
+            ``cia2`` dicts of port_a, port_b, ddr_a, ddr_b, timer_a_low,
+            timer_a_high, timer_b_low, timer_b_high, interrupt_control,
+            control_a, control_b.
         """
         return self.call("vice.cia.set_state", **kwargs)
 
     # -- Disk Management ----------------------------------------------------
 
-    def disk_attach(self, unit: int, path: str) -> Any:
+    def disk_attach(
+        self, unit: int, path: str, drive: Optional[int] = None
+    ) -> Any:
         """Attach a disk image to a drive unit.
 
         Parameters
@@ -1638,18 +1671,28 @@ class ViceMCPClient:
             Drive unit number (8-11).
         path : str
             Path to the disk image file.
+        drive : int, optional
+            Drive 0 (default) or 1 of a dual-drive unit.
         """
-        return self.call("vice.disk.attach", unit=unit, path=path)
+        args: Dict[str, Any] = {"unit": unit, "path": path}
+        if drive is not None:
+            args["drive"] = drive
+        return self.call("vice.disk.attach", **args)
 
-    def disk_detach(self, unit: int) -> Any:
+    def disk_detach(self, unit: int, drive: Optional[int] = None) -> Any:
         """Detach disk image from a drive unit.
 
         Parameters
         ----------
         unit : int
             Drive unit number (8-11).
+        drive : int, optional
+            Drive 0 (default) or 1 of a dual-drive unit.
         """
-        return self.call("vice.disk.detach", unit=unit)
+        args: Dict[str, Any] = {"unit": unit}
+        if drive is not None:
+            args["drive"] = drive
+        return self.call("vice.disk.detach", **args)
 
     def disk_list(self, unit: int) -> Any:
         """List directory contents of a disk.
@@ -1731,6 +1774,20 @@ class ViceMCPClient:
             args["run_after"] = run_after
         return self.call("vice.machine.reset", **args)
 
+    def machine_config_get(self) -> Any:
+        """Get machine type, chips, memory map and settable resources."""
+        return self.call("vice.machine.config.get")
+
+    def machine_config_set(self, resources: Dict[str, int]) -> Any:
+        """Set whitelisted machine resources.
+
+        Parameters
+        ----------
+        resources : dict
+            Resource name to integer value, e.g. ``{"WarpMode": 1}``.
+        """
+        return self.call("vice.machine.config.set", resources=dict(resources))
+
     # -- Display ------------------------------------------------------------
 
     def display_screenshot(
@@ -1784,9 +1841,19 @@ class ViceMCPClient:
             args["petscii_upper"] = petscii_upper
         return self.call("vice.keyboard.type", **args)
 
+    def keyboard_petscii(self, data: Sequence[int]) -> Any:
+        """Feed exact PETSCII bytes into the KERNAL keyboard buffer.
+
+        Parameters
+        ----------
+        data : bytes or list of int
+            1-4096 byte values, each 1-255 (e.g. ``b"RUN\\r"``).
+        """
+        return self.call("vice.keyboard.petscii", data=list(data))
+
     def keyboard_key_press(
         self,
-        key: str,
+        key: Union[str, int],
         modifiers: Optional[Sequence[str]] = None,
         hold_frames: Optional[int] = None,
         hold_ms: Optional[int] = None,
@@ -1795,8 +1862,8 @@ class ViceMCPClient:
 
         Parameters
         ----------
-        key : str
-            Key name (e.g. "Return", "Space", "a").
+        key : str or int
+            Key name (e.g. "Return", "Space", "a") or key code.
         modifiers : list of str, optional
             Modifier keys (e.g. ["shift", "control"]).
         hold_frames : int, optional
@@ -1815,7 +1882,7 @@ class ViceMCPClient:
 
     def keyboard_key_release(
         self,
-        key: str,
+        key: Union[str, int],
         modifiers: Optional[Sequence[str]] = None,
     ) -> Any:
         """Release a specific key.
@@ -1839,11 +1906,6 @@ class ViceMCPClient:
         ----------
         pressed : bool
             True to press, False to release (default True).
-
-        Note
-        ----
-        The MCP server's tools/list incorrectly reports this tool as having
-        no parameters.  The C handler accepts an optional ``pressed`` boolean.
         """
         args: Dict[str, Any] = {}
         if not pressed:
@@ -1894,12 +1956,54 @@ class ViceMCPClient:
             args["hold_ms"] = hold_ms
         return self.call("vice.keyboard.matrix", **args)
 
+    def keyboard_chord(
+        self,
+        keys: Sequence[Union[str, Dict[str, Any]]],
+        hold_frames: Optional[int] = None,
+        hold_ms: Optional[int] = None,
+    ) -> Any:
+        """Press several matrix keys together, then release them all.
+
+        Parameters
+        ----------
+        keys : list
+            1-16 keys, each a key name ("LSHIFT", "A"), ``{"key": name}``
+            or ``{"row": r, "col": c}`` (0-7).
+        hold_frames : int, optional
+            Frames to hold, 1-300 (server default 3).
+        hold_ms : int, optional
+            Milliseconds to hold, 1-5000; overrides hold_frames.
+        """
+        args: Dict[str, Any] = {"keys": list(keys)}
+        if hold_frames is not None:
+            args["hold_frames"] = hold_frames
+        if hold_ms is not None:
+            args["hold_ms"] = hold_ms
+        return self.call("vice.keyboard.chord", **args)
+
     # -- Joystick -----------------------------------------------------------
+
+    @staticmethod
+    def _joystick_args(
+        port: Optional[int],
+        direction: Optional[Union[str, Sequence[str]]],
+        fire: Optional[bool],
+    ) -> Dict[str, Any]:
+        args: Dict[str, Any] = {}
+        if port is not None:
+            args["port"] = port
+        if direction is not None:
+            args["direction"] = (
+                direction if isinstance(direction, str) else list(direction)
+            )
+        if fire is not None:
+            args["fire"] = fire
+        return args
 
     def joystick_set(
         self,
         port: Optional[int] = None,
-        direction: Optional[str] = None,
+        direction: Optional[Union[str, Sequence[str]]] = None,
         fire: Optional[bool] = None,
     ) -> Any:
         """Set joystick state.
@@ -1907,20 +2011,42 @@ class ViceMCPClient:
         Parameters
         ----------
         port : int, optional
-            Joystick port (1 or 2).
-        direction : str, optional
-            Direction (e.g. "up", "down", "left", "right", "none").
+            Joystick port, 1 or 2 (server default 1).
+        direction : str or list of str, optional
+            "up", "down", "left", "right", "none"/"center", or a list
+            such as ``["up", "left"]`` for a diagonal.
         fire : bool, optional
             Fire button state.
         """
-        args: Dict[str, Any] = {}
-        if port is not None:
-            args["port"] = port
-        if direction is not None:
-            args["direction"] = direction
-        if fire is not None:
-            args["fire"] = fire
-        return self.call("vice.joystick.set", **args)
+        return self.call(
+            "vice.joystick.set", **self._joystick_args(port, direction, fire)
+        )
+
+    def joystick_tap(
+        self,
+        port: Optional[int] = None,
+        direction: Optional[Union[str, Sequence[str]]] = None,
+        fire: Optional[bool] = None,
+        duration_frames: Optional[int] = None,
+        duration_ms: Optional[int] = None,
+    ) -> Any:
+        """Hold a joystick state for a fixed time, then center it.
+
+        Parameters
+        ----------
+        port, direction, fire
+            As for :meth:`joystick_set`.
+        duration_frames : int, optional
+            Frames to hold, 1-300 (server default 3).
+        duration_ms : int, optional
+            Milliseconds to hold, 1-5000; overrides duration_frames.
+        """
+        args = self._joystick_args(port, direction, fire)
+        if duration_frames is not None:
+            args["duration_frames"] = duration_frames
+        if duration_ms is not None:
+            args["duration_ms"] = duration_ms
+        return self.call("vice.joystick.tap", **args)
 
     def paddle_set(self, port: int, x: int, y: int) -> Any:
         """Set X and Y paddle positions (0-255) on control port 1 or 2."""
@@ -1964,7 +2090,7 @@ class ViceMCPClient:
         path : str
             Path to the symbol file.
         format : str, optional
-            Format hint: "vice", "kickassembler", or "simple".
+            "auto" (default), "kickasm", "vice", or "simple".
         """
         args: Dict[str, Any] = {"path": path}
         if format is not None:
@@ -1974,7 +2100,7 @@ class ViceMCPClient:
     def symbols_lookup(
         self,
         name: Optional[str] = None,
-        address: Optional[Union[int, str]] = None,
+        address: Optional[int] = None,
     ) -> Any:
         """Look up a symbol by name or address.
 
@@ -1982,8 +2108,8 @@ class ViceMCPClient:
         ----------
         name : str, optional
             Symbol name to look up.
-        address : int or str, optional
-            Address to find symbols for.
+        address : int, optional
+            Address to find symbols for (the server accepts numbers only).
         """
         args: Dict[str, Any] = {}
         if name is not None:
@@ -1998,6 +2124,7 @@ class ViceMCPClient:
         size: Optional[int] = None,
         type: Optional[str] = None,
         condition: Optional[str] = None,
+        stop: Optional[bool] = None,
     ) -> Any:
         """Add a memory watchpoint.
 
@@ -2010,9 +2137,11 @@ class ViceMCPClient:
         size : int, optional
             Number of bytes to watch.
         type : str, optional
-            Watch type (e.g. "load", "store", "both").
+            Watch type: "read", "write" (default), or "both".
         condition : str, optional
             Condition expression.
+        stop : bool, optional
+            False counts hits without stopping (server default True).
         """
         args: Dict[str, Any] = {"address": address}
         if size is not None:
@@ -2021,6 +2150,8 @@ class ViceMCPClient:
             args["type"] = type
         if condition is not None:
             args["condition"] = condition
+        if stop is not None:
+            args["stop"] = stop
         return self.call("vice.watch.add", **args)
 
     def backtrace(self, depth: Optional[int] = None) -> Any:
@@ -2110,88 +2241,9 @@ class ViceMCPClient:
         Parameters
         ----------
         action : str
-            One of "start", "stop", "reset", or "read".
+            One of "reset", "read", or "reset_and_read".
         """
         return self.call("vice.cycles.stopwatch", action=action)
-
-    # -- Execution Tracing --------------------------------------------------
-
-    def trace_start(self, output_file: str, **kwargs: Any) -> Any:
-        """Start an execution trace.
-
-        Parameters
-        ----------
-        output_file : str
-            Path to write trace output.
-        **kwargs
-            Optional: pc_filter_start, pc_filter_end, max_instructions,
-            include_registers.
-        """
-        return self.call(
-            "vice.trace.start", output_file=output_file, **kwargs
-        )
-
-    def trace_stop(self, trace_id: str) -> Any:
-        """Stop an active execution trace.
-
-        Parameters
-        ----------
-        trace_id : str
-            Trace identifier returned by trace_start.
-        """
-        return self.call("vice.trace.stop", trace_id=trace_id)
-
-    # -- Interrupt Logging --------------------------------------------------
-
-    def interrupt_log_start(
-        self,
-        types: Optional[Sequence[str]] = None,
-        max_entries: Optional[int] = None,
-    ) -> Any:
-        """Start logging interrupts.
-
-        Parameters
-        ----------
-        types : list of str, optional
-            Interrupt types to log (e.g. ["irq", "nmi"]).
-        max_entries : int, optional
-            Maximum log entries before wrap-around.
-        """
-        args: Dict[str, Any] = {}
-        if types is not None:
-            args["types"] = list(types)
-        if max_entries is not None:
-            args["max_entries"] = max_entries
-        return self.call("vice.interrupt.log.start", **args)
-
-    def interrupt_log_stop(self, log_id: str) -> Any:
-        """Stop interrupt logging.
-
-        Parameters
-        ----------
-        log_id : str
-            Log identifier returned by interrupt_log_start.
-        """
-        return self.call("vice.interrupt.log.stop", log_id=log_id)
-
-    def interrupt_log_read(
-        self,
-        log_id: str,
-        since_index: Optional[int] = None,
-    ) -> Any:
-        """Read interrupt log entries.
-
-        Parameters
-        ----------
-        log_id : str
-            Log identifier.
-        since_index : int, optional
-            Only return entries after this index.
-        """
-        args: Dict[str, Any] = {"log_id": log_id}
-        if since_index is not None:
-            args["since_index"] = since_index
-        return self.call("vice.interrupt.log.read", **args)
 
 
 # ---------------------------------------------------------------------------
@@ -2203,7 +2255,7 @@ def connect(
     port: int = 6510,
     **kwargs: Any,
 ) -> ViceMCPClient:
-    """Create a connected ViceMCPClient.
+    """Create a ViceMCPClient (no connection is made until the first call).
 
     Parameters
     ----------
