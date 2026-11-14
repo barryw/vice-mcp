@@ -21,6 +21,8 @@ steps:
   - name: validate-commits
     image: ghcr.io/cocogitto/cog:latest
     commands:
+      - git config user.name "Woodpecker CI"
+      - git config user.email "ci@walkerheavy.com"
       - |
         VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
         for commit in $$(git rev-list --first-parent --no-merges "$${VERSION}..HEAD"); do
