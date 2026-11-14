@@ -115,6 +115,8 @@ const char *machine_get_name(void)
 static void test_memory_init(void);
 static uint8_t test_memory_buffer[65536];
 static int test_memory_buffer_initialized = 0;
+static uint8_t test_io_memory_buffer[0x1000];
+static int test_io_memory_enabled = 0;
 
 /* Memory stubs */
 uint8_t mem_read(uint16_t addr)
@@ -160,8 +162,10 @@ int mem_bank_from_name(const char *name)
 
 uint8_t mem_bank_peek(int bank, uint16_t addr, void *context)
 {
-    (void)bank;
     (void)context;
+    if (bank == 3 && test_io_memory_enabled && addr >= 0xD000 && addr < 0xE000) {
+        return test_io_memory_buffer[addr - 0xD000];
+    }
     if (!test_memory_buffer_initialized) {
         test_memory_init();
     }
@@ -295,6 +299,25 @@ void joystick_set_value_absolute_now(unsigned int joyport, uint16_t value)
     (void)joyport;
     (void)value;
 }
+
+static int paddle_set_calls;
+static int paddle_port;
+static uint8_t paddle_x, paddle_y;
+
+int joyport_set_paddle_values(int port, uint8_t x, uint8_t y)
+{
+    paddle_set_calls++;
+    paddle_port = port;
+    paddle_x = x;
+    paddle_y = y;
+    return 0;
+}
+
+void test_paddle_reset(void) { paddle_set_calls = 0; }
+int test_paddle_set_calls(void) { return paddle_set_calls; }
+int test_paddle_port(void) { return paddle_port; }
+int test_paddle_x(void) { return paddle_x; }
+int test_paddle_y(void) { return paddle_y; }
 
 /* Phase 2.4: Disk management stubs */
 int file_system_attach_disk(unsigned int unit, unsigned int drive, const char *filename)
@@ -1019,11 +1042,21 @@ void test_memory_set_byte(uint16_t addr, uint8_t value)
     test_memory_buffer[addr] = value;
 }
 
+void test_io_set_byte(uint16_t addr, uint8_t value)
+{
+    if (!test_io_memory_enabled) {
+        memset(test_io_memory_buffer, 0, sizeof(test_io_memory_buffer));
+        test_io_memory_enabled = 1;
+    }
+    test_io_memory_buffer[addr - 0xD000] = value;
+}
+
 /* Clear test memory to all zeros */
 void test_memory_clear(void)
 {
     memset(test_memory_buffer, 0, sizeof(test_memory_buffer));
     test_memory_buffer_initialized = 1;
+    test_io_memory_enabled = 0;
 }
 
 /* Get a single byte from test memory */

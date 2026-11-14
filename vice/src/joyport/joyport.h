@@ -386,6 +386,7 @@ uint8_t read_joyport_dig(int port);
 void store_joyport_dig(int port, uint8_t val, uint8_t mask);
 uint8_t read_joyport_potx(void);
 uint8_t read_joyport_poty(void);
+int joyport_set_paddle_values(int port, uint8_t x, uint8_t y);
 
 void set_joyport_pot_mask(int mask);
 CLOCK get_joyport_pot_mask_clk(void); /* get time since last port switch */

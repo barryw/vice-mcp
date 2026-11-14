@@ -91,6 +91,10 @@ static int joy_port[JOYPORT_MAX_PORTS];
 static joyport_port_props_t port_props[JOYPORT_MAX_PORTS];
 static int pot_port_mask = 1;
 static CLOCK pot_port_mask_clk = 0; /* time when the mask changed */
+static struct {
+    int active;
+    uint8_t x, y;
+} paddle_values[JOYPORT_MAX_PORTS];
 
 static uint8_t joyport_dig_stored[JOYPORT_MAX_PORTS];
 
@@ -139,6 +143,17 @@ static void find_pot_ports(void)
     }
 }
 
+int joyport_set_paddle_values(int port, uint8_t x, uint8_t y)
+{
+    if (port < JOYPORT_1 || port > JOYPORT_2 || !port_props[port].has_pot) {
+        return -1;
+    }
+    paddle_values[port].x = x;
+    paddle_values[port].y = y;
+    paddle_values[port].active = 1;
+    return 0;
+}
+
 static const char *res2text(int joyport_id)
 {
     int i;
@@ -180,12 +195,14 @@ void set_joyport_pot_mask(int mask)
                 if (joyport_device[id1].read_poty) {
                     val1y = joyport_device[id1].read_poty(pot_port1);
                 }
-                /* glitches will only be produced when POT is not "open" */
-                /* FIXME: this will always cause glitches on both axis - even
-                   when one axis is open */
-                if ((val1x != 255) || (val1y != 255)) {
-                    testmask |= 0x01;
-                }
+            }
+            if (paddle_values[pot_port1].active) {
+                val1x = paddle_values[pot_port1].x;
+                val1y = paddle_values[pot_port1].y;
+            }
+            /* FIXME: glitches also occur on an open axis if the other is connected. */
+            if (val1x != 255 || val1y != 255) {
+                testmask |= 0x01;
             }
         }
         if (pot_port2 != POT_PORT_NOT_FOUND) {
@@ -198,12 +215,13 @@ void set_joyport_pot_mask(int mask)
                 if (joyport_device[id2].read_poty) {
                     val2y = joyport_device[id2].read_poty(pot_port2);
                 }
-                /* glitches will only be produced when POT is not "open" */
-                /* FIXME: this will always cause glitches on both axis - even
-                   when one axis is open */
-                if ((val2x != 255) || (val2y != 255)) {
-                    testmask |= 0x02;
-                }
+            }
+            if (paddle_values[pot_port2].active) {
+                val2x = paddle_values[pot_port2].x;
+                val2y = paddle_values[pot_port2].y;
+            }
+            if (val2x != 255 || val2y != 255) {
+                testmask |= 0x02;
             }
         }
         /* printf("ports %d,%d ids: %d,%d testmask:%d val: %3d,%3d %3d,%3d\n",
@@ -531,6 +549,13 @@ uint8_t read_joyport_potx(void)
         ret2 = tmp;
     }
 
+    if (pot_port1 != POT_PORT_NOT_FOUND && paddle_values[pot_port1].active) {
+        ret1 = paddle_values[pot_port1].x;
+    }
+    if (pot_port2 != POT_PORT_NOT_FOUND && paddle_values[pot_port2].active) {
+        ret2 = paddle_values[pot_port2].x;
+    }
+
     switch (pot_port_mask) {
         case 1: /* port 1 */
             return ret1;
@@ -591,6 +616,13 @@ uint8_t read_joyport_poty(void)
         int tmp = ret1;
         ret1 = ret2;
         ret2 = tmp;
+    }
+
+    if (pot_port1 != POT_PORT_NOT_FOUND && paddle_values[pot_port1].active) {
+        ret1 = paddle_values[pot_port1].y;
+    }
+    if (pot_port2 != POT_PORT_NOT_FOUND && paddle_values[pot_port2].active) {
+        ret2 = paddle_values[pot_port2].y;
     }
 
     switch (pot_port_mask) {

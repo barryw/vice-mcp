@@ -108,6 +108,7 @@ const mcp_tool_t tool_registry[] = {
     { "vice.keyboard.key_release", "Release a specific key", mcp_tool_keyboard_key_release },
     { "vice.keyboard.restore", "Press/release RESTORE key (triggers NMI, not in matrix)", mcp_tool_keyboard_restore },
     { "vice.joystick.set", "Set joystick state", mcp_tool_joystick_set },
+    { "vice.paddle.set", "Set paddle X and Y positions on control port 1 or 2", mcp_tool_paddle_set },
     { "vice.joystick.tap", "Tap joystick direction/fire for a fixed number of frames, then center", mcp_tool_joystick_tap },
 
     /* Phase 4: Advanced Debugging */

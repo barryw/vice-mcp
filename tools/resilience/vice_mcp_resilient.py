@@ -398,6 +398,10 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             ("fire", "boolean"),
         ],
     },
+    "vice.paddle.set": {
+        "required": [("port", "number"), ("x", "number"), ("y", "number")],
+        "optional": [],
+    },
     "vice.disassemble": {
         "required": [
             ("address", "any"),
@@ -1917,6 +1921,10 @@ class ViceMCPClient:
         if fire is not None:
             args["fire"] = fire
         return self.call("vice.joystick.set", **args)
+
+    def paddle_set(self, port: int, x: int, y: int) -> Any:
+        """Set X and Y paddle positions (0-255) on control port 1 or 2."""
+        return self.call("vice.paddle.set", port=port, x=x, y=y)
 
     # -- Advanced Debugging -------------------------------------------------
 

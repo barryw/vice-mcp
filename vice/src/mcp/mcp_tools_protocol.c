@@ -621,6 +621,17 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "duration_ms", mcp_prop_number("Tap duration in milliseconds (1-5000). Overrides duration_frames if both specified"));
             schema = mcp_schema_object(props, NULL);
 
+        } else if (strcmp(name, "vice.paddle.set") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "port", mcp_prop_number("Control port 1 or 2"));
+            cJSON_AddItemToObject(props, "x", mcp_prop_number("Paddle X position 0-255"));
+            cJSON_AddItemToObject(props, "y", mcp_prop_number("Paddle Y position 0-255"));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("port"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("x"));
+            cJSON_AddItemToArray(required, cJSON_CreateString("y"));
+            schema = mcp_schema_object(props, required);
+
         /* Phase 4: Advanced Debugging schemas */
         } else if (strcmp(name, "vice.disassemble") == 0) {
             props = cJSON_CreateObject();

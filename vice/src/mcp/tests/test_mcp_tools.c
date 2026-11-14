@@ -50,6 +50,12 @@ extern cJSON* mcp_tool_keyboard_type(cJSON *params);
 extern cJSON* mcp_tool_keyboard_key_press(cJSON *params);
 extern cJSON* mcp_tool_keyboard_key_release(cJSON *params);
 extern cJSON* mcp_tool_joystick_set(cJSON *params);
+extern cJSON* mcp_tool_paddle_set(cJSON *params);
+extern void test_paddle_reset(void);
+extern int test_paddle_set_calls(void);
+extern int test_paddle_port(void);
+extern int test_paddle_x(void);
+extern int test_paddle_y(void);
 
 /* Test symbol table helpers from vice_stubs.c */
 extern void test_symbol_table_clear(void);
@@ -106,6 +112,7 @@ extern void test_vsync_reset(void);
 /* Test memory helpers from vice_stubs.c */
 extern void test_memory_set(uint16_t addr, const uint8_t *data, size_t len);
 extern void test_memory_set_byte(uint16_t addr, uint8_t value);
+extern void test_io_set_byte(uint16_t addr, uint8_t value);
 extern void test_memory_clear(void);
 extern uint8_t test_memory_get_byte(uint16_t addr);
 
@@ -920,6 +927,51 @@ TEST(joystick_set_dispatch_works)
     ASSERT_NOT_NULL(response);
 
     cJSON_Delete(response);
+}
+
+TEST(paddle_set_validates_and_sets_both_ports)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON *response;
+    int port;
+
+    test_paddle_reset();
+    cJSON_AddNumberToObject(params, "port", 1);
+    cJSON_AddNumberToObject(params, "x", 0);
+    cJSON_AddNumberToObject(params, "y", 128);
+    for (port = 1; port <= 2; port++) {
+        cJSON_SetNumberValue(cJSON_GetObjectItem(params, "port"), port);
+        cJSON_SetNumberValue(cJSON_GetObjectItem(params, "x"), port == 1 ? 0 : 255);
+        response = mcp_tools_dispatch("vice.paddle.set", params);
+        ASSERT_NOT_NULL(response);
+        ASSERT_TRUE(cJSON_GetObjectItem(response, "code") == NULL);
+        ASSERT_INT_EQ(cJSON_GetObjectItem(response, "port")->valueint, port);
+        ASSERT_INT_EQ(test_paddle_port(), port - 1);
+        ASSERT_INT_EQ(test_paddle_x(), port == 1 ? 0 : 255);
+        ASSERT_INT_EQ(test_paddle_y(), 128);
+        cJSON_Delete(response);
+    }
+    ASSERT_INT_EQ(test_paddle_set_calls(), 2);
+
+    cJSON_SetNumberValue(cJSON_GetObjectItem(params, "x"), 256);
+    response = mcp_tool_paddle_set(params);
+    ASSERT_INT_EQ(cJSON_GetObjectItem(response, "code")->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(test_paddle_set_calls(), 2);
+    cJSON_Delete(response);
+
+    cJSON_SetNumberValue(cJSON_GetObjectItem(params, "x"), 12.5);
+    response = mcp_tool_paddle_set(params);
+    ASSERT_INT_EQ(cJSON_GetObjectItem(response, "code")->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(test_paddle_set_calls(), 2);
+    cJSON_Delete(response);
+
+    cJSON_SetNumberValue(cJSON_GetObjectItem(params, "x"), 12);
+    cJSON_SetNumberValue(cJSON_GetObjectItem(params, "port"), 3);
+    response = mcp_tool_paddle_set(params);
+    ASSERT_INT_EQ(cJSON_GetObjectItem(response, "code")->valueint, MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(test_paddle_set_calls(), 2);
+    cJSON_Delete(response);
+    cJSON_Delete(params);
 }
 
 /* ===================================================================
@@ -7682,6 +7734,7 @@ extern cJSON* mcp_tool_machine_config_set(cJSON *params);
 extern cJSON* mcp_tool_vicii_get_state(cJSON *params);
 extern cJSON* mcp_tool_sid_get_state(cJSON *params);
 extern cJSON* mcp_tool_cia_get_state(cJSON *params);
+extern cJSON* mcp_tool_sprite_get(cJSON *params);
 extern cJSON* mcp_tool_tools_list(cJSON *params);
 extern cJSON* mcp_tool_memory_read(cJSON *params);
 
@@ -8664,6 +8717,69 @@ TEST(cia_get_state_reads_registers)
     cJSON_Delete(response);
 }
 
+TEST(chip_state_reads_io_when_cpu_sees_ram)
+{
+    cJSON *response, *item, *voices, *cia, *params;
+
+    test_memory_clear();  /* CPU bank sees zero-filled RAM under I/O */
+    test_io_set_byte(0xD000, 0x45);
+    test_io_set_byte(0xD001, 0x67);
+    test_io_set_byte(0xD011, 0x9B);
+    test_io_set_byte(0xD012, 0x37);
+    test_io_set_byte(0xD015, 0x01);
+    test_io_set_byte(0xD020, 0x0E);
+    test_io_set_byte(0xD027, 0x0A);
+    test_io_set_byte(0xD400, 0x50);
+    test_io_set_byte(0xD401, 0x10);
+    test_io_set_byte(0xDC00, 0xAB);
+    test_io_set_byte(0xDD00, 0xCD);
+
+    response = mcp_tool_vicii_get_state(NULL);
+    ASSERT_NOT_NULL(response);
+    item = cJSON_GetObjectItem(response, "raster_line");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 0x137);
+    item = cJSON_GetObjectItem(response, "border_color");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 0x0E);
+    cJSON_Delete(response);
+
+    params = cJSON_CreateObject();
+    ASSERT_NOT_NULL(params);
+    cJSON_AddNumberToObject(params, "sprite", 0);
+    response = mcp_tool_sprite_get(params);
+    ASSERT_NOT_NULL(response);
+    item = cJSON_GetObjectItem(cJSON_GetObjectItem(response, "sprite_data"), "x");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 0x45);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    response = mcp_tool_sid_get_state(NULL);
+    ASSERT_NOT_NULL(response);
+    voices = cJSON_GetObjectItem(response, "voices");
+    ASSERT_NOT_NULL(voices);
+    item = cJSON_GetObjectItem(cJSON_GetArrayItem(voices, 0), "frequency");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 0x1050);
+    cJSON_Delete(response);
+
+    response = mcp_tool_cia_get_state(NULL);
+    ASSERT_NOT_NULL(response);
+    cia = cJSON_GetObjectItem(response, "cia1");
+    ASSERT_NOT_NULL(cia);
+    item = cJSON_GetObjectItem(cia, "port_a");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 0xAB);
+    cia = cJSON_GetObjectItem(response, "cia2");
+    ASSERT_NOT_NULL(cia);
+    item = cJSON_GetObjectItem(cia, "port_a");
+    ASSERT_NOT_NULL(item);
+    ASSERT_INT_EQ(item->valueint, 0xCD);
+    cJSON_Delete(response);
+    test_memory_clear();
+}
+
 /* --- Watch Overflow Test --- */
 
 TEST(watch_add_rejects_overflow_range)
@@ -8861,7 +8977,6 @@ TEST(sprite_inspect_uses_correct_vic_bank)
 /* --- Re-review round 2 regression tests --- */
 
 /* Additional tool declarations for re-review tests */
-extern cJSON* mcp_tool_sprite_get(cJSON *params);
 extern cJSON* mcp_tool_sprite_set(cJSON *params);
 extern cJSON* mcp_tool_memory_banks(cJSON *params);
 extern cJSON* mcp_tool_vicii_set_state(cJSON *params);
@@ -9046,6 +9161,7 @@ int main(void)
     RUN_TEST(keyboard_key_press_dispatch_works);
     RUN_TEST(keyboard_key_release_dispatch_works);
     RUN_TEST(joystick_set_dispatch_works);
+    RUN_TEST(paddle_set_validates_and_sets_both_ports);
 
     /* Execution control tests */
     RUN_TEST(execution_run_returns_ok);
@@ -9386,6 +9502,7 @@ int main(void)
     RUN_TEST(vicii_get_state_reads_registers);
     RUN_TEST(sid_get_state_reads_voices);
     RUN_TEST(cia_get_state_reads_registers);
+    RUN_TEST(chip_state_reads_io_when_cpu_sees_ram);
     RUN_TEST(watch_add_rejects_overflow_range);
     RUN_TEST(watch_add_load_flag_makes_read_watch);
     RUN_TEST(watch_add_stop_false_counts_without_stopping);
