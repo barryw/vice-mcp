@@ -390,7 +390,7 @@ server (it checks the client's methods and schemas against the C sources):
 pytest tools/tests/test_resilient_client.py -v
 ```
 
-The protocol suite has 371 test cases (163 test methods in 23 test classes
+The protocol suite has 374 test cases (166 test methods in 23 test classes
 plus one module-level test, with parametrized schema checks for every
 advertised tool) covering the JSON-RPC protocol, tool schemas and parameter
 validation against a live VICE:
