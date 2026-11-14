@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v3.14.1](https://github.com/barryw/vice-mcp/compare/eb723e0f2780b62f9fca1e305eb4134bda2a4ba0..v3.14.1) - 2026-11-14
+#### Bug Fixes
+- (**ci**) release upstream integration without rejecting vendor history - ([dd84183](https://github.com/barryw/vice-mcp/commit/dd841832baa88de231ab2ec41e9825f929023419)) - Barry Walker
+
+- - -
+
 ## [v3.14.0](https://github.com/barryw/vice-mcp/compare/998b5a743decae0d689db988162f83dab50e134a..v3.14.0) - 2026-10-29
 #### Features
 - (**mcp**) add paddle position control for both C64 ports - ([998b5a7](https://github.com/barryw/vice-mcp/commit/998b5a743decae0d689db988162f83dab50e134a)) - Barry Walker
