@@ -478,3 +478,21 @@ def test_defaults_send_no_optional_params(server, client):
     assert server.last_call() == ("vice.cia.get_state", {})
     client.vicii_set_state()
     assert server.last_call() == ("vice.vicii.set_state", {})
+
+
+def test_display_tools_send_display(server, client):
+    client.display_screenshot(return_base64=True, display="vdc")
+    assert server.last_call() == ("vice.display.screenshot", {
+        "return_base64": True, "display": "vdc",
+    })
+    client.display_get_dimensions(display="vicii")
+    assert server.last_call() == ("vice.display.get_dimensions", {"display": "vicii"})
+    client.display_get_dimensions()
+    assert server.last_call() == ("vice.display.get_dimensions", {})
+
+
+def test_run_until_sends_cycles(server, client):
+    client.run_until(cycles=20000)
+    assert server.last_call() == ("vice.run_until", {"cycles": 20000})
+    client.run_until("$1000", cycles=500)
+    assert server.last_call() == ("vice.run_until", {"address": "$1000", "cycles": 500})

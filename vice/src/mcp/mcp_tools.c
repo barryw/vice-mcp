@@ -98,8 +98,8 @@ const mcp_tool_t tool_registry[] = {
     { "vice.machine.reset", "Reset the machine (soft or hard reset)", mcp_tool_machine_reset },
 
     /* Phase 2.5: Display Capture */
-    { "vice.display.screenshot", "Capture screenshot (to file or base64)", mcp_tool_display_screenshot },
-    { "vice.display.get_dimensions", "Get display dimensions", mcp_tool_display_get_dimensions },
+    { "vice.display.screenshot", "Capture screenshot of the VIC-II or, on x128, the VDC (to file or base64)", mcp_tool_display_screenshot },
+    { "vice.display.get_dimensions", "Get the dimensions of the VIC-II or, on x128, the VDC display", mcp_tool_display_get_dimensions },
 
     /* Phase 3.1: Input Control */
     { "vice.keyboard.type", "Type text (uppercase ASCII displays as uppercase on C64 by default)", mcp_tool_keyboard_type },
@@ -117,7 +117,7 @@ const mcp_tool_t tool_registry[] = {
     { "vice.symbols.lookup", "Lookup symbol by name or address", mcp_tool_symbols_lookup },
     { "vice.watch.add", "Add memory watchpoint with optional condition (shorthand for checkpoint with store/load)", mcp_tool_watch_add },
     { "vice.backtrace", "Show call stack (JSR return addresses)", mcp_tool_backtrace },
-    { "vice.run_until", "Set a temporary breakpoint at an address and resume; returns at once (cycle limit not implemented)", mcp_tool_run_until },
+    { "vice.run_until", "Resume until an address is reached or a number of cycles has run, whichever comes first; returns at once", mcp_tool_run_until },
     { "vice.keyboard.matrix", "Direct keyboard matrix control (for games that scan keyboard directly)", mcp_tool_keyboard_matrix },
     { "vice.keyboard.chord", "Press multiple C64 keyboard matrix keys together for a fixed number of frames", mcp_tool_keyboard_chord },
 

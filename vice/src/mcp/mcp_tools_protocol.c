@@ -295,6 +295,26 @@ cJSON* mcp_tool_tools_call(cJSON *params)
  * tools/list - List all available tools with JSON Schema
  * ========================================================================= */
 
+/* The display property of vice.display.screenshot and get_dimensions */
+static void mcp_add_display_prop(cJSON *props)
+{
+    cJSON *prop = mcp_prop_string(
+        "Screen to read: 'vicii' (40-column VIC-II) or 'vdc' (x128's 80-column VDC). "
+        "Default: the machine's main screen, the VIC-II on x128. "
+        "The response's display names the chip read: vicii, vdc, vic, ted or crtc");
+    cJSON *values = cJSON_CreateArray();
+
+    if (prop == NULL || values == NULL) {
+        cJSON_Delete(prop);
+        cJSON_Delete(values);
+        return;
+    }
+    cJSON_AddItemToArray(values, cJSON_CreateString("vicii"));
+    cJSON_AddItemToArray(values, cJSON_CreateString("vdc"));
+    cJSON_AddItemToObject(prop, "enum", values);
+    cJSON_AddItemToObject(props, "display", prop);
+}
+
 cJSON* mcp_tool_tools_list(cJSON *params)
 {
     cJSON *response, *tools_array, *tool_obj, *schema, *props, *required;
@@ -355,10 +375,14 @@ cJSON* mcp_tool_tools_list(cJSON *params)
                    strcmp(name, "vice.execution.pause") == 0 ||
                    strcmp(name, "vice.checkpoint.list") == 0 ||
                    strcmp(name, "vice.vicii.get_state") == 0 ||
-                   strcmp(name, "vice.sid.get_state") == 0 ||
-                   strcmp(name, "vice.display.get_dimensions") == 0) {
+                   strcmp(name, "vice.sid.get_state") == 0) {
             /* Tools with truly no parameters */
             schema = mcp_schema_empty();
+
+        } else if (strcmp(name, "vice.display.get_dimensions") == 0) {
+            props = cJSON_CreateObject();
+            mcp_add_display_prop(props);
+            schema = mcp_schema_object(props, NULL);
 
         } else if (strcmp(name, "vice.sprite.get") == 0) {
             props = cJSON_CreateObject();
@@ -477,6 +501,7 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "path", mcp_prop_string("File path to save screenshot (optional if return_base64=true)"));
             cJSON_AddItemToObject(props, "format", mcp_prop_string("Image format: PNG or BMP, lower case accepted (default: PNG; BMP when built without libpng)"));
             cJSON_AddItemToObject(props, "return_base64", mcp_prop_boolean("Return screenshot as base64 data URI (default: false)"));
+            mcp_add_display_prop(props);
             /* No required params since path is optional when return_base64 is true */
             schema = mcp_schema_object(props, NULL);
 
@@ -700,7 +725,7 @@ cJSON* mcp_tool_tools_list(cJSON *params)
         } else if (strcmp(name, "vice.run_until") == 0) {
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "address", mcp_prop_string("Target address: number, $hex/0xhex string, or symbol. Sets a temporary breakpoint here and resumes; the call returns at once"));
-            cJSON_AddItemToObject(props, "cycles", mcp_prop_number("Not implemented: ignored when address is given; on its own returns error -32000"));
+            cJSON_AddItemToObject(props, "cycles", mcp_prop_number("Stop after this many CPU cycles from now, integer 1-100000000; with address, whichever comes first stops the machine. At least one of address and cycles is required"));
             schema = mcp_schema_object(props, NULL);
 
         } else if (strcmp(name, "vice.keyboard.matrix") == 0) {

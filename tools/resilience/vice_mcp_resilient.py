@@ -373,11 +373,14 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             ("path", "string"),
             ("format", "string"),
             ("return_base64", "boolean"),
+            ("display", "string"),
         ],
     },
     "vice.display.get_dimensions": {
         "required": [],
-        "optional": [],
+        "optional": [
+            ("display", "string"),
+        ],
     },
     "vice.keyboard.type": {
         "required": [
@@ -1795,6 +1798,7 @@ class ViceMCPClient:
         path: Optional[str] = None,
         format: Optional[str] = None,
         return_base64: bool = False,
+        display: Optional[str] = None,
     ) -> Any:
         """Capture a screenshot.
 
@@ -1806,6 +1810,9 @@ class ViceMCPClient:
             Image format (e.g. "png", "bmp").
         return_base64 : bool
             If True, return the image as base64 instead of saving to file.
+        display : str, optional
+            "vicii" (40-column VIC-II) or "vdc" (x128's 80-column VDC).
+            Default: the machine's main screen, the VIC-II on x128.
         """
         args: Dict[str, Any] = {}
         if path is not None:
@@ -1814,11 +1821,22 @@ class ViceMCPClient:
             args["format"] = format
         if return_base64:
             args["return_base64"] = return_base64
+        if display is not None:
+            args["display"] = display
         return self.call("vice.display.screenshot", **args)
 
-    def display_get_dimensions(self) -> Any:
-        """Get display dimensions."""
-        return self.call("vice.display.get_dimensions")
+    def display_get_dimensions(self, display: Optional[str] = None) -> Any:
+        """Get display dimensions.
+
+        Parameters
+        ----------
+        display : str, optional
+            "vicii" or "vdc", as for display_screenshot.
+        """
+        args: Dict[str, Any] = {}
+        if display is not None:
+            args["display"] = display
+        return self.call("vice.display.get_dimensions", **args)
 
     # -- Keyboard Input -----------------------------------------------------
 
@@ -2172,14 +2190,17 @@ class ViceMCPClient:
         address: Optional[Union[int, str]] = None,
         cycles: Optional[int] = None,
     ) -> Any:
-        """Run until a specific address or for N cycles.
+        """Resume until an address is reached or N cycles have run.
+
+        Returns at once; the machine stops later, at whichever comes
+        first. At least one of the two is required.
 
         Parameters
         ----------
         address : int or str, optional
-            Stop at this address.
+            Stop at this address (a temporary breakpoint).
         cycles : int, optional
-            Stop after this many cycles.
+            Stop after this many CPU cycles, 1 to 100000000.
         """
         args: Dict[str, Any] = {}
         if address is not None:

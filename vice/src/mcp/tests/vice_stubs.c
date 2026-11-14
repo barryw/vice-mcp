@@ -494,11 +494,33 @@ int vdrive_read_sector(void *vdrive, uint8_t *buf, unsigned int track, unsigned 
     return 0;
 }
 
-/* Phase 2.5: Display capture stubs */
+/* Phase 2.5: Display capture stubs. Records the canvas asked for. Returns
+ * NULL, or, once a test has enabled them, a distinct dummy per canvas,
+ * which only screenshot_save() (that never looks inside) may be given. */
+static int test_canvas_requested = -1;
+static int test_canvas_dummies_on = 0;
+static int test_canvas_dummies[2];
+
 void *machine_video_canvas_get(int num)
 {
-    (void)num;
+    test_canvas_requested = num;
+    if (test_canvas_dummies_on && num >= 0 && num < 2) {
+        return &test_canvas_dummies[num];
+    }
     return NULL;
+}
+
+/* Test helper: forget the last canvas asked for; dummies on (1) or off (0) */
+void test_canvas_reset(int dummies_on)
+{
+    test_canvas_requested = -1;
+    test_canvas_dummies_on = dummies_on;
+}
+
+/* Test helper: the canvas last asked for, or -1 if none since the reset */
+int test_canvas_last_requested(void)
+{
+    return test_canvas_requested;
 }
 
 int screenshot_save(const char *drvname, const char *filename, void *canvas)
@@ -867,34 +889,101 @@ int test_keyboard_keyarr_presses(void)
     return test_keyarr_presses;
 }
 
-/* Alarm system stubs */
-typedef unsigned long CLOCK;
-struct alarm_context_s;
-struct alarm_s;
-typedef void (*alarm_callback_t)(CLOCK offset, void *data);
+/* Alarm system stubs. alarm_set() is inline in alarm.h and works on the
+ * real structures, so the context here is a real one; the tests read the
+ * pending clock from it and dispatch the alarm by hand. */
+#include "alarm.h"
 
 CLOCK maincpu_clk = 0;
-struct alarm_context_s *maincpu_alarm_context = NULL;
+static alarm_context_t test_alarm_context;
+alarm_context_t *maincpu_alarm_context = &test_alarm_context;
+static alarm_t *test_alarm_last = NULL;
+static int test_alarm_new_calls = 0;
 
-struct alarm_s *alarm_new(struct alarm_context_s *context, const char *name,
-                          alarm_callback_t callback, void *data)
+alarm_t *alarm_new(alarm_context_t *context, const char *name,
+                   alarm_callback_t callback, void *data)
 {
-    (void)context;
+    alarm_t *alarm = calloc(1, sizeof(*alarm));
+
     (void)name;
-    (void)callback;
-    (void)data;
-    return NULL;  /* Return NULL - alarm system not available in tests */
+    if (alarm == NULL) {
+        return NULL;
+    }
+    if (context->num_pending_alarms == 0) {
+        context->next_pending_alarm_clk = CLOCK_MAX;
+    }
+    alarm->context = context;
+    alarm->callback = callback;
+    alarm->data = data;
+    alarm->pending_idx = -1;
+    test_alarm_last = alarm;
+    test_alarm_new_calls++;
+    return alarm;
 }
 
-void alarm_set(struct alarm_s *alarm, CLOCK cpu_clk)
+/* As alarm.c: drop the alarm from the pending list */
+void alarm_unset(alarm_t *alarm)
 {
-    (void)alarm;
-    (void)cpu_clk;
+    alarm_context_t *context = alarm->context;
+    int idx = alarm->pending_idx;
+    unsigned int last;
+
+    if (idx < 0) {
+        return;
+    }
+    last = --context->num_pending_alarms;
+    if ((unsigned int)idx != last) {
+        context->pending_alarms[idx] = context->pending_alarms[last];
+        context->pending_alarms[idx].alarm->pending_idx = idx;
+    }
+    alarm->pending_idx = -1;
+    alarm_context_update_next_pending(context);
 }
 
 void alarm_log_too_many_alarms(void)
 {
     /* Stub - should never be called in tests */
+}
+
+/* Test helper: how many alarms have been created */
+int test_alarm_new_count(void)
+{
+    return test_alarm_new_calls;
+}
+
+/* Test helper: drop whatever the last alarm created had pending */
+void test_alarm_reset(void)
+{
+    if (test_alarm_last != NULL) {
+        alarm_unset(test_alarm_last);
+    }
+}
+
+/* Test helper: whether the last alarm created is pending */
+int test_alarm_pending(void)
+{
+    return test_alarm_last != NULL && test_alarm_last->pending_idx >= 0;
+}
+
+/* Test helper: the clock the last alarm created is pending for */
+CLOCK test_alarm_clk(void)
+{
+    if (!test_alarm_pending()) {
+        return 0;
+    }
+    return test_alarm_context.pending_alarms[test_alarm_last->pending_idx].clk;
+}
+
+/* Test helper: the CPU reaches the alarm's clock; dispatch it as the CPU
+ * loop does, if it is pending. Returns 1 if it was dispatched. */
+int test_alarm_fire(void)
+{
+    if (!test_alarm_pending()) {
+        return 0;
+    }
+    maincpu_clk = test_alarm_clk();
+    test_alarm_last->callback(0, test_alarm_last->data);
+    return 1;
 }
 
 /* D3: Trap-based dispatch stubs */
@@ -1353,10 +1442,19 @@ int test_ui_pause_disable_count(void)
 /* mcp_hold_paused() lives in monitor.c. Like the real one it takes a
  * pending pause and raises the pause flag; in tests the hold then returns
  * at once, leaving the machine held. */
+static unsigned int test_mcp_stops = 0;
+
 void mcp_hold_paused(void)
 {
+    test_mcp_stops++;
     test_mcp_pause_pending = 0;
     test_ui_pause_state = 1;
+}
+
+/* mcp_stop_count() lives in monitor.c: holds and resets so far */
+unsigned int mcp_stop_count(void)
+{
+    return test_mcp_stops;
 }
 
 /* mcp_cancel_step() lives in monitor.c; here it drops the step flag, as

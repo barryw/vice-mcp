@@ -60,7 +60,7 @@ entries.
 
 | Category | Tools | What They Do |
 |---|---|---|
-| **Execution** | `vice.ping` `vice.execution.run` `vice.execution.pause` `vice.execution.step` `vice.frame.advance` `vice.run_until` | Check liveness and run state; control the CPU — resume, halt, single-step, advance whole frames, run to an address |
+| **Execution** | `vice.ping` `vice.execution.run` `vice.execution.pause` `vice.execution.step` `vice.frame.advance` `vice.run_until` | Check liveness and run state; control the CPU — resume, halt, single-step, advance whole frames, run to an address or for a number of cycles |
 | **Registers** | `vice.registers.get` `vice.registers.set` | Read/write all 6502 registers (A, X, Y, SP, PC, status flags) |
 | **Memory** | `vice.memory.read` `vice.memory.write` `vice.memory.banks` `vice.memory.search` `vice.memory.fill` `vice.memory.compare` | Full memory access with bank selection, pattern search with wildcards |
 | **Checkpoints** | `vice.checkpoint.add` `vice.checkpoint.delete` `vice.checkpoint.list` `vice.checkpoint.toggle` `vice.checkpoint.set_condition` `vice.checkpoint.set_ignore_count` `vice.checkpoint.group.*` | Breakpoints, watchpoints, tracepoints — with conditions and groups |
@@ -100,8 +100,8 @@ chip-state tools (`vice.vicii.*`, `vice.sprite.*`, `vice.cia.*`) work on the C64
 family (C64, C64SC, SCPU64, C128, C64DTV) and return error -32000 elsewhere. On
 a VIC-20 an agent learns it has a VIC at `$9000-$900F` and reads it with
 `vice.memory.read`; on a C128 it gets the VIC-II tools plus VDC RAM through
-`vice.memory.read` with bank `vdc`. Screenshots on x128 capture the VDC
-display.
+`vice.memory.read` with bank `vdc`. Screenshots on x128 capture the VIC-II
+display unless `display: "vdc"` asks for the VDC.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -543,14 +543,25 @@ paused at the next instruction boundary and the reply also carries
 | `frames` | number | | Whole frames to run before stopping again (default: 1, max: 1000) |
 
 #### `vice.run_until`
-Set a temporary exec breakpoint at `address` (deleted when hit) and resume.
-The call returns at once without waiting for the target; poll `vice.ping` or
-`vice.registers.get` to see when the machine has stopped. Reply:
-`target_address`, `target_symbol` (when known), `message`.
+Resume until `address` is reached or `cycles` CPU cycles have run, whichever
+comes first. `address` sets a temporary exec breakpoint (deleted when hit).
+When the cycle limit is reached the machine stops as `vice.execution.pause`
+stops it: at the next instruction boundary, held, registers current; the
+temporary breakpoint, if not yet hit, is deleted. The call returns at once
+without waiting; poll `vice.ping` or `vice.registers.get` to see when the
+machine has stopped. Reply: `target_address` and `target_symbol` (when known)
+if `address` was given, `cycle_limit` if `cycles` was, and `message`.
+
+A new `vice.run_until` replaces a cycle limit still pending. A pending limit
+is dropped once the machine stops for any other reason (the breakpoint, a
+pause, a step, another checkpoint), is reset, or loads a snapshot through
+`vice.snapshot.load`, so it never stops a machine resumed after that. A
+pause, monitor session or snapshot load started from the VICE UI does not
+drop it; cycles spent paused do not count.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `address` | number \| string | yes | Target address |
-| `cycles` | number | | Not implemented. Ignored when `address` is given (echoed as `cycle_limit` with a `note`); on its own it returns error -32000 |
+| `address` | number \| string | one of the two | Target address: number, `$hex`/`0xhex` string, or symbol |
+| `cycles` | number | one of the two | Stop after this many CPU cycles from now: integer 1-100000000 |
 
 ---
 
@@ -879,18 +890,23 @@ Returns `changes_applied` (`resource`, `old_value`, `new_value`,
 ### Display
 
 #### `vice.display.screenshot`
-Capture the primary canvas. On x128 that is the VDC 80-column display, not
-the VIC-II.
+Capture a display. Reply: `status`, `format`, `display` (the chip captured:
+`vicii`, `vdc`, `vic`, `ted` or `crtc`), `path` when one was given, and with
+`return_base64` the image.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `display` | string | | `vicii` (40-column VIC-II) or `vdc` (x128's 80-column VDC). Default: the machine's main display, the VIC-II on x128. A display the machine lacks returns error -32602 |
 | `path` | string | unless `return_base64` | File to write. Omitted with `return_base64: true`: a temp file is used and deleted |
 | `format` | string | | `PNG` or `BMP` (lower case accepted). Default `PNG`, or `BMP` if VICE was built without libpng |
 | `return_base64` | boolean | | Also return the image as `base64`, `data_uri` and `size` (bytes) |
 
 #### `vice.display.get_dimensions`
-Get display dimensions. No parameters. Returns `width`, `height` (physical
-canvas, or the visible size when headless), `visible_width` and
-`visible_height`. On x128 this is the VDC canvas.
+Get display dimensions. Returns `display` (as for `vice.display.screenshot`),
+`width`, `height` (physical canvas, or the visible size when headless),
+`visible_width` and `visible_height`.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `display` | string | | `vicii` or `vdc`, as for `vice.display.screenshot` |
 
 ---
 
@@ -1096,8 +1112,7 @@ protocol suite (`tools/tests`) is run by hand.
 - Execution tracing and interrupt logging. The handlers in
   `mcp_tools_trace.c` only store configuration and are not registered; no
   hooks into the CPU core exist.
-- `vice.run_until` cycle limits and `vice.sprite.inspect` `png_base64` output
-  (both return error -32000).
+- `vice.sprite.inspect` `png_base64` output (returns error -32000).
 
 ## Contributing
 

@@ -2401,6 +2401,35 @@ static void tools_list_prop_type(const char *tool, const char *prop, char *buf, 
     cJSON_Delete(response);
 }
 
+/* Both display tools advertise display; run_until's cycles is no longer
+ * described as unimplemented */
+TEST(tools_list_advertises_display_and_run_until_cycles)
+{
+    char buf[32];
+    cJSON *response, *entry;
+    int found = 0;
+
+    tools_list_prop_type("vice_display_screenshot", "display", buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "string");
+    tools_list_prop_type("vice_display_get_dimensions", "display", buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "string");
+    tools_list_prop_type("vice_run_until", "cycles", buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "number");
+
+    response = mcp_tool_tools_list(NULL);
+    cJSON_ArrayForEach(entry, cJSON_GetObjectItem(response, "tools")) {
+        cJSON *name = cJSON_GetObjectItem(entry, "name");
+        if (strcmp(name->valuestring, "vice_run_until") == 0) {
+            cJSON *props = cJSON_GetObjectItem(cJSON_GetObjectItem(entry, "inputSchema"), "properties");
+            const char *desc = cJSON_GetObjectItem(cJSON_GetObjectItem(props, "cycles"), "description")->valuestring;
+            const char *tool_desc = cJSON_GetObjectItem(entry, "description")->valuestring;
+            found = strstr(desc, "mplemented") == NULL && strstr(tool_desc, "mplemented") == NULL;
+        }
+    }
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(found, 1);
+}
+
 /* The schemas advertise the named parameters the set_state handlers read. */
 TEST(tools_list_advertises_named_set_state_params)
 {
@@ -9370,18 +9399,421 @@ TEST(watch_add_stop_false_counts_without_stopping)
     cJSON_Delete(response);
 }
 
-/* --- run_until Cycles-Only Error Test --- */
+/* --- run_until cycle limit --- */
 
-TEST(run_until_cycles_only_returns_not_implemented)
+extern int test_alarm_new_count(void);
+extern int test_alarm_pending(void);
+extern uint64_t test_alarm_clk(void);
+extern int test_alarm_fire(void);
+extern void test_alarm_reset(void);
+extern uint64_t maincpu_clk;
+extern void mcp_hold_paused(void);
+extern void mcp_set_pause_pending(int pending);
+extern void *mon_breakpoint_find_checkpoint(unsigned int id);
+
+/* A machine running, no checkpoints, no cycle limit pending */
+static void run_until_fresh(void)
+{
+    test_alarm_reset();
+    test_checkpoint_reset();
+    test_ui_pause_reset();
+    test_traps_defer(0);
+    mcp_set_pause_pending(0);
+}
+
+/* vice.run_until with the items given (NULL: omitted); takes them */
+static cJSON *run_until_call(cJSON *address, cJSON *cycles)
 {
     cJSON *params = cJSON_CreateObject();
-    cJSON_AddNumberToObject(params, "cycles", 1000);
-    cJSON *response = mcp_tools_dispatch("vice.run_until", params);
-    ASSERT_NOT_NULL(response);
-    cJSON *code = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code);
-    ASSERT_INT_EQ(code->valueint, MCP_ERROR_NOT_IMPLEMENTED);
+    cJSON *response;
+
+    if (address != NULL) {
+        cJSON_AddItemToObject(params, "address", address);
+    }
+    if (cycles != NULL) {
+        cJSON_AddItemToObject(params, "cycles", cycles);
+    }
+    response = mcp_tools_dispatch("vice.run_until", params);
     cJSON_Delete(params);
+    return response;
+}
+
+/* The error code of a response, 0 if it is not an error */
+static int response_code(cJSON *response)
+{
+    cJSON *code = cJSON_GetObjectItem(response, "code");
+    return code != NULL ? code->valueint : 0;
+}
+
+/* Test: cycles alone is valid, arms the limit from now and resumes */
+TEST(run_until_cycles_only_arms_cycle_limit)
+{
+    cJSON *response;
+
+    run_until_fresh();
+    test_ui_pause_set(1);
+    maincpu_clk = 1000;
+
+    response = run_until_call(NULL, cJSON_CreateNumber(500));
+    ASSERT_NOT_NULL(response);
+    ASSERT_INT_EQ(response_code(response), 0);
+    ASSERT_STR_EQ(cJSON_GetObjectItem(response, "status")->valuestring, "ok");
+    ASSERT_INT_EQ(cJSON_GetObjectItem(response, "cycle_limit")->valueint, 500);
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "note") == NULL);
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "target_address") == NULL);
+    ASSERT_TRUE(cJSON_IsString(cJSON_GetObjectItem(response, "message")));
+    cJSON_Delete(response);
+
+    ASSERT_TRUE(test_alarm_pending());
+    ASSERT_TRUE(test_alarm_clk() == 1500);
+    ASSERT_INT_EQ(test_checkpoint_get_last_num(), -1);  /* no checkpoint */
+    ASSERT_INT_EQ(ui_pause_active(), 0);                /* resumed */
+}
+
+/* Test: cycles must be an integer 1..100000000, and is checked before any
+ * checkpoint is set; at least one of address and cycles is required */
+TEST(run_until_rejects_invalid_cycles)
+{
+    static const double bad[] = { 0, -1, 100000001, 2.5 };
+    cJSON *response;
+    size_t i;
+
+    run_until_fresh();
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        response = run_until_call(NULL, cJSON_CreateNumber(bad[i]));
+        ASSERT_INT_EQ(response_code(response), MCP_ERROR_INVALID_PARAMS);
+        cJSON_Delete(response);
+    }
+    response = run_until_call(NULL, cJSON_CreateString("1000"));
+    ASSERT_INT_EQ(response_code(response), MCP_ERROR_INVALID_PARAMS);
+    cJSON_Delete(response);
+    response = run_until_call(cJSON_CreateString("$1000"), cJSON_CreateNumber(0));
+    ASSERT_INT_EQ(response_code(response), MCP_ERROR_INVALID_PARAMS);
+    cJSON_Delete(response);
+    response = run_until_call(NULL, NULL);
+    ASSERT_INT_EQ(response_code(response), MCP_ERROR_INVALID_PARAMS);
+    cJSON_Delete(response);
+
+    ASSERT_TRUE(!test_alarm_pending());
+    ASSERT_INT_EQ(test_checkpoint_get_last_num(), -1);
+
+    /* The bounds themselves are valid */
+    maincpu_clk = 0;
+    response = run_until_call(NULL, cJSON_CreateNumber(1));
+    ASSERT_INT_EQ(response_code(response), 0);
+    cJSON_Delete(response);
+    ASSERT_TRUE(test_alarm_clk() == 1);
+    response = run_until_call(NULL, cJSON_CreateNumber(100000000));
+    ASSERT_INT_EQ(response_code(response), 0);
+    cJSON_Delete(response);
+    ASSERT_TRUE(test_alarm_clk() == 100000000);
+    test_alarm_reset();
+}
+
+/* Test: reaching the limit stops the machine the way vice.execution.pause
+ * does: a pause trap, taken at the next instruction boundary, holds it */
+TEST(run_until_cycle_limit_pauses_machine)
+{
+    cJSON *response;
+
+    run_until_fresh();
+    response = run_until_call(NULL, cJSON_CreateNumber(100));
+    ASSERT_INT_EQ(response_code(response), 0);
+    cJSON_Delete(response);
+
+    test_traps_defer(1);
+    ASSERT_INT_EQ(test_alarm_fire(), 1);
+    ASSERT_INT_EQ(mcp_is_pause_pending(), 1);   /* asked for... */
+    ASSERT_INT_EQ(ui_pause_active(), 0);        /* ...not yet taken */
+    ASSERT_INT_EQ(test_traps_run(), 1);
+    test_traps_defer(0);
+    ASSERT_INT_EQ(ui_pause_active(), 1);
+    ASSERT_INT_EQ(mcp_is_pause_pending(), 0);
+    ASSERT_TRUE(!test_alarm_pending());
+    test_ui_pause_reset();
+}
+
+/* Test: with an address too, the limit reached first deletes the
+ * temporary checkpoint run_until set, and stops the machine */
+TEST(run_until_cycle_limit_deletes_temp_breakpoint)
+{
+    cJSON *response;
+    int bp;
+
+    run_until_fresh();
+    maincpu_clk = 0;
+    response = run_until_call(cJSON_CreateString("$1000"), cJSON_CreateNumber(100));
+    ASSERT_INT_EQ(response_code(response), 0);
+    ASSERT_INT_EQ(cJSON_GetObjectItem(response, "target_address")->valueint, 0x1000);
+    ASSERT_INT_EQ(cJSON_GetObjectItem(response, "cycle_limit")->valueint, 100);
+    cJSON_Delete(response);
+    bp = test_checkpoint_get_last_num();
+    ASSERT_TRUE(bp > 0);
+    ASSERT_NOT_NULL(mon_breakpoint_find_checkpoint((unsigned int)bp));
+    ASSERT_TRUE(test_alarm_clk() == 100);
+
+    ASSERT_INT_EQ(test_alarm_fire(), 1);
+    ASSERT_TRUE(mon_breakpoint_find_checkpoint((unsigned int)bp) == NULL);
+    ASSERT_INT_EQ(ui_pause_active(), 1);
+    test_ui_pause_reset();
+}
+
+/* Test: a checkpoint that has since taken run_until's number (VICE numbers
+ * from 1 again once none are left) is not run_until's to delete */
+TEST(run_until_cycle_limit_spares_reused_checkpoint_number)
+{
+    cJSON *response;
+    int bp;
+
+    run_until_fresh();
+    response = run_until_call(cJSON_CreateString("$1000"), cJSON_CreateNumber(100));
+    ASSERT_INT_EQ(response_code(response), 0);
+    cJSON_Delete(response);
+    bp = test_checkpoint_get_last_num();
+
+    /* The client deletes it, and sets a checkpoint of its own */
+    test_checkpoint_reset();
+    ASSERT_INT_EQ(mon_breakpoint_add_checkpoint(0x2000, 0x2000, 1, 4, 0, 0), bp);
+
+    ASSERT_INT_EQ(test_alarm_fire(), 1);
+    ASSERT_NOT_NULL(mon_breakpoint_find_checkpoint((unsigned int)bp));
+    ASSERT_INT_EQ(ui_pause_active(), 1);
+    test_ui_pause_reset();
+}
+
+/* Test: once the machine has stopped (here at run_until's checkpoint) and
+ * been resumed, the limit still pending must not stop it again */
+TEST(run_until_stale_cycle_limit_does_not_pause)
+{
+    cJSON *response;
+
+    run_until_fresh();
+    response = run_until_call(cJSON_CreateString("$1000"), cJSON_CreateNumber(100));
+    ASSERT_INT_EQ(response_code(response), 0);
+    cJSON_Delete(response);
+
+    mcp_hold_paused();              /* the checkpoint is hit first */
+    response = mcp_tools_dispatch("vice.execution.run", NULL);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(ui_pause_active(), 0);
+
+    test_alarm_fire();
+    ASSERT_INT_EQ(ui_pause_active(), 0);
+    ASSERT_INT_EQ(mcp_is_pause_pending(), 0);
+    ASSERT_TRUE(!test_alarm_pending());
+}
+
+/* Test: one alarm, re-armed; a new run_until replaces a pending limit,
+ * and one without cycles drops it */
+TEST(run_until_replaces_pending_cycle_limit)
+{
+    cJSON *response;
+    int created;
+
+    run_until_fresh();
+    maincpu_clk = 0;
+    response = run_until_call(NULL, cJSON_CreateNumber(1000));
+    cJSON_Delete(response);
+    created = test_alarm_new_count();
+    ASSERT_TRUE(test_alarm_clk() == 1000);
+
+    maincpu_clk = 10;
+    response = run_until_call(NULL, cJSON_CreateNumber(50));
+    ASSERT_INT_EQ(response_code(response), 0);
+    cJSON_Delete(response);
+    ASSERT_TRUE(test_alarm_clk() == 60);
+    ASSERT_INT_EQ(test_alarm_new_count(), created);
+
+    response = run_until_call(cJSON_CreateString("$1000"), NULL);
+    ASSERT_INT_EQ(response_code(response), 0);
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "cycle_limit") == NULL);
+    cJSON_Delete(response);
+    ASSERT_TRUE(!test_alarm_pending());
+}
+
+/* Test: loading a snapshot replaces the CPU clock the limit counts from;
+ * a limit pending then is dropped */
+TEST(snapshot_load_drops_pending_cycle_limit)
+{
+    cJSON *response, *params;
+    FILE *f;
+
+    run_until_fresh();
+    response = run_until_call(NULL, cJSON_CreateNumber(1000));
+    cJSON_Delete(response);
+    ASSERT_TRUE(test_alarm_pending());
+
+    test_snapshot_reset();
+    test_snapshot_set_load_result(0);
+    mkdir("/tmp/vice-test-config", 0755);
+    mkdir("/tmp/vice-test-config/mcp_snapshots", 0755);
+    f = fopen("/tmp/vice-test-config/mcp_snapshots/test_cycle_limit.vsf", "w");
+    if (f) { fprintf(f, "dummy"); fclose(f); }
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "test_cycle_limit");
+    response = mcp_tool_snapshot_load(params);
+    remove("/tmp/vice-test-config/mcp_snapshots/test_cycle_limit.vsf");
+    cJSON_Delete(params);
+    ASSERT_INT_EQ(response_code(response), 0);
+    cJSON_Delete(response);
+
+    ASSERT_TRUE(!test_alarm_pending());
+}
+
+/* --- Display selection (x128: canvas 0 is the VDC, canvas 1 the VIC-II) --- */
+
+extern void test_canvas_reset(int dummies_on);
+extern int test_canvas_last_requested(void);
+
+/* Call a display tool on machine class mc, with display as given (NULL:
+ * omitted; taken), the machine class restored before it returns. *canvas
+ * is the canvas the tool asked for, -1 if none. */
+static cJSON *display_call(const char *tool, unsigned int mc, cJSON *display, int *canvas)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON *response;
+
+    cJSON_AddStringToObject(params, "path", "/tmp/vice_mcp_test_display.png");
+    if (display != NULL) {
+        cJSON_AddItemToObject(params, "display", display);
+    }
+    /* get_dimensions reads inside the canvas, so it gets none */
+    test_canvas_reset(strcmp(tool, "vice.display.screenshot") == 0);
+    test_set_machine_class((int)mc);
+    response = mcp_tools_dispatch(tool, params);
+    *canvas = test_canvas_last_requested();
+    test_set_machine_class(TEST_VICE_MACHINE_C64);
+    test_canvas_reset(0);
+    cJSON_Delete(params);
+    return response;
+}
+
+/* The display a response reports, "" if none */
+static const char *response_display(cJSON *response)
+{
+    cJSON *item = cJSON_GetObjectItem(response, "display");
+    return cJSON_IsString(item) ? item->valuestring : "";
+}
+
+/* Test: with no display named, the machine's main screen is captured:
+ * x128's VIC-II (canvas 1), canvas 0 elsewhere, reported by chip name */
+TEST(display_screenshot_main_display_by_machine)
+{
+    static const struct {
+        unsigned int mc;
+        int canvas;
+        const char *chip;
+    } cases[] = {
+        { TEST_VICE_MACHINE_C64, 0, "vicii" },
+        { TEST_VICE_MACHINE_C64SC, 0, "vicii" },
+        { TEST_VICE_MACHINE_C128, 1, "vicii" },
+        { TEST_VICE_MACHINE_VIC20, 0, "vic" },
+        { TEST_VICE_MACHINE_PET, 0, "crtc" },
+        { TEST_VICE_MACHINE_PLUS4, 0, "ted" },
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int canvas;
+        cJSON *response = display_call("vice.display.screenshot", cases[i].mc,
+                                       NULL, &canvas);
+        ASSERT_INT_EQ(response_code(response), 0);
+        ASSERT_INT_EQ(canvas, cases[i].canvas);
+        ASSERT_STR_EQ(response_display(response), cases[i].chip);
+        cJSON_Delete(response);
+    }
+}
+
+/* Test: on x128, "vdc" captures canvas 0 and "vicii" canvas 1 */
+TEST(display_screenshot_selects_c128_display)
+{
+    cJSON *response;
+    int canvas;
+
+    response = display_call("vice.display.screenshot", TEST_VICE_MACHINE_C128,
+                            cJSON_CreateString("vdc"), &canvas);
+    ASSERT_INT_EQ(response_code(response), 0);
+    ASSERT_INT_EQ(canvas, 0);
+    ASSERT_STR_EQ(response_display(response), "vdc");
+    cJSON_Delete(response);
+
+    response = display_call("vice.display.screenshot", TEST_VICE_MACHINE_C128,
+                            cJSON_CreateString("vicii"), &canvas);
+    ASSERT_INT_EQ(response_code(response), 0);
+    ASSERT_INT_EQ(canvas, 1);
+    ASSERT_STR_EQ(response_display(response), "vicii");
+    cJSON_Delete(response);
+
+    response = display_call("vice.display.screenshot", TEST_VICE_MACHINE_C64,
+                            cJSON_CreateString("vicii"), &canvas);
+    ASSERT_INT_EQ(response_code(response), 0);
+    ASSERT_INT_EQ(canvas, 0);
+    cJSON_Delete(response);
+}
+
+/* Test: a display the machine lacks, an unknown name or a non-string is
+ * refused before any canvas is touched */
+TEST(display_screenshot_rejects_bad_display)
+{
+    static const struct {
+        unsigned int mc;
+        const char *name;   /* NULL: a number */
+    } cases[] = {
+        { TEST_VICE_MACHINE_C64, "vdc" },
+        { TEST_VICE_MACHINE_PET, "vdc" },
+        { TEST_VICE_MACHINE_VIC20, "vicii" },
+        { TEST_VICE_MACHINE_PLUS4, "vicii" },
+        { TEST_VICE_MACHINE_C128, "vic" },
+        { TEST_VICE_MACHINE_C128, "VDC" },
+        { TEST_VICE_MACHINE_C128, NULL },
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int canvas;
+        cJSON *display = cases[i].name != NULL ? cJSON_CreateString(cases[i].name)
+                                               : cJSON_CreateNumber(1);
+        cJSON *response = display_call("vice.display.screenshot", cases[i].mc,
+                                       display, &canvas);
+        ASSERT_INT_EQ(response_code(response), MCP_ERROR_INVALID_PARAMS);
+        ASSERT_INT_EQ(canvas, -1);
+        cJSON_Delete(response);
+    }
+}
+
+/* Test: get_dimensions reads the canvas of the display chosen the same
+ * way, and refuses the same bad values before reading any */
+TEST(display_get_dimensions_selects_display)
+{
+    cJSON *response;
+    int canvas;
+
+    response = display_call("vice.display.get_dimensions", TEST_VICE_MACHINE_C128,
+                            NULL, &canvas);
+    ASSERT_INT_EQ(canvas, 1);
+    cJSON_Delete(response);
+    response = display_call("vice.display.get_dimensions", TEST_VICE_MACHINE_C128,
+                            cJSON_CreateString("vdc"), &canvas);
+    ASSERT_INT_EQ(canvas, 0);
+    cJSON_Delete(response);
+    response = display_call("vice.display.get_dimensions", TEST_VICE_MACHINE_C128,
+                            cJSON_CreateString("vicii"), &canvas);
+    ASSERT_INT_EQ(canvas, 1);
+    cJSON_Delete(response);
+    response = display_call("vice.display.get_dimensions", TEST_VICE_MACHINE_C64,
+                            NULL, &canvas);
+    ASSERT_INT_EQ(canvas, 0);
+    cJSON_Delete(response);
+
+    response = display_call("vice.display.get_dimensions", TEST_VICE_MACHINE_C64,
+                            cJSON_CreateString("vdc"), &canvas);
+    ASSERT_INT_EQ(response_code(response), MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(canvas, -1);
+    cJSON_Delete(response);
+    response = display_call("vice.display.get_dimensions", TEST_VICE_MACHINE_C128,
+                            cJSON_CreateBool(1), &canvas);
+    ASSERT_INT_EQ(response_code(response), MCP_ERROR_INVALID_PARAMS);
+    ASSERT_INT_EQ(canvas, -1);
     cJSON_Delete(response);
 }
 
@@ -10462,7 +10894,19 @@ int main(void)
     RUN_TEST(watch_add_rejects_overflow_range);
     RUN_TEST(watch_add_load_flag_makes_read_watch);
     RUN_TEST(watch_add_stop_false_counts_without_stopping);
-    RUN_TEST(run_until_cycles_only_returns_not_implemented);
+    RUN_TEST(run_until_cycles_only_arms_cycle_limit);
+    RUN_TEST(run_until_rejects_invalid_cycles);
+    RUN_TEST(run_until_cycle_limit_pauses_machine);
+    RUN_TEST(run_until_cycle_limit_deletes_temp_breakpoint);
+    RUN_TEST(run_until_cycle_limit_spares_reused_checkpoint_number);
+    RUN_TEST(run_until_stale_cycle_limit_does_not_pause);
+    RUN_TEST(run_until_replaces_pending_cycle_limit);
+    RUN_TEST(snapshot_load_drops_pending_cycle_limit);
+    RUN_TEST(display_screenshot_main_display_by_machine);
+    RUN_TEST(display_screenshot_selects_c128_display);
+    RUN_TEST(display_screenshot_rejects_bad_display);
+    RUN_TEST(display_get_dimensions_selects_display);
+    RUN_TEST(tools_list_advertises_display_and_run_until_cycles);
     RUN_TEST(snapshot_save_returns_error_not_null_on_oom);
     RUN_TEST(snapshot_load_rejects_special_chars_in_name);
     RUN_TEST(snapshot_load_allows_valid_name_chars);

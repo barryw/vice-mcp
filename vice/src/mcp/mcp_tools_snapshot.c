@@ -257,6 +257,10 @@ cJSON* mcp_tool_snapshot_load(cJSON *params)
 
     log_message(mcp_tools_log, "Loading snapshot: %s", vsf_path);
 
+    /* The snapshot replaces the CPU clock a pending run_until cycle limit
+     * counts on; the run it was set for ends here */
+    mcp_run_until_cancel();
+
     /* Load the snapshot */
     result = machine_read_snapshot(vsf_path, 0);
 

@@ -189,6 +189,16 @@ extern cJSON *mcp_tool_watch_add(cJSON *params);
 extern cJSON *mcp_tool_backtrace(cJSON *params);
 extern cJSON *mcp_tool_run_until(cJSON *params);
 
+/* Drop a cycle limit vice.run_until has pending. Call with the mainlock. */
+extern void mcp_run_until_cancel(void);
+
+/* -------------------------------------------------------------------------
+ * Execution (mcp_tools_execution.c)
+ * ------------------------------------------------------------------------- */
+/* Ask the running machine to stop at the next instruction boundary, as
+ * vice.execution.pause does. Call with the mainlock. */
+extern void mcp_request_pause(void);
+
 /* -------------------------------------------------------------------------
  * Handler prototypes - Snapshot (mcp_tools_snapshot.c)
  * ------------------------------------------------------------------------- */
