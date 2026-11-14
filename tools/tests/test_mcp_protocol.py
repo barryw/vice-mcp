@@ -1,7 +1,7 @@
 """
 Comprehensive MCP protocol schema test suite for VICE C64 emulator MCP server.
 
-Tests validate the JSON-RPC 2.0 protocol over HTTP POST to /mcp on localhost:6510.
+Tests validate the JSON-RPC 2.0 protocol over HTTP POST to /mcp on localhost:6520.
 
 Tools are called via:
     {"jsonrpc":"2.0","method":"tools/call","params":{"name":"vice.TOOL_NAME","arguments":{...}},"id":1}
@@ -16,6 +16,7 @@ Run with:
     pytest tools/tests/test_mcp_protocol.py -v -m "not stateful and not disk_required"
 """
 
+import base64
 import json
 import time
 
@@ -28,7 +29,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 MCP_HOST = "127.0.0.1"
-MCP_PORT = 6510
+MCP_PORT = 6520
 MCP_URL = f"http://{MCP_HOST}:{MCP_PORT}/mcp"
 
 # JSON-RPC 2.0 error codes
@@ -296,6 +297,8 @@ class TestPing:
         assert "version" in result
         assert "machine" in result
         assert result["execution"] in ("running", "paused", "transitioning")
+        # The executable's build time tells two builds of one version apart
+        assert time.strptime(result["build"], "%Y-%m-%dT%H:%M:%SZ")
 
     def test_ping_ignores_extra_params(self, mcp):
         """Ping should succeed even with unexpected extra arguments."""
@@ -339,6 +342,28 @@ class TestExecution:
         time.sleep(0.1)
         result = mcp.call_tool_result("vice.execution.step", {"count": 5})
         assert result["status"] == "ok"
+
+    @pytest.mark.stateful
+    def test_frame_advance_names_stopping_checkpoint(self, mcp):
+        """A frame cut short by a stopping checkpoint names it."""
+        mcp.call_tool("vice.execution.pause")
+        mcp.call_tool_result("vice.coverage.start")
+        try:
+            mcp.call_tool_result("vice.frame.advance", {"frames": 1})
+            pc = mcp.call_tool_result("vice.coverage.read")
+        finally:
+            mcp.call_tool_result("vice.coverage.stop")
+        bitmap = base64.b64decode(pc["bitmap"])
+        target = next(a for a in range(0x10000) if bitmap[a >> 3] >> (a & 7) & 1)
+        num = mcp.call_tool_result("vice.checkpoint.add",
+                                   {"start": target, "stop": True})["checkpoint_num"]
+        try:
+            result = mcp.call_tool_result("vice.frame.advance", {"frames": 50})
+        finally:
+            mcp.call_tool_result("vice.checkpoint.delete", {"checkpoint_num": num})
+        assert result.get("stopped_early") is True
+        assert result["checkpoints"] == [num]
+        assert result["PC"] == target
 
     @pytest.mark.stateful
     def test_repeated_pause_and_step(self, mcp):
@@ -1213,6 +1238,32 @@ class TestJoystick:
         result = mcp.call_tool_result("vice.joystick.set")
         assert result.get("status") == "ok"
 
+    def test_config_set_refuses_mcp_server_resources(self, mcp):
+        """config.set takes any integer resource but those that would
+        reconfigure the MCP server or open other listeners."""
+        for name in ("MCPServerPort", "BinaryMonitorServer", "SaveResourcesOnExit"):
+            error = mcp.call_tool_error("vice.machine.config.set",
+                                        {"resources": {name: 1}})
+            assert error["code"] == ERROR_INVALID_PARAMS
+
+    @pytest.mark.stateful
+    def test_joystick_set_refuses_empty_port(self, mcp):
+        """Input to a control port with nothing plugged in is an error, and
+        config.set can plug a joystick in."""
+        mcp.call_tool_result("vice.machine.config.set",
+                             {"resources": {"JoyPort1Device": 0}})
+        try:
+            error = mcp.call_tool_error("vice.joystick.set",
+                                        {"port": 1, "direction": "up"})
+            assert error["code"] == ERROR_INVALID_PARAMS
+            assert "JoyPort1Device" in error["message"]
+        finally:
+            mcp.call_tool_result("vice.machine.config.set",
+                                 {"resources": {"JoyPort1Device": 1}})
+        result = mcp.call_tool_result("vice.joystick.set",
+                                      {"port": 1, "direction": "center"})
+        assert result["status"] == "ok"
+
     @pytest.mark.stateful
     def test_joystick_tap(self, mcp):
         """Joystick tap should auto-center after the requested duration."""
@@ -1362,6 +1413,26 @@ class TestSnapshots:
         assert "snapshots" in list_result
         names = [s.get("name") for s in list_result["snapshots"]]
         assert name in names
+        mcp.call_tool_result("vice.snapshot.delete", {"name": name})
+
+    @pytest.mark.stateful
+    def test_snapshot_overwrite_and_delete(self, mcp):
+        """overwrite replaces a snapshot; delete removes it from the list."""
+        mcp.call_tool("vice.execution.pause")
+        name = f"test_proto_ow_{int(time.time())}"
+        mcp.call_tool_result("vice.snapshot.save", {"name": name})
+        error = mcp.call_tool_error("vice.snapshot.save", {"name": name})
+        assert error["code"] == ERROR_INVALID_PARAMS
+        result = mcp.call_tool_result("vice.snapshot.save",
+                                      {"name": name, "overwrite": True})
+        assert result["replaced"] is True
+        assert mcp.call_tool_result("vice.snapshot.delete",
+                                    {"name": name})["deleted"] is True
+        names = [s.get("name") for s in
+                 mcp.call_tool_result("vice.snapshot.list")["snapshots"]]
+        assert name not in names
+        error = mcp.call_tool_error("vice.snapshot.delete", {"name": name})
+        assert error["code"] == ERROR_INVALID_PARAMS
 
     def test_snapshot_save_missing_name(self, mcp):
         """Save snapshot without name should fail."""
@@ -1386,6 +1457,42 @@ class TestSnapshots:
         result = mcp.call_tool_result("vice.snapshot.list")
         assert "snapshots" in result
         assert isinstance(result["snapshots"], list)
+
+
+# ---------------------------------------------------------------------------
+# Test: Execution Coverage
+# ---------------------------------------------------------------------------
+
+class TestCoverage:
+    """Tests for vice.coverage.start, stop, read."""
+
+    @pytest.mark.stateful
+    def test_coverage_records_executed_addresses(self, mcp):
+        """A running machine marks the addresses it executes; the bitmap
+        agrees with the range listing; reset clears; stop keeps the data."""
+        mcp.call_tool("vice.execution.pause")
+        assert mcp.call_tool_result("vice.coverage.start")["enabled"] is True
+        try:
+            mcp.call_tool_result("vice.frame.advance", {"frames": 2})
+            whole = mcp.call_tool_result("vice.coverage.read")
+            assert whole["count"] > 0
+            bitmap = base64.b64decode(whole["bitmap"])
+            assert len(bitmap) == 8192
+            executed = [a for a in range(0x10000) if bitmap[a >> 3] >> (a & 7) & 1]
+            assert len(executed) == whole["count"]
+            lo, hi = executed[0], min(executed[0] + 0xFF, 0xFFFF)
+            part = mcp.call_tool_result("vice.coverage.read",
+                                        {"start": lo, "end": hi, "reset": True})
+            assert part["addresses"] == [a for a in executed if lo <= a <= hi]
+            assert mcp.call_tool_result("vice.coverage.read")["count"] == 0
+        finally:
+            stopped = mcp.call_tool_result("vice.coverage.stop")
+        assert stopped["enabled"] is False
+
+    def test_coverage_read_rejects_reversed_range(self, mcp):
+        error = mcp.call_tool_error("vice.coverage.read",
+                                    {"start": "$2000", "end": "$1000"})
+        assert error["code"] == ERROR_INVALID_PARAMS
 
 
 # ---------------------------------------------------------------------------
@@ -1680,8 +1787,19 @@ EXPECTED_SCHEMAS = {
     },
     "vice_snapshot_save": {
         "properties": {"name": "string", "description": "string",
-                        "include_roms": "boolean", "include_disks": "boolean"},
+                        "include_roms": "boolean", "include_disks": "boolean",
+                        "overwrite": "boolean"},
         "required": ["name"],
+    },
+    "vice_snapshot_delete": {
+        "properties": {"name": "string"},
+        "required": ["name"],
+    },
+    "vice_coverage_start": {"properties": {}, "required": []},
+    "vice_coverage_stop": {"properties": {}, "required": []},
+    "vice_coverage_read": {
+        "properties": {"start": "string", "end": "string", "reset": "boolean"},
+        "required": [],
     },
     "vice_snapshot_load": {
         "properties": {"name": "string"},

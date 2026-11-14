@@ -60,6 +60,10 @@
 #include "profiler.h"
 #endif
 
+#if defined(HAVE_MCP_SERVER) && !defined(DRIVE_CPU)
+#include "mcp/mcp_server.h"
+#endif
+
 #ifndef C64DTV
 /* The C64DTV can use different shadow registers for accu read/write. */
 /* For standard 6510, this is not the case. */
@@ -2394,6 +2398,13 @@ static const uint8_t rewind_fetch_tab[] = {
                 SET_OPCODE(lastop);
             }
         }
+
+#if defined(HAVE_MCP_SERVER) && !defined(DRIVE_CPU)
+        /* MCP execution coverage: mark the opcode's address */
+        if (mcp_coverage_map != NULL) {
+            mcp_coverage_map[(uint16_t)reg_pc] = 1;
+        }
+#endif
 
 #ifdef FEATURE_CPUMEMHISTORY
 #ifndef DRIVE_CPU

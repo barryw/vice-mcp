@@ -42,7 +42,7 @@
 
 /* Default MCP server settings */
 #define MCP_DEFAULT_HOST "127.0.0.1"
-#define MCP_DEFAULT_PORT 6510
+#define MCP_DEFAULT_PORT 6520
 
 /** @brief Initialize the MCP server subsystem.
  *
@@ -126,6 +126,11 @@ extern int mcp_server_set_host(const char *host);
  *  @return The host address string
  */
 extern const char *mcp_server_get_host(void);
+
+/** @brief Execution coverage map: while not NULL, the main CPU core sets
+ *  mcp_coverage_map[pc] to 1 at every opcode fetch (vice.coverage.*).
+ */
+extern uint8_t *mcp_coverage_map;
 
 /** @brief Register MCP server VICE resources.
  *

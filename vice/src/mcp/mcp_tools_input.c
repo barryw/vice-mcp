@@ -33,6 +33,7 @@
 #include "kbdbuf.h"
 #include "keyboard.h"
 #include "machine.h"
+#include "resources.h"
 #include "vsync.h"
 
 /* Forward declarations for keyboard auto-release functions (defined later with matrix code) */
@@ -557,6 +558,30 @@ static int parse_joystick_value(cJSON *params, unsigned int *port, uint16_t *val
     return 0;
 }
 
+/* An error when nothing is plugged into control port `port` (0-based): the
+ * value would reach no device. Callers let a release (value 0) through, so a
+ * stick held when its port was emptied can still be let go. Only an empty
+ * port is refused, since other
+ * devices (SNES pad adapters, Protopad, ...) read the joystick value too;
+ * machines without the JoyPortNDevice resource are left alone. NULL if the
+ * port is usable. */
+static cJSON *joystick_port_empty_error(unsigned int port)
+{
+    char name[24];
+    char msg[192];
+    int device;
+
+    snprintf(name, sizeof(name), "JoyPort%uDevice", port + 1);
+    if (resources_get_int(name, &device) < 0 || device != JOYPORT_ID_NONE) {
+        return NULL;
+    }
+    snprintf(msg, sizeof(msg),
+             "Nothing is plugged into control port %u. Plug in a joystick with "
+             "vice.machine.config.set {\"resources\": {\"%s\": 1}}",
+             port + 1, name);
+    return mcp_error(MCP_ERROR_INVALID_PARAMS, msg);
+}
+
 cJSON* mcp_tool_joystick_set(cJSON *params)
 {
     cJSON *response;
@@ -568,6 +593,10 @@ cJSON* mcp_tool_joystick_set(cJSON *params)
 
     if (parse_joystick_value(params, &port, &value, &error_msg) < 0) {
         return mcp_error(MCP_ERROR_INVALID_PARAMS, error_msg ? error_msg : "Invalid joystick parameters");
+    }
+    response = value != 0 ? joystick_port_empty_error(port) : NULL;
+    if (response != NULL) {
+        return response;
     }
 
     log_message(mcp_tools_log, "Setting joystick port %u to value 0x%04x", port, value);
@@ -633,6 +662,10 @@ cJSON* mcp_tool_joystick_tap(cJSON *params)
 
     if (parse_joystick_value(params, &port, &value, &error_msg) < 0) {
         return mcp_error(MCP_ERROR_INVALID_PARAMS, error_msg ? error_msg : "Invalid joystick parameters");
+    }
+    response = value != 0 ? joystick_port_empty_error(port) : NULL;
+    if (response != NULL) {
+        return response;
     }
 
     duration_frames_item = params ? cJSON_GetObjectItem(params, "duration_frames") : NULL;

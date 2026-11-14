@@ -1404,6 +1404,9 @@ int userport_get_device(void)
 *******************************************************************************/
 
 #ifdef HAVE_MCP_SERVER
+/* vsid's CPU core tests this; vsid has no MCP server to set it */
+uint8_t *mcp_coverage_map = NULL;
+
 int mcp_server_register_resources(void)
 {
     return 0;

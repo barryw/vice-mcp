@@ -29,6 +29,7 @@
 #include "machine.h"
 #include "monitor.h"
 #include "resources.h"
+#include "util.h"
 #include "version.h"
 #include "vsync.h"
 
@@ -153,6 +154,34 @@ static const mcp_resource_info_t *get_machine_resources(void)
     }
 }
 
+/* Integer resources config.set refuses, matched as name prefixes the way
+ * VICE matches names (ignoring case): they would reconfigure the MCP server
+ * under the request, open other network listeners, write log or core files,
+ * or save the configuration. */
+static const char *const resources_denied_prefixes[] = {
+    "MCPServer", "MonitorServer", "BinaryMonitorServer", "NetworkServer",
+    "NetworkControl", "IDE64USBServer", "MonitorLog", "Log", "DoCoreDump",
+    "SaveResourcesOnExit", NULL
+};
+
+/** @brief Can config.set change this resource? Any integer resource can,
+ *  apart from the denied ones; WarpMode is handled by vsync. */
+static int resource_is_settable(const char *name)
+{
+    int i;
+
+    if (util_strcasecmp(name, "WarpMode") == 0) {
+        return 1;
+    }
+    for (i = 0; resources_denied_prefixes[i] != NULL; i++) {
+        if (util_strncasecmp(name, resources_denied_prefixes[i],
+                             strlen(resources_denied_prefixes[i])) == 0) {
+            return 0;
+        }
+    }
+    return resources_query_type(name) == RES_INTEGER;
+}
+
 /** @brief Check if a resource name is in the whitelist for the current machine.
  *  @param name          Resource name to check.
  *  @param needs_reset   If non-NULL, set to 1 if resource requires power-cycle, 0 otherwise.
@@ -164,7 +193,7 @@ static int is_resource_whitelisted(const char *name, int *needs_reset)
 
     /* Check common resources */
     for (i = 0; resources_common[i].name != NULL; i++) {
-        if (strcmp(name, resources_common[i].name) == 0) {
+        if (util_strcasecmp(name, resources_common[i].name) == 0) {
             if (needs_reset != NULL) {
                 *needs_reset = resources_common[i].needs_reset;
             }
@@ -176,7 +205,7 @@ static int is_resource_whitelisted(const char *name, int *needs_reset)
     machine_res = get_machine_resources();
     if (machine_res != NULL) {
         for (i = 0; machine_res[i].name != NULL; i++) {
-            if (strcmp(name, machine_res[i].name) == 0) {
+            if (util_strcasecmp(name, machine_res[i].name) == 0) {
                 if (needs_reset != NULL) {
                     *needs_reset = machine_res[i].needs_reset;
                 }
@@ -186,46 +215,6 @@ static int is_resource_whitelisted(const char *name, int *needs_reset)
     }
 
     return 0;
-}
-
-/** @brief Build a comma-separated list of valid resource names for the current machine.
- *  @param buf       Output buffer.
- *  @param buf_size  Size of output buffer. */
-static void build_valid_resources_list(char *buf, size_t buf_size)
-{
-    const mcp_resource_info_t *machine_res;
-    size_t pos = 0;
-    int first = 1;
-    int i;
-
-    buf[0] = '\0';
-
-    /* Common resources */
-    for (i = 0; resources_common[i].name != NULL; i++) {
-        if (!first) {
-            pos += (size_t)snprintf(buf + pos, buf_size - pos, ", ");
-        }
-        pos += (size_t)snprintf(buf + pos, buf_size - pos, "%s", resources_common[i].name);
-        first = 0;
-        if (pos >= buf_size - 1) {
-            return;
-        }
-    }
-
-    /* Machine-specific resources */
-    machine_res = get_machine_resources();
-    if (machine_res != NULL) {
-        for (i = 0; machine_res[i].name != NULL; i++) {
-            if (!first) {
-                pos += (size_t)snprintf(buf + pos, buf_size - pos, ", ");
-            }
-            pos += (size_t)snprintf(buf + pos, buf_size - pos, "%s", machine_res[i].name);
-            first = 0;
-            if (pos >= buf_size - 1) {
-                return;
-            }
-        }
-    }
 }
 
 /* ========================================================================= */
@@ -843,16 +832,15 @@ cJSON *mcp_tool_machine_config_set(cJSON *params)
     cJSON_ArrayForEach(child, resources_obj) {
         const char *res_name = child->string;
 
-        if (!is_resource_whitelisted(res_name, NULL)) {
-            char valid_list[512];
-            char err_msg[768];
+        if (!resource_is_settable(res_name)) {
+            char err_msg[384];
 
-            build_valid_resources_list(valid_list, sizeof(valid_list));
             snprintf(err_msg, sizeof(err_msg),
-                     "Unknown resource '%s' for %s. Valid resources: %s.",
+                     "'%s' is not an integer resource of %s that MCP may set "
+                     "(MCP server, monitor and network server, IDE64 USB server, "
+                     "log, DoCoreDump and SaveResourcesOnExit resources are refused).",
                      res_name,
-                     mach_name ? mach_name : "unknown",
-                     valid_list);
+                     mach_name ? mach_name : "unknown");
 
             cJSON_Delete(changes_array);
             return mcp_error(MCP_ERROR_INVALID_PARAMS, err_msg);
@@ -887,7 +875,7 @@ cJSON *mcp_tool_machine_config_set(cJSON *params)
 
         is_resource_whitelisted(res_name, &res_needs_reset);
 
-        if (strcmp(res_name, "WarpMode") == 0) {
+        if (util_strcasecmp(res_name, "WarpMode") == 0) {
             /* WarpMode is not a VICE resource; use vsync API */
             old_val = vsync_get_warp_mode();
             vsync_set_warp_mode(new_val);
@@ -899,7 +887,7 @@ cJSON *mcp_tool_machine_config_set(cJSON *params)
                 int j;
 
                 for (j = change_count - 1; j >= 0; j--) {
-                    if (strcmp(applied[j].name, "WarpMode") == 0) {
+                    if (util_strcasecmp(applied[j].name, "WarpMode") == 0) {
                         vsync_set_warp_mode(applied[j].old_value);
                     } else {
                         resources_set_int(applied[j].name, applied[j].old_value);

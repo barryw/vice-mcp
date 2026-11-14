@@ -39,7 +39,7 @@ The commands below run from the build directory (`./src/x64sc`).
 **Commands**:
 ```bash
 # Test x64sc
-./src/x64sc -mcpserver -mcpserverport 6510 &
+./src/x64sc -mcpserver -mcpserverport 6520 &
 
 # Test xvic
 ./src/xvic -mcpserver -mcpserverport 6520 &
@@ -53,7 +53,7 @@ The commands below run from the build directory (`./src/x64sc`).
 
 **Verification**:
 ```bash
-lsof -i :6510  # Should show x64sc listening
+lsof -i :6520  # Should show x64sc listening
 lsof -i :6520  # Should show xvic listening
 lsof -i :6530  # Should show xpet listening
 lsof -i :6540  # Should show x128 listening
@@ -74,7 +74,7 @@ lsof -i :6540  # Should show x128 listening
 
 **Command**:
 ```bash
-curl -X POST http://127.0.0.1:6510/mcp \
+curl -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.ping","id":1}' | python3 -m json.tool
 ```
@@ -104,7 +104,7 @@ curl -X POST http://127.0.0.1:6510/mcp \
 
 **Command**:
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.memory.read","params":{"address":1024,"size":16},"id":2}' \
   | python3 -m json.tool
@@ -137,7 +137,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Command** (write "HELLO" to screen RAM as screen codes):
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.memory.write","params":{"address":1024,"data":[8,5,12,12,15]},"id":3}' \
   | python3 -m json.tool
@@ -158,7 +158,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Verification** (read back):
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.memory.read","params":{"address":1024,"size":5},"id":4}' \
   | python3 -m json.tool
@@ -184,7 +184,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Command**:
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.registers.get","params":{},"id":5}' \
   | python3 -m json.tool
@@ -225,7 +225,7 @@ idle loop after boot):
 
 **Command** (set A register to 42):
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.registers.set","params":{"register":"A","value":42},"id":6}' \
   | python3 -m json.tool
@@ -252,7 +252,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Pause** (returns `{"status": "ok", "message": "Execution paused"}`):
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.execution.pause","params":{},"id":7}' \
   | python3 -m json.tool
@@ -261,7 +261,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 **Step** (execute 1 instruction; returns `instructions`, `step_over`,
 `completed: true` and the new `PC`):
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.execution.step","params":{"count":1},"id":8}' \
   | python3 -m json.tool
@@ -269,7 +269,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Resume** (returns `{"status": "ok", "message": "Execution resumed"}`):
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.execution.run","params":{},"id":9}' \
   | python3 -m json.tool
@@ -281,7 +281,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Command**:
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.nonexistent","id":1}' \
   | python3 -m json.tool
@@ -303,7 +303,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Command**:
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.memory.read","params":{"address":"invalid"},"id":2}' \
   | python3 -m json.tool
@@ -349,7 +349,7 @@ x128, xscpu64, x64dtv). `vsid` has no MCP server.
 Claude Code (MCP client) can connect to the VICE MCP server for AI-assisted debugging:
 
 1. Start VICE with MCP server enabled
-2. Add it to Claude Code: `claude mcp add --transport http vice http://127.0.0.1:6510/mcp`
+2. Add it to Claude Code: `claude mcp add --transport http vice http://127.0.0.1:6520/mcp`
 3. Use natural language to interact with emulator:
    - "Read memory at $C000"
    - "Set register A to $FF"
@@ -369,7 +369,7 @@ def vice_call(method, params=None):
         "id": 1
     }
     response = requests.post(
-        "http://127.0.0.1:6510/mcp",
+        "http://127.0.0.1:6520/mcp",
         headers={"Content-Type": "application/json"},
         data=json.dumps(payload)
     )
@@ -388,20 +388,20 @@ Create `test_mcp.sh`:
 #!/bin/bash
 
 # Start emulator
-./src/x64sc -mcpserver -mcpserverport 6510 &
+./src/x64sc -mcpserver -mcpserverport 6520 &
 VICE_PID=$!
 sleep 2
 
 # Test ping
 echo "Testing ping..."
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.ping","id":1}' \
   | python3 -m json.tool
 
 # Test memory read
 echo "Testing memory read..."
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.memory.read","params":{"address":1024,"size":16},"id":2}' \
   | python3 -m json.tool
@@ -418,7 +418,7 @@ kill $VICE_PID
 
 **Solutions**:
 1. Check if emulator is running: `ps aux | grep x64sc`
-2. Check if port is listening: `lsof -i :6510`
+2. Check if port is listening: `lsof -i :6520`
 3. Check logs for errors
 4. Verify `-mcpserver` flag was used
 5. Try a different port to rule out port conflicts
@@ -496,7 +496,7 @@ Historical record of the first run (2026-02-02), kept as-is.
 
 **Command**:
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.snapshot.save","params":{"name":"debug_checkpoint_1","description":"State before bug reproduction"},"id":10}' \
   | python3 -m json.tool
@@ -540,7 +540,7 @@ ls -la ~/.config/vice/mcp_snapshots/
 
 **Command**:
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.snapshot.load","params":{"name":"debug_checkpoint_1"},"id":11}' \
   | python3 -m json.tool
@@ -571,7 +571,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Command**:
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.snapshot.list","params":{},"id":12}' \
   | python3 -m json.tool
@@ -609,33 +609,33 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 **Workflow**:
 ```bash
 # 1. Write known data to screen memory
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.memory.write","params":{"address":1024,"data":[1,2,3,4,5]},"id":1}'
 
 # 2. Save snapshot
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.snapshot.save","params":{"name":"memory_test"},"id":2}'
 
 # 3. Overwrite memory with different data
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.memory.write","params":{"address":1024,"data":[255,255,255,255,255]},"id":3}'
 
 # 4. Verify memory changed
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.memory.read","params":{"address":1024,"size":5},"id":4}'
 # Expected: ["FF", "FF", "FF", "FF", "FF"]
 
 # 5. Load snapshot
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.snapshot.load","params":{"name":"memory_test"},"id":5}'
 
 # 6. Verify memory restored to original
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.memory.read","params":{"address":1024,"size":5},"id":6}'
 # Expected: ["01", "02", "03", "04", "05"]
@@ -647,7 +647,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Save with invalid name**:
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.snapshot.save","params":{"name":"invalid/name"},"id":1}'
 ```
@@ -666,7 +666,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Load non-existent snapshot**:
 ```bash
-curl -s -X POST http://127.0.0.1:6510/mcp \
+curl -s -X POST http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"vice.snapshot.load","params":{"name":"does_not_exist"},"id":1}'
 ```

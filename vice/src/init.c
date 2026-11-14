@@ -331,7 +331,7 @@ int init_main(void)
 #ifdef HAVE_MCP_SERVER
     if (mcp_server_init() < 0) {
         log_error(LOG_DEFAULT, "MCP server initialization failed.");
-        /* Non-fatal: continue without MCP server */
+        return -1;
     }
 #endif
 

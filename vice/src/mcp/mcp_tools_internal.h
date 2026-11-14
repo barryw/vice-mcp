@@ -204,12 +204,15 @@ extern void mcp_request_pause(void);
  * ------------------------------------------------------------------------- */
 /* (All declared in mcp_tools.h already) */
 
-/* -------------------------------------------------------------------------
- * Handler prototypes - Trace (mcp_tools_trace.c)
- * ------------------------------------------------------------------------- */
+/* Caches the executable's build time for vice.ping (mcp_tools_protocol.c) */
+extern void mcp_build_time_init(void);
 
-/* Exposed reset functions for test harness */
-extern void mcp_trace_configs_reset(void);
-extern void mcp_interrupt_log_configs_reset(void);
+/* Stopping checkpoints hit across a run (mcp_tools_execution.c) */
+extern int *mcp_stop_checkpoint_hits(int *size);
+extern cJSON *mcp_stop_checkpoints_fired(const int *before, int size);
+
+/* Base64 of `input_length` bytes, NUL-terminated; free with lib_free().
+ * NULL when out of memory. (mcp_tools_display.c) */
+extern char *mcp_base64_encode(const uint8_t *data, size_t input_length, size_t *output_length);
 
 #endif /* VICE_MCP_TOOLS_INTERNAL_H */

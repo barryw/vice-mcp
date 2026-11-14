@@ -239,7 +239,7 @@ static const cmdline_option_t cmdline_options[] =
       NULL, "Disable MCP server" },
     { "-mcpserverport", SET_RESOURCE, CMDLINE_ATTRIB_NEED_ARGS,
       NULL, NULL, "MCPServerPort", NULL,
-      "<port>", "Set MCP server port (default 6510)" },
+      "<port>", "Set MCP server port (default 6520)" },
     { "-mcpserverhost", SET_RESOURCE, CMDLINE_ATTRIB_NEED_ARGS,
       NULL, NULL, "MCPServerHost", NULL,
       "<host>", "Set MCP server host (default 127.0.0.1)" },
@@ -280,11 +280,16 @@ int mcp_server_init(void)
 
     log_message(mcp_log, "MCP server initialized");
 
-    /* If server was enabled via config/cmdline, start it now */
+    /* If server was enabled via config/cmdline, start it now. Failing is
+     * fatal: a client polling the port would otherwise find whatever else
+     * holds it (VICE's own monitor servers default to 6502 and 6510). */
     if (mcp_enabled && !mcp_running) {
         if (mcp_server_start(mcp_host ? mcp_host : MCP_DEFAULT_HOST, mcp_port) < 0) {
-            log_error(mcp_log, "Failed to start MCP server");
-            /* Non-fatal - server is initialized, just not started */
+            log_error(mcp_log, "Cannot start the MCP server on %s:%d. Is another "
+                      "program, or a VICE monitor server, using that port? "
+                      "Choose another with -mcpserverport.",
+                      mcp_host ? mcp_host : MCP_DEFAULT_HOST, mcp_port);
+            return -1;
         }
     }
 

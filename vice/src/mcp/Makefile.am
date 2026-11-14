@@ -28,7 +28,7 @@ libmcp_a_SOURCES = \
     mcp_tools_debug.c \
     mcp_tools_chipstate.c \
     mcp_tools_checkpoint.c \
-    mcp_tools_trace.c \
+    mcp_tools_coverage.c \
     mcp_tools_protocol.c \
     mcp_tools_validation.c \
     mcp_tools_validation.h \

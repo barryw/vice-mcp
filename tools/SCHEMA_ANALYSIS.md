@@ -7,9 +7,10 @@
 > and the named-field parameters are advertised. The "verified correct"
 > list below includes tools that are no longer registered (auto-snapshot,
 > trace, interrupt log) and predates `frame.advance`, `keyboard.petscii`,
-> `keyboard.chord`, `joystick.tap`, `paddle.set` and `machine.config.get/set`.
-> Today 62 `vice.*` tools are registered; `tools/list` returns 66 entries
-> including the 4 protocol methods.
+> `keyboard.chord`, `joystick.tap`, `paddle.set`, `machine.config.get/set`,
+> `coverage.start/stop/read` and `snapshot.delete`; the trace and interrupt-log
+> handlers have since been deleted. Today 66 `vice.*` tools are registered;
+> `tools/list` returns 70 entries including the 4 protocol methods.
 
 **Date:** 2026-02-05
 **Branch:** feature/mcp-server

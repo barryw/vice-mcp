@@ -30,6 +30,26 @@
 #include "monitor.h"  /* For monitor_is_inside_monitor */
 #include "ui.h"       /* For ui_pause_active */
 #include "version.h"
+#include "archdep_program_path.h"
+
+#include <sys/stat.h>
+#include <time.h>
+
+/* When the executable was built (its modification time, UTC), so a client
+ * can tell two builds of one VICE version apart. Set once at startup by
+ * mcp_build_time_init(): gmtime() is not thread-safe. */
+static char build_time[32] = "";
+
+void mcp_build_time_init(void)
+{
+    const char *path = archdep_program_path();
+    struct stat st;
+    struct tm *tm;
+
+    if (path != NULL && stat(path, &st) == 0 && (tm = gmtime(&st.st_mtime)) != NULL) {
+        strftime(build_time, sizeof(build_time), "%Y-%m-%dT%H:%M:%SZ", tm);
+    }
+}
 
 /* =========================================================================
  * Tool Implementations
@@ -58,6 +78,9 @@ cJSON* mcp_tool_ping(cJSON *params)
 
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddStringToObject(response, "version", VERSION);
+    if (build_time[0] != '\0') {
+        cJSON_AddStringToObject(response, "build", build_time);
+    }
     cJSON_AddStringToObject(response, "machine", machine_get_name());
 
     /* Report execution state based on UI pause state AND monitor state.
@@ -728,6 +751,13 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "cycles", mcp_prop_number("Stop after this many CPU cycles from now, integer 1-100000000; with address, whichever comes first stops the machine. At least one of address and cycles is required"));
             schema = mcp_schema_object(props, NULL);
 
+        } else if (strcmp(name, "vice.coverage.read") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "start", mcp_prop_string("First address of a range (number, $hex/0xhex string or symbol). With start or end the reply lists that range's executed addresses in 'addresses' instead of 'bitmap'; start defaults to 0"));
+            cJSON_AddItemToObject(props, "end", mcp_prop_string("Last address of the range, inclusive; defaults to $FFFF"));
+            cJSON_AddItemToObject(props, "reset", mcp_prop_boolean("Clear the map after reading it (default false)"));
+            schema = mcp_schema_object(props, NULL);
+
         } else if (strcmp(name, "vice.keyboard.matrix") == 0) {
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "key", mcp_prop_string("C64 key name (case-insensitive): A-Z, 0-9, SPACE, RETURN, STOP, F1, F3, F5, F7, UP, DOWN, LEFT, RIGHT, "
@@ -764,6 +794,9 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "include_disks", mcp_prop_boolean(
                 "Include disk drive state in snapshot (default: false). "
                 "Enable if disk contents are relevant to the bug being debugged."));
+            cJSON_AddItemToObject(props, "overwrite", mcp_prop_boolean(
+                "Replace a snapshot of the same name (default: false). The old one is kept "
+                "if the save fails."));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("name"));
             schema = mcp_schema_object(props, required);
@@ -773,6 +806,14 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "name", mcp_prop_string(
                 "Name of the snapshot to load (as provided to snapshot.save). "
                 "Use snapshot.list to see available snapshots."));
+            required = cJSON_CreateArray();
+            cJSON_AddItemToArray(required, cJSON_CreateString("name"));
+            schema = mcp_schema_object(props, required);
+
+        } else if (strcmp(name, "vice.snapshot.delete") == 0) {
+            props = cJSON_CreateObject();
+            cJSON_AddItemToObject(props, "name", mcp_prop_string(
+                "Name of the snapshot to delete, with its metadata"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("name"));
             schema = mcp_schema_object(props, required);
@@ -882,7 +923,7 @@ cJSON* mcp_tool_tools_list(cJSON *params)
         } else if (strcmp(name, "vice.machine.config.set") == 0) {
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "resources", mcp_prop_object(
-                "Object of resource name/value pairs (e.g. {\"MachineVideoStandard\": 1, \"SidModel\": 0}); "
+                "Object of integer resource name/value pairs (e.g. {\"JoyPort1Device\": 1, \"SidModel\": 0}); "
                 "all or nothing"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("resources"));

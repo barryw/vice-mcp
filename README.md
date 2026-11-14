@@ -18,7 +18,7 @@ Not bolted on. Not a wrapper. **~15,000 lines of C woven into the emulator itsel
 
 ### For AI Agents
 Point any MCP-compatible client - Claude Desktop, Cursor, your own agent - at
-`http://127.0.0.1:6510/mcp` and you have a fully controllable Commodore 64.
+`http://127.0.0.1:6520/mcp` and you have a fully controllable Commodore 64.
 Your agent can:
 
 - **Load and run software** — autostart PRGs and disk images
@@ -55,7 +55,7 @@ its own parameters.
 `tools/list` publishes each name with `.` replaced by `_` (`vice.memory.read`
 is listed as `vice_memory_read`); both spellings are accepted when calling. It
 also lists the four protocol methods (`initialize`,
-`notifications/initialized`, `tools/list`, `tools/call`), so clients see 66
+`notifications/initialized`, `tools/list`, `tools/call`), so clients see 70
 entries.
 
 | Category | Tools | What They Do |
@@ -64,16 +64,17 @@ entries.
 | **Registers** | `vice.registers.get` `vice.registers.set` | Read/write all 6502 registers (A, X, Y, SP, PC, status flags) |
 | **Memory** | `vice.memory.read` `vice.memory.write` `vice.memory.banks` `vice.memory.search` `vice.memory.fill` `vice.memory.compare` | Full memory access with bank selection, pattern search with wildcards |
 | **Checkpoints** | `vice.checkpoint.add` `vice.checkpoint.delete` `vice.checkpoint.list` `vice.checkpoint.toggle` `vice.checkpoint.set_condition` `vice.checkpoint.set_ignore_count` `vice.checkpoint.group.*` | Breakpoints, watchpoints, tracepoints — with conditions and groups |
+| **Coverage** | `vice.coverage.start` `vice.coverage.stop` `vice.coverage.read` | Every address the CPU executes, as a 64K map, without the per-instruction cost of checkpoints |
 | **Sprites** | `vice.sprite.get` `vice.sprite.set` `vice.sprite.inspect` | Read/write sprite state, ASCII art bitmap visualization |
 | **VIC-II** | `vice.vicii.get_state` `vice.vicii.set_state` | VIC-II on C64/C128/DTV/SCPU64 — raster, video mode, colors, scroll, memory pointers, IRQ, collisions |
 | **SID** | `vice.sid.get_state` `vice.sid.set_state` | The legendary sound chip — voices, filters, ADSR, waveforms |
 | **CIA** | `vice.cia.get_state` `vice.cia.set_state` | Timer and I/O chip state — both CIA1 and CIA2 |
 | **Disk** | `vice.disk.attach` `vice.disk.detach` `vice.disk.list` `vice.disk.read_sector` | Mount D64/D71/D81 images, browse directories, read raw sectors |
-| **Machine** | `vice.machine.reset` `vice.machine.config.get` `vice.machine.config.set` `vice.autostart` | Hard/soft reset, resource control (warp, speed, model), program loading |
+| **Machine** | `vice.machine.reset` `vice.machine.config.get` `vice.machine.config.set` `vice.autostart` | Hard/soft reset, integer resource control (warp, speed, model, control-port devices), program loading |
 | **Display** | `vice.display.screenshot` `vice.display.get_dimensions` | Screen capture to file or base64, display geometry |
 | **Input** | `vice.keyboard.type` `vice.keyboard.petscii` `vice.keyboard.key_press` `vice.keyboard.key_release` `vice.keyboard.restore` `vice.keyboard.matrix` `vice.keyboard.chord` `vice.joystick.set` `vice.joystick.tap` `vice.paddle.set` | Keyboard, joystick, and paddle input — text typing, individual keys, direct matrix, RESTORE/NMI |
 | **Debug** | `vice.disassemble` `vice.symbols.load` `vice.symbols.lookup` `vice.watch.add` `vice.backtrace` `vice.cycles.stopwatch` | Disassembly, symbol files, call stack, cycle-accurate timing |
-| **Snapshots** | `vice.snapshot.save` `vice.snapshot.load` `vice.snapshot.list` | Full emulator state save/restore with JSON metadata |
+| **Snapshots** | `vice.snapshot.save` `vice.snapshot.load` `vice.snapshot.list` `vice.snapshot.delete` | Full emulator state save/restore/replace/delete with JSON metadata |
 
 ## Architecture
 
@@ -124,7 +125,7 @@ display unless `display: "vdc"` asks for the VDC.
 │         └─────────────────┘                      │
 │                                                  │
 └─────────────────────────────────────────────────┘
-        127.0.0.1:6510 by default
+        127.0.0.1:6520 by default
 ```
 
 **Key design decisions:**
@@ -164,26 +165,28 @@ xvic -mcpserver
 x64sc -mcpserver -mcpserverhost 0.0.0.0 -mcpserverport 7000
 ```
 
-The MCP server starts on `127.0.0.1:6510` by default. MCP clients connect to:
+The MCP server starts on `127.0.0.1:6520` by default (VICE's own monitor
+servers default to 6502 and 6510). If the port cannot be bound, VICE logs why
+and exits rather than run without the server. MCP clients connect to:
 
 ```text
-http://127.0.0.1:6510/mcp
+http://127.0.0.1:6520/mcp
 ```
 
 `0.0.0.0` is a bind address, not a client address. It means "listen on every
 interface". A client on the same Mac still connects to `127.0.0.1`; a client on
 another machine connects to the Mac's LAN IP address, for example
-`http://192.168.1.42:6510/mcp`.
+`http://192.168.1.42:6520/mcp`.
 
 ### Connection Recipes
 
 | Use case | Start VICE with | Client URL | Auth header |
 |---|---|---|---|
-| Same Mac, default | `x64sc -mcpserver` | `http://127.0.0.1:6510/mcp` | None |
+| Same Mac, default | `x64sc -mcpserver` | `http://127.0.0.1:6520/mcp` | None |
 | Same Mac, custom port | `x64sc -mcpserver -mcpserverport 7000` | `http://127.0.0.1:7000/mcp` | None |
-| LAN access, trusted network | `x64sc -mcpserver -mcpserverhost 0.0.0.0` | `http://<mac-lan-ip>:6510/mcp` | None |
-| LAN access with bearer token | `x64sc -mcpserver -mcpserverhost 0.0.0.0 -mcpservertoken secret` | `http://<mac-lan-ip>:6510/mcp` | `Authorization: Bearer secret` |
-| Browser app with CORS | `x64sc -mcpserver -mcpservercorsorigin http://localhost:3000 -mcpservertoken secret` | `http://127.0.0.1:6510/mcp` | `Authorization: Bearer secret` |
+| LAN access, trusted network | `x64sc -mcpserver -mcpserverhost 0.0.0.0` | `http://<mac-lan-ip>:6520/mcp` | None |
+| LAN access with bearer token | `x64sc -mcpserver -mcpserverhost 0.0.0.0 -mcpservertoken secret` | `http://<mac-lan-ip>:6520/mcp` | `Authorization: Bearer secret` |
+| Browser app with CORS | `x64sc -mcpserver -mcpservercorsorigin http://localhost:3000 -mcpservertoken secret` | `http://127.0.0.1:6520/mcp` | `Authorization: Bearer secret` |
 
 Token rules are intentionally simple:
 
@@ -202,7 +205,7 @@ should send `Accept: application/json`.
 
 ```bash
 # Direct JSON-RPC call
-curl -sS http://127.0.0.1:6510/mcp \
+curl -sS http://127.0.0.1:6520/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   --data '{
@@ -212,7 +215,7 @@ curl -sS http://127.0.0.1:6510/mcp \
 }'
 
 # Standard MCP tools/call form, used by Claude Code and other MCP clients
-curl -sS http://127.0.0.1:6510/mcp \
+curl -sS http://127.0.0.1:6520/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   --data '{
@@ -223,7 +226,7 @@ curl -sS http://127.0.0.1:6510/mcp \
 }'
 
 # Read the BASIC ROM start vectors at $A000
-curl -sS http://127.0.0.1:6510/mcp \
+curl -sS http://127.0.0.1:6520/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   --data '{
@@ -240,7 +243,7 @@ curl -sS http://127.0.0.1:6510/mcp \
 When a token is configured, add the bearer header to every request:
 
 ```bash
-curl -sS http://127.0.0.1:6510/mcp \
+curl -sS http://127.0.0.1:6520/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -H 'Authorization: Bearer secret' \
@@ -250,10 +253,10 @@ curl -sS http://127.0.0.1:6510/mcp \
 ### Use with Claude Code
 
 ```bash
-claude mcp add --transport http vice http://127.0.0.1:6510/mcp
+claude mcp add --transport http vice http://127.0.0.1:6520/mcp
 
 # With a token
-claude mcp add --transport http vice http://127.0.0.1:6510/mcp \
+claude mcp add --transport http vice http://127.0.0.1:6520/mcp \
   --header "Authorization: Bearer secret"
 ```
 
@@ -267,7 +270,7 @@ HTTP endpoint with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
   "mcpServers": {
     "vice": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://127.0.0.1:6510/mcp"]
+      "args": ["-y", "mcp-remote", "http://127.0.0.1:6520/mcp"]
     }
   }
 }
@@ -327,7 +330,7 @@ src/x64sc -help | grep -A1 mcpserver
 # +mcpserver
 # 	Disable MCP server
 # -mcpserverport <port>
-# 	Set MCP server port (default 6510)
+# 	Set MCP server port (default 6520)
 # -mcpserverhost <host>
 # 	Set MCP server host (default 127.0.0.1)
 # -mcpservertoken <token>
@@ -364,7 +367,7 @@ snake_case method for every registered tool; `vice.call("vice.tool.name",
 # Run from the repository root (or add it to PYTHONPATH)
 from tools.resilience import ViceMCPClient
 
-with ViceMCPClient(host="127.0.0.1", port=6510) as vice:  # POSTs to /mcp
+with ViceMCPClient(host="127.0.0.1", port=6520) as vice:  # POSTs to /mcp
     # Load a program
     vice.autostart("/path/to/game.prg")
 
@@ -392,14 +395,14 @@ server (it checks the client's methods and schemas against the C sources):
 pytest tools/tests/test_resilient_client.py -v
 ```
 
-The protocol suite has 374 test cases (166 test methods in 23 test classes
+The protocol suite has 392 test cases (172 test methods in 24 test classes
 plus one module-level test, with parametrized schema checks for every
 advertised tool) covering the JSON-RPC protocol, tool schemas and parameter
 validation against a live VICE:
 
 ```bash
 # Requires Python 3.10+, pytest, requests, and VICE started with -mcpserver
-# on 127.0.0.1:6510 (hard-coded). Without a server every test is skipped.
+# on 127.0.0.1:6520 (hard-coded). Without a server every test is skipped.
 pytest tools/tests/test_mcp_protocol.py -v
 
 # Skip the test that needs a disk in unit 8 and the 43 that change
@@ -454,7 +457,7 @@ local development first, and network exposure should be deliberate.
 If you need remote access, put it behind a reverse proxy with proper auth:
 
 ```
-nginx/caddy -> auth -> https -> 127.0.0.1:6510
+nginx/caddy -> auth -> https -> 127.0.0.1:6520
 ```
 
 Binding to `0.0.0.0` is supported via `-mcpserverhost`, which takes an IPv4
@@ -466,7 +469,7 @@ Use this checklist for remote sessions:
 
 - Start VICE with `-mcpserverhost 0.0.0.0`.
 - Prefer adding `-mcpservertoken <token>` unless the network is already trusted.
-- Configure the client URL as `http://<host-ip>:6510/mcp`.
+- Configure the client URL as `http://<host-ip>:6520/mcp`.
 - If a token is configured, configure the client to send
   `Authorization: Bearer <token>`.
 - For browser-based clients, also configure one exact
@@ -490,7 +493,7 @@ raw diff against upstream is not yet ready to submit.
 ## Tool Reference
 
 <details>
-<summary><strong>Click to expand full reference for all 62 tools</strong></summary>
+<summary><strong>Click to expand full reference for all 66 tools</strong></summary>
 
 Address parameters accept a JSON number (0-65535), a hex string with a `$` or
 `0x` prefix (`"$C000"`, `"0xC000"`), or the name of a loaded symbol. A decimal
@@ -535,8 +538,10 @@ stopped is held while the frames run, which makes a frame-by-frame input
 loop possible: set input, advance one frame, read memory, repeat. The
 machine must already be stopped (by `vice.execution.pause`, a stopping
 checkpoint or `vice.execution.step`); otherwise the call returns error
--32001. If a checkpoint stops the machine before the boundary, the reply
-carries `stopped_early: true` and the number of whole frames that ran. A
+-32001. If something stops the machine before the boundary, the reply
+carries `stopped_early: true`, the number of whole frames that ran, and
+`checkpoints`: the numbers of the stopping checkpoints that were hit (empty
+when a UI pause or a `vice.run_until` address stopped it). A
 frame that has not ended after 2 seconds is abandoned: the machine is
 paused at the next instruction boundary and the reply also carries
 `timed_out: true`.
@@ -645,7 +650,10 @@ what the CPU sees.
 ### Checkpoints & Breakpoints
 
 #### `vice.checkpoint.add`
-Add a checkpoint (breakpoint, watchpoint, or tracepoint).
+Add a checkpoint (breakpoint, watchpoint, or tracepoint). Hits are counted
+(`hit_count` in `vice.checkpoint.list`) but not written to the VICE log. VICE
+checks every enabled checkpoint at each instruction, so thousands of them slow
+the emulator down; to find out which code runs, use `vice.coverage.*`.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `start` | number \| string | yes | Start address |
@@ -866,9 +874,17 @@ Reset the machine.
 Get machine configuration — chips, memory map, resources. No parameters.
 
 #### `vice.machine.config.set`
-Set whitelisted integer resources:
+Set integer VICE resources, by the names `vicerc` uses, plus `WarpMode` (0/1).
+For example `{"JoyPort1Device": 1}` plugs a joystick into control port 1 and
+`{"JoyPort1Device": 0}` unplugs it. Resources that would reconfigure the MCP
+server (`MCPServer*`), open other listeners (`MonitorServer*`,
+`BinaryMonitorServer*`, `NetworkServer*`, `NetworkControl`, `IDE64USBServer`),
+write log or core files (`MonitorLog*`, `Log*`, `DoCoreDump`) or save the
+configuration (`SaveResourcesOnExit`) are refused, as are string resources.
 
-- All machines: `MachineVideoStandard` (1=PAL, 2=NTSC, 3=NTSC-Old, 4=PAL-N), `WarpMode` (0/1), `Speed` (percent)
+Changing a model resource power-cycles the machine and resumes it:
+
+- All machines: `MachineVideoStandard` (1=PAL, 2=NTSC, 3=NTSC-Old, 4=PAL-N)
 - C64/C64SC/SCPU64: `SidModel`, `CIA1Model`, `CIA2Model`
 - C128: those plus `VDCRevision`, `VDC64KB`, `C128FullBanks`
 - C64DTV: `SidModel`
@@ -877,8 +893,7 @@ Set whitelisted integer resources:
 - PET: `RamSize`, `IOSize`, `Crtc`, `VideoSize`, `SuperPET`
 - CBM-II: `RamSize`, `ModelLine`, `SidModel`
 
-Changing anything other than `WarpMode` or `Speed` power-cycles the machine
-and resumes it. The request is all or nothing: every pair is checked first,
+Other resources take effect without a reset. The request is all or nothing: every pair is checked first,
 and if a resource rejects its value the pairs already applied are restored.
 Returns `changes_applied` (`resource`, `old_value`, `new_value`,
 `needs_reset`), `machine_reset`, and `new_config` (same shape as
@@ -984,7 +999,11 @@ Example: cursor up = `{"keys": ["UP"]}`, the same as `{"keys": ["SHIFT", "DOWN"]
 
 #### `vice.joystick.set`
 Set joystick state. The reply's `value` is a bitmask: up=1, down=2, left=4,
-right=8, fire=16.
+right=8, fire=16. Returns error -32602 when nothing is plugged into the port
+(`JoyPort1Device`/`JoyPort2Device` is 0), except for a release to center;
+plug a joystick in with
+`vice.machine.config.set` `{"resources": {"JoyPort1Device": 1}}`.
+`vice.joystick.tap` does the same.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `port` | number | | Port 1 or 2 (default: 1) |
@@ -1074,17 +1093,22 @@ Measure elapsed CPU cycles.
 
 #### `vice.snapshot.save`
 Save complete emulator state. Fails if a snapshot with that name already
-exists. Files go in `mcp_snapshots/` under the VICE user config directory;
-`vice.snapshot.list` returns the `directory`.
+exists, unless `overwrite` is true; a replacement is written beside the old
+snapshot and renamed over it, so a failed save keeps the old one. Files go in
+`mcp_snapshots/` under the VICE user config directory; `vice.snapshot.list`
+returns the `directory`.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Snapshot name (alphanumeric, `_`, `-`) |
 | `description` | string | | What this snapshot captures |
 | `include_roms` | boolean | | Include ROMs (default: false) |
 | `include_disks` | boolean | | Include disk state (default: false) |
+| `overwrite` | boolean | | Replace a snapshot of the same name (default: false); the reply's `replaced` says whether one was |
 
 #### `vice.snapshot.load`
-Restore emulator state from a snapshot.
+Restore emulator state from a snapshot. That includes the devices plugged
+into the control ports when it was saved: a snapshot taken with port 1 empty
+leaves port 1 empty, through resets, until `JoyPort1Device` is set again.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Snapshot name |
@@ -1092,12 +1116,44 @@ Restore emulator state from a snapshot.
 #### `vice.snapshot.list`
 List all snapshots with metadata. No parameters.
 
+#### `vice.snapshot.delete`
+Delete a snapshot and its metadata file. Error -32602 if there is none.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Snapshot name |
+
+---
+
+### Coverage
+
+The main CPU marks each address it fetches an opcode from while coverage is
+on: one test and store per instruction, with no measurable slowdown. Addresses
+are CPU addresses, so RAM and ROM banked in at the same address share a mark.
+The drive CPUs, x128's Z80 and xscpu64's 65816 are not recorded
+(`vice.coverage.start` returns -32000 on xscpu64).
+
+#### `vice.coverage.start`
+Clear the map and start recording. No parameters.
+
+#### `vice.coverage.stop`
+Stop recording; the map is kept for `vice.coverage.read`. No parameters.
+
+#### `vice.coverage.read`
+Returns `enabled` and `count` (executed addresses), and either `bitmap` (no
+range given: base64 of 8192 bytes, where bit k, LSB first, of byte i is
+address 8*i+k) or `addresses` (the executed addresses from `start` to `end`).
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `start` | number \| string | | First address of a range (default: 0) |
+| `end` | number \| string | | Last address of the range, inclusive (default: $FFFF) |
+| `reset` | boolean | | Clear the map after reading it (default: false) |
+
 </details>
 
 ## Project Status
 
 This is active, working software. The MCP server compiles and runs on Linux,
-macOS and Windows. 62 tools are registered. CI builds binaries for all three
+macOS and Windows. 66 tools are registered. CI builds binaries for all three
 platforms on every push to `main`; pull requests and pushes to `main` build a
 headless VICE and run the C unit suite (`vice/src/mcp/tests`). The live
 protocol suite (`tools/tests`) is run by hand.
@@ -1111,9 +1167,8 @@ protocol suite (`tools/tests`) is run by hand.
 
 **Not done yet:**
 - Event streaming. `GET /events` is reserved but returns `501 Not Implemented` today.
-- Execution tracing and interrupt logging. The handlers in
-  `mcp_tools_trace.c` only store configuration and are not registered; no
-  hooks into the CPU core exist.
+- Execution tracing (a per-instruction log) and interrupt logging.
+  `vice.coverage.*` records which addresses ran, not their order.
 - `vice.sprite.inspect` `png_base64` output (returns error -32000).
 
 ## Contributing

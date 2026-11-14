@@ -19,7 +19,8 @@ The MCP test suite validates the core functionality of the MCP server integratio
 - C compiler (gcc or clang)
 - Make
 - Configured VICE build tree with MCP enabled (`configure --enable-mcp-server`).
-  The Makefile looks for it at `vice/build` (`TOP_BUILDDIR=../../../build`);
+  The Makefile looks for it at `vice/build-headless` (`TOP_BUILDDIR=../../../build-headless`;
+  not `vice/build`, which holds upstream packaging files whose `Makefile.in` breaks a build there);
   point `TOP_BUILDDIR` elsewhere for another build directory. It links that
   tree's `src/mcp/libmcp.a` and builds it first if it is missing.
 - libmicrohttpd development files discoverable by `pkg-config`, or set
@@ -29,8 +30,8 @@ The MCP test suite validates the core functionality of the MCP server integratio
 
 ```bash
 cd /path/to/vice/src/mcp/tests
-make                                   # build tree at vice/build
-make TOP_BUILDDIR=../../../build-headless   # or another build tree
+make                                   # build tree at vice/build-headless
+make TOP_BUILDDIR=../../../build-dev        # or another build tree
 ```
 
 ### Run Tests
@@ -119,7 +120,7 @@ in `tools/tests/test_mcp_protocol.py` at the repository root, or check by hand:
 x64sc -mcpserver
 
 # Terminal 2
-curl -sS http://127.0.0.1:6510/mcp \
+curl -sS http://127.0.0.1:6520/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   --data '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"vice_ping","arguments":{}},"id":1}'

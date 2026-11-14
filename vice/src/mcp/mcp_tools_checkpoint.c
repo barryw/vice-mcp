@@ -280,11 +280,14 @@ cJSON* mcp_tool_checkpoint_add(cJSON *params)
     }
 
     /* Create checkpoint using VICE monitor API */
-    checkpoint_num = mon_breakpoint_add_checkpoint(start_addr, end_addr, stop, op, false, true);
+    checkpoint_num = mon_breakpoint_add_checkpoint(start_addr, end_addr, stop, op, false, false);
 
     if (checkpoint_num < 0) {
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to create checkpoint");
     }
+    /* Clients read hits from checkpoint.list; logging each one would flood
+     * the log and slow the emulator down. */
+    mon_breakpoint_set_checkpoint_quiet(checkpoint_num, true);
 
     /* Build response */
     response = cJSON_CreateObject();
