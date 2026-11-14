@@ -152,7 +152,8 @@ case "$ACTION" in
         echo "=== Packaging Windows headless distribution ==="
         cd "$REPO_ROOT"
         git fetch --tags
-        VERSION=$(git -C "$REPO_ROOT" tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+        VERSION=$(cd "$REPO_ROOT" && sh ci/release-version.sh)
+        VERSION=${VERSION:-dev-$(git -C "$REPO_ROOT" rev-parse --short HEAD)}
         echo "Version: $VERSION"
 
         BUILD_DIR="$REPO_ROOT/vice/build-headless"
@@ -234,7 +235,11 @@ case "$ACTION" in
     upload)
         cd "$REPO_ROOT"
         git fetch --tags
-        VERSION=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+        VERSION=$(sh ci/release-version.sh)
+        if [ -z "$VERSION" ]; then
+            echo "This push created no release; nothing to upload"
+            exit 0
+        fi
         for artifact in "${VERSION}-windows-x86_64"-*.zip; do
             if [ -f "$artifact" ]; then
                 gh release upload "$VERSION" "$artifact" --repo "${CI_REPO}" --clobber

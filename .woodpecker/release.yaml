@@ -39,14 +39,15 @@ steps:
       - 'test -s "$CI_WORKSPACE/.ci-token" || { echo "FATAL: empty minted token"; exit 1; }'
 
   # Generate changelog notes for the latest version using cog.
-  # NB: cog bump tags the chore(version) commit it creates, so we resolve the
-  # version by highest semver tag name rather than `git describe` (which, on the
-  # pushed pre-bump SHA, would resolve to the previous tag).
+  # NB: cog bump tags the chore(version) commit it creates on top of the pushed
+  # commit; ci/release-version.sh finds that tag (one whose commit's parent is
+  # HEAD) and prints nothing when this push created no release.
   - name: changelog-notes
     image: ghcr.io/cocogitto/cog:latest
     commands:
       - git fetch --tags
-      - VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+      - VERSION=$$(sh ci/release-version.sh)
+      - test -n "$${VERSION}" || { echo "This push created no release; nothing to publish"; exit 0; }
       - echo "Release version $${VERSION}"
       # Scope notes to this version. Do not fall back to a full-history changelog:
       # the upstream VICE history contains non-conventional commits cog can't parse.
@@ -60,7 +61,8 @@ steps:
       - export GITHUB_TOKEN=$(cat "$CI_WORKSPACE/.ci-token")
       - apk add --no-cache bash ca-certificates git github-cli
       - git fetch --tags
-      - VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+      - VERSION=$$(sh ci/release-version.sh)
+      - test -n "$${VERSION}" || { echo "This push created no release; nothing to publish"; exit 0; }
       # Clean up any orphaned draft releases left by the retired draft flow.
       # NB: alpine:3.19 ships github-cli 2.39, which predates `gh release list
       # --json` (added in gh 2.42) — that flag errored on every run, so the

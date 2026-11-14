@@ -31,10 +31,13 @@ steps:
         byacc
         dos2unix
         flex
+        git
         libmicrohttpd-dev
         pkg-config
         xa65
         zlib1g-dev
+      # Release-version selection used by release.yaml and the build pipelines
+      - sh ci/test-release-version.sh
       - cd vice
       - ./src/buildtools/genvicedate_h.sh
       # Same autotools regeneration + timestamp fixup as build-linux.yaml

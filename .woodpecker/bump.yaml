@@ -8,6 +8,11 @@ when:
   - event: push
     branch: main
 
+# Release only what passed the unit suite and the commit-message check.
+depends_on:
+  - test
+  - commits
+
 labels:
   platform: linux/amd64
 
@@ -54,7 +59,7 @@ steps:
       #    the same version forever. Push tags explicitly with `--tags`.
       # A real push failure now fails the step instead of being masked by `|| echo`.
       - |
-        if cog bump --auto; then
+        if cog bump --auto --skip-ci; then
           git push origin HEAD:main --tags
         else
           echo "No bump-worthy commits since last tag; skipping."

@@ -1147,9 +1147,11 @@ This repo follows the Walker Heavy Industries Build & Release Standard:
   `vX.Y.Z`, updates `CHANGELOG.md`, and publishes a GitHub Release with the
   generated changelog notes.
 - The multi-OS build matrix (Linux/macOS/Windows) attaches its artifacts to the
-  Release for the latest `v` tag. A push with no bump-worthy commits still
-  rebuilds, overwrites that Release's assets (`--clobber`) and refreshes its
-  notes. Releases are not gated on the unit tests.
+  Release that push created. `ci/release-version.sh` finds it: the `v` tag cog
+  put on the bump commit, whose parent is the pushed commit. A push with no
+  bump-worthy commits builds but publishes nothing, so it cannot overwrite the
+  latest Release. The bump commit is marked `[skip ci]`, and the bump waits for
+  the unit suite (`test.yaml`) and the commit check (`commits.yaml`).
 - The latest `v` tag / Release is the single source of truth for the version.
   `compute-version.sh` and the `vice-mcp-*` tag scheme are retired (old
   `vice-mcp-*` tags remain on the remote).

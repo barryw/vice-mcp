@@ -66,7 +66,7 @@ steps:
       - bison -d -o src/monitor/mon_parse.c src/monitor/mon_parse.y
       - cd ..
       - git fetch --tags
-      - VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+      - VERSION=$$(sh ci/release-version.sh); VERSION=$${VERSION:-dev-$$(git rev-parse --short HEAD)}
       - cd vice
       # --- GUI build ---
       - mkdir -p build-gui && cd build-gui
@@ -170,7 +170,8 @@ steps:
       - export GITHUB_TOKEN=$(cat "$CI_WORKSPACE/.ci-token")
       - apk add --no-cache bash ca-certificates git github-cli
       - git fetch --tags
-      - VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+      - VERSION=$$(sh ci/release-version.sh)
+      - test -n "$${VERSION}" || { echo "This push created no release; nothing to publish"; exit 0; }
       - |
         for f in $${VERSION}-linux-x86_64-*.zip; do
           gh release upload "$${VERSION}" "$${f}" --repo "$${CI_REPO}" --clobber
