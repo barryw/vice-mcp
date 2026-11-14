@@ -1,7 +1,7 @@
 cJSON Library
 =============
 
-Version: master (as of 2026-02-02)
+Version: 1.7.19 (CJSON_VERSION_* in cJSON.h)
 Source: https://github.com/DaveGamble/cJSON
 License: MIT
 
@@ -11,7 +11,11 @@ cJSON is a ultra-lightweight, portable, single-file JSON parser/generator
 written in ANSI C.
 
 Files:
-- cJSON.h - Header file
-- cJSON.c - Implementation
+- src/lib/cjson/cJSON.c - Implementation; this is the copy libmcp.a compiles
+  (see Makefile.am)
+- src/lib/cjson/cJSON.h - Header
+- cJSON.c, cJSON.h in this directory - byte-identical copies. The MCP sources
+  include "cJSON.h" with quotes, so the header found here is the one they use;
+  cJSON.c here is not built.
 
 The library is used as-is without modifications.

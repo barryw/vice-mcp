@@ -1,8 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Windows build script for MSYS2/MINGW64 environment.
-# Called from Woodpecker CI with MSYSTEM=MINGW64 already set.
+# Windows build script for MSYS2/MINGW64 environment, run by hand in a
+# MINGW64 shell (MSYSTEM=MINGW64). Not used by CI, which cross-compiles with
+# scripts/build-windows-cross.sh. Uses the committed configure/Makefile.in
+# (does not run ./autogen.sh).
 #
 # Usage: scripts/build-windows-msys2.sh <action>
 #   actions: build-libieee1284, build-gui, package-gui,

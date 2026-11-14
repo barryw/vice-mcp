@@ -1,5 +1,12 @@
 # VICE Embedded MCP Server Design
 
+> **Status (as of 2026-11-14): historical design, partially implemented, tool names changed.**
+> Built: embedded libmicrohttpd server on 127.0.0.1:6510, JSON-RPC 2.0 over `POST /mcp`, 62 `vice.*` tools (`tools/list` publishes them with `_` in place of `.`).
+> Changed: `breakpoints.*` → `checkpoint.*` / `watch.add`; `vic2/sid/cia.*` → `vicii/sid/cia.get_state|set_state` plus `sprite.*`; `files.*` → `autostart` / `disk.*`; `config.*` → `machine.config.*` (whitelisted resources); `execution.reset` → `machine.reset`; `trace.cycles.get` → `cycles.stopwatch`. Configuration is the `MCPServer*` resources and `-mcpserver*` options, with an optional bearer token and a single CORS origin. Only `vice.ping` reports execution state.
+> Tools run on the emulator thread (CPU trap while running, mainlock while paused), one at a time (`vice/src/mcp/mcp_transport.c`); handlers live in `vice/src/mcp/mcp_tools_*.c`.
+> Never built: SSE/event push (`GET /mcp` returns 405, `GET /events` 501), `execution.step_out`, state-based breakpoints (raster, collision, VIC write, composite), capabilities/profiles, annotations, frame tracing, VIC-20/TED toolsets, SID audio capture, tape/cartridge attach, confirmation tokens, IP allow-list, rate limiting.
+> Authoritative tool list: `tool_registry[]` in `vice/src/mcp/mcp_tools.c`, or `tools/list` at runtime.
+
 **Date:** 2026-02-02
 **Status:** Design Phase
 **Target:** VICE upstream PR submission

@@ -39,7 +39,8 @@ style = { changelog_title = "Style" }
 ci = { changelog_title = "CI/CD" }
 build = { changelog_title = "Build" }
 # WHI custom type: brand/marketing/endorsement changes (used across the portfolio,
-# e.g. brand(WAL-40) on main). Required so `cog check --from-latest-tag` accepts it.
+# e.g. brand(WAL-40) on main). Required so `cog verify` (commits.yaml and the
+# commit-msg hook) accepts it.
 brand = { changelog_title = "Branding" }
 
 [git_hooks.commit-msg]

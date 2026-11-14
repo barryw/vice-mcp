@@ -11,7 +11,8 @@ full programmatic control over the world's most iconic 8-bit computer.
 
 This is [VICE](https://vice-emu.sourceforge.io/) — the legendary Commodore emulator —
 with a [Model Context Protocol](https://modelcontextprotocol.io/) server built into its core.
-Not bolted on. Not a wrapper. **~17,000 lines of C woven into the emulator itself.**
+Not bolted on. Not a wrapper. **~15,000 lines of C woven into the emulator itself**
+(plus ~11,000 lines of C unit tests).
 
 ## What Can You Do With This?
 
@@ -25,7 +26,7 @@ Your agent can:
 - **Inspect everything** — CPU registers, memory banks, VIC-II graphics, SID audio, CIA timers
 - **See what's on screen** — take screenshots, read sprite bitmaps as ASCII art
 - **Interact like a human** — type text, press keys, move joysticks
-- **Measure performance** — cycle-accurate stopwatch, execution tracing, interrupt logging
+- **Measure performance** — cycle-accurate stopwatch
 - **Save and restore state** — full snapshot management with metadata
 
 ### For C64 Developers
@@ -36,8 +37,6 @@ without leaving your editor:
 - Load KickAssembler or VICE symbol files and debug by label name
 - Search memory for byte patterns with wildcard support
 - Compare memory regions against saved snapshots to find what changed
-- Trace execution with PC-range filtering to focus on your code
-- Log interrupts to understand IRQ/NMI timing
 - Group breakpoints and toggle them as a set
 
 ### For Researchers & Educators
@@ -46,19 +45,27 @@ without leaving your editor:
 - Capture screen states for documentation
 - Replay and analyze historical software
 
-## 61 Tools Across 13 Categories
+## 62 Tools Across 14 Categories
 
-Every tool follows MCP conventions with full JSON Schema validation, meaningful errors,
-and consistent parameter naming.
+Every tool publishes a JSON Schema for its arguments through `tools/list` and
+returns JSON-RPC errors with meaningful messages. The schemas describe the
+arguments; the server does not validate calls against them, each tool checks
+its own parameters.
+
+`tools/list` publishes each name with `.` replaced by `_` (`vice.memory.read`
+is listed as `vice_memory_read`); both spellings are accepted when calling. It
+also lists the four protocol methods (`initialize`,
+`notifications/initialized`, `tools/list`, `tools/call`), so clients see 66
+entries.
 
 | Category | Tools | What They Do |
 |---|---|---|
-| **Execution** | `vice.execution.run` `vice.execution.pause` `vice.execution.step` `vice.frame.advance` `vice.run_until` | Control the CPU — resume, halt, single-step, advance whole frames, run to address or cycle count |
+| **Execution** | `vice.ping` `vice.execution.run` `vice.execution.pause` `vice.execution.step` `vice.frame.advance` `vice.run_until` | Check liveness and run state; control the CPU — resume, halt, single-step, advance whole frames, run to an address |
 | **Registers** | `vice.registers.get` `vice.registers.set` | Read/write all 6502 registers (A, X, Y, SP, PC, status flags) |
 | **Memory** | `vice.memory.read` `vice.memory.write` `vice.memory.banks` `vice.memory.search` `vice.memory.fill` `vice.memory.compare` | Full memory access with bank selection, pattern search with wildcards |
 | **Checkpoints** | `vice.checkpoint.add` `vice.checkpoint.delete` `vice.checkpoint.list` `vice.checkpoint.toggle` `vice.checkpoint.set_condition` `vice.checkpoint.set_ignore_count` `vice.checkpoint.group.*` | Breakpoints, watchpoints, tracepoints — with conditions and groups |
 | **Sprites** | `vice.sprite.get` `vice.sprite.set` `vice.sprite.inspect` | Read/write sprite state, ASCII art bitmap visualization |
-| **VIC-II** | `vice.vicii.get_state` `vice.vicii.set_state` | Full access to the C64's video chip — raster, colors, scroll, bank |
+| **VIC-II** | `vice.vicii.get_state` `vice.vicii.set_state` | VIC-II on C64/C128/DTV/SCPU64 — raster, video mode, colors, scroll, memory pointers, IRQ, collisions |
 | **SID** | `vice.sid.get_state` `vice.sid.set_state` | The legendary sound chip — voices, filters, ADSR, waveforms |
 | **CIA** | `vice.cia.get_state` `vice.cia.set_state` | Timer and I/O chip state — both CIA1 and CIA2 |
 | **Disk** | `vice.disk.attach` `vice.disk.detach` `vice.disk.list` `vice.disk.read_sector` | Mount D64/D71/D81 images, browse directories, read raw sectors |
@@ -71,7 +78,7 @@ and consistent parameter naming.
 ## Architecture
 
 This isn't a sidecar process or a screen-scraper. The MCP server is compiled directly
-into VICE as a first-class subsystem — across **every machine VICE emulates**.
+into VICE as a first-class subsystem — in **every VICE emulator except VSID**.
 
 ### Supported Machines
 
@@ -84,13 +91,17 @@ into VICE as a first-class subsystem — across **every machine VICE emulates**.
 | **VIC-20** | 6502 | VIC-I video, expansion memory |
 | **Plus/4 & C16** | 7501/8501 | TED video+audio chip |
 | **PET** | 6502 | CRTC video, PIA/VIA I/O |
-| **CBM-II** | 6509 | CRTC, MOS 6526 CIA |
+| **CBM-II** | 6509 | CRTC (6x0/7x0) or VIC-II (5x0), SID, 6526 CIA, 6551 ACIA |
 
-The MCP server **adapts to the running machine automatically**. When an AI agent
-calls `vice.machine.config.get`, it receives the actual hardware configuration — which
-chips are present, what memory banks exist, valid address ranges, and available
-resources. An agent debugging a VIC-20 cartridge gets VIC-I registers; the same
-agent debugging a C128 program gets VIC-II *and* the VDC 80-column display.
+The MCP server **adapts to the running machine**. `vice.machine.config.get`
+reports which chips are present (name, model, register address range), which
+common chips are absent, the memory map, and the settable resources. The
+chip-state tools (`vice.vicii.*`, `vice.sprite.*`, `vice.cia.*`) work on the C64
+family (C64, C64SC, SCPU64, C128, C64DTV) and return error -32000 elsewhere. On
+a VIC-20 an agent learns it has a VIC at `$9000-$900F` and reads it with
+`vice.memory.read`; on a C128 it gets the VIC-II tools plus VDC RAM through
+`vice.memory.read` with bank `vdc`. Screenshots on x128 capture the VDC
+display.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -118,9 +129,10 @@ agent debugging a C128 program gets VIC-II *and* the VDC 80-column display.
 
 **Key design decisions:**
 
-- **Trap-based dispatch** — HTTP requests are dispatched through VICE's trap mechanism,
-  ensuring all tool logic executes on the emulator's main thread. No race conditions,
-  no locking surprises.
+- **Trap-based dispatch** — while the machine runs, HTTP requests are dispatched
+  through VICE's trap mechanism, so tool logic executes on the emulator thread.
+  While it is paused or held, they run under VICE's mainlock. One call runs at a
+  time; `vice.ping` and `vice.execution.pause` skip the queue.
 - **Zero-copy access** — Tools read directly from emulator internals. When you ask for
   VIC-II state, you get the actual register values, not a cached approximation.
 - **Machine-aware responses** — Tools report hardware capabilities, chip availability,
@@ -128,8 +140,9 @@ agent debugging a C128 program gets VIC-II *and* the VDC 80-column display.
   what it's working with.
 - **Monitor integration** — Works alongside VICE's built-in monitor. If the emulator
   is paused in the monitor, MCP requests execute directly without traps.
-- **Reserved events endpoint** — `GET /events` exists but currently returns
-  `501 Not Implemented`. Poll state through `/mcp` until event streaming lands.
+- **No event streaming yet** — `GET /mcp` returns `405 Method Not Allowed` (the
+  MCP answer for "no SSE stream") and the reserved `GET /events` returns
+  `501 Not Implemented`. Poll state through `POST /mcp`.
 
 ## Quick Start
 
@@ -209,7 +222,7 @@ curl -sS http://127.0.0.1:6510/mcp \
   "params": { "name": "vice_ping", "arguments": {} }
 }'
 
-# Read the BASIC ROM entry point
+# Read the BASIC ROM start vectors at $A000
 curl -sS http://127.0.0.1:6510/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
@@ -234,25 +247,40 @@ curl -sS http://127.0.0.1:6510/mcp \
   --data '{"jsonrpc":"2.0","id":1,"method":"vice.ping"}'
 ```
 
+### Use with Claude Code
+
+```bash
+claude mcp add --transport http vice http://127.0.0.1:6510/mcp
+
+# With a token
+claude mcp add --transport http vice http://127.0.0.1:6510/mcp \
+  --header "Authorization: Bearer secret"
+```
+
 ### Use with Claude Desktop
 
-Add this to your Claude Desktop MCP config:
+`claude_desktop_config.json` launches local (stdio) servers. Bridge to the
+HTTP endpoint with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
 
 ```json
 {
   "mcpServers": {
     "vice": {
-      "url": "http://127.0.0.1:6510/mcp"
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://127.0.0.1:6510/mcp"]
     }
   }
 }
 ```
 
-Then just talk to it: *"Load the game on drive 8 and show me what's on screen."*
+Restart Claude Desktop after editing the file. Then just talk to it:
+*"Load the game on drive 8 and show me what's on screen."*
 
 If VICE was started with `-mcpservertoken`, the client must send
-`Authorization: Bearer <token>` on every request. If your MCP client cannot
-configure HTTP headers, do not use a token for local-only `127.0.0.1` sessions.
+`Authorization: Bearer <token>` on every request (with `mcp-remote`, add
+`"--header", "Authorization: Bearer <token>"` to `args`). If your MCP client
+cannot configure HTTP headers, do not use a token for local-only `127.0.0.1`
+sessions.
 
 ## Building from Source
 
@@ -260,30 +288,50 @@ configure HTTP headers, do not use a token for local-only `127.0.0.1` sessions.
 
 | Platform | Install |
 |---|---|
-| **Debian/Ubuntu** | `apt install build-essential autoconf automake pkg-config libmicrohttpd-dev libgtk-3-dev libglew-dev libevdev-dev libcurl4-openssl-dev libpulse-dev xa65 flex byacc dos2unix` |
-| **macOS** | `brew install autoconf automake pkg-config libmicrohttpd gtk+3 xa lame` |
-| **Windows (MSYS2)** | `pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-libmicrohttpd mingw-w64-x86_64-gtk3 autoconf automake pkg-config` |
+| **Debian/Ubuntu** | `apt install build-essential autoconf automake pkg-config libmicrohttpd-dev libgtk-3-dev libglew-dev libevdev-dev libasound2-dev libpulse-dev libcurl4-openssl-dev xa65 flex bison byacc dos2unix` |
+| **macOS** | `brew install autoconf automake bison pkg-config libmicrohttpd gtk+3 librsvg adwaita-icon-theme glew xa dos2unix` |
+| **Windows (MSYS2)** | See `vice/doc/building/Windows-MinGW-GTK3-Howto.txt`, plus `mingw-w64-x86_64-libmicrohttpd` |
+
+These match the CI pipelines (`.woodpecker/build-linux.yaml`,
+`.woodpecker/build-macos.yaml`), which add optional codec and I/O libraries.
+libmicrohttpd 0.9.71 or newer is needed (the transport uses `enum MHD_Result`;
+`configure.ac` checks for it, so run `./autogen.sh` as below).
 
 ### Build
 
 ```bash
 cd vice
-./autogen.sh
-mkdir build && cd build
+./autogen.sh   # regenerates configure and Makefile.in; the committed copies are stale
+# not "build": vice/build/ is VICE's packaging directory
+mkdir -p build-gtk && cd build-gtk
 ../configure --enable-mcp-server --enable-gtk3ui
-make -j$(nproc)
+make -j"$(getconf _NPROCESSORS_ONLN)"
 ```
+
+For a headless build use `--enable-headlessui` instead of `--enable-gtk3ui`;
+without ALSA or PulseAudio add `--without-alsa --without-pulse`. If `make`
+keeps re-running autotools, apply the timestamp fix-up the CI pipelines run
+after `./autogen.sh`.
 
 ### Verify
 
 ```bash
 # MCP flags should appear in help output
-src/x64sc -help | grep mcp
+src/x64sc -help | grep -A1 mcpserver
 
 # Expected:
-# -mcpserver          Enable MCP server
-# -mcpserverport <port>  Set MCP server port (default: 6510)
-# -mcpserverhost <host>  Set MCP server host (default: 127.0.0.1)
+# -mcpserver
+# 	Enable MCP server
+# +mcpserver
+# 	Disable MCP server
+# -mcpserverport <port>
+# 	Set MCP server port (default 6510)
+# -mcpserverhost <host>
+# 	Set MCP server host (default 127.0.0.1)
+# -mcpservertoken <token>
+# 	Require bearer token for MCP HTTP requests
+# -mcpservercorsorigin <origin>
+# 	Enable CORS for one exact origin (requires MCPServerToken)
 ```
 
 ### Pre-built Binaries
@@ -302,39 +350,59 @@ natively using MSYS2.
 
 ## Python Client
 
-A resilient Python client is included with retry logic, connection pooling, and
-a convenience method for every tool:
+`tools/resilience/vice_mcp_resilient.py` is a Python client with retries
+(exponential back-off, falling back from `tools/call` to direct JSON-RPC
+dispatch), client-side parameter checks, and a per-call reliability log
+(`~/.vice-mcp/reliability.jsonl`). Invalid-params, invalid-request and parse
+errors fail at once; transport errors and timeouts are retried. It has a
+snake_case method for every registered tool; `vice.call("vice.tool.name",
+**params)` calls any tool by name. It does not send a bearer token.
 
 ```python
-from tools.resilience.vice_mcp_resilient import ViceMCPClient
+# Run from the repository root (or add it to PYTHONPATH)
+from tools.resilience import ViceMCPClient
 
-with ViceMCPClient("http://127.0.0.1:6510") as vice:
+with ViceMCPClient(host="127.0.0.1", port=6510) as vice:  # POSTs to /mcp
     # Load a program
     vice.autostart("/path/to/game.prg")
 
     # Set a breakpoint at the main loop
-    vice.checkpoint_add(start_address=0x0810, stop_address=0x0810)
+    vice.checkpoint_add(start=0x0810)
 
-    # Run until it hits
+    # Resume; returns at once, the machine stops when the breakpoint hits
     vice.execution_run()
 
-    # Read the screen
+    # Read the CPU and the screen
     regs = vice.registers_get()
-    screenshot = vice.display_screenshot(format="base64")
+    shot = vice.display_screenshot(return_base64=True)  # shot["base64"]
 
     # Inspect a sprite
     art = vice.sprite_inspect(sprite_number=0)
-    print(art)
+    print(art["bitmap"])
 ```
 
-### Protocol Test Suite
+### Tests
 
-167 tests across 25 test classes validate every tool, every parameter, and every
-error condition:
+`tools/tests/test_resilient_client.py` unit-tests the client without a
+server (it checks the client's methods and schemas against the C sources):
 
 ```bash
-# Requires a running VICE instance with MCP enabled
+pytest tools/tests/test_resilient_client.py -v
+```
+
+The protocol suite has 371 test cases (163 test methods in 23 test classes
+plus one module-level test, with parametrized schema checks for every
+advertised tool) covering the JSON-RPC protocol, tool schemas and parameter
+validation against a live VICE:
+
+```bash
+# Requires Python 3.10+, pytest, requests, and VICE started with -mcpserver
+# on 127.0.0.1:6510 (hard-coded). Without a server every test is skipped.
 pytest tools/tests/test_mcp_protocol.py -v
+
+# Skip the test that needs a disk in unit 8 and the 43 that change
+# emulator state
+pytest tools/tests/test_mcp_protocol.py -v -m "not stateful and not disk_required"
 ```
 
 ## Real-World Usage
@@ -387,7 +455,8 @@ If you need remote access, put it behind a reverse proxy with proper auth:
 nginx/caddy -> auth -> https -> 127.0.0.1:6510
 ```
 
-Binding to `0.0.0.0` is supported via `-mcpserverhost`. That makes VICE listen
+Binding to `0.0.0.0` is supported via `-mcpserverhost`, which takes an IPv4
+address (host names and IPv6 are rejected). `0.0.0.0` makes VICE listen
 on every network interface. It does not mean clients connect to `0.0.0.0`; remote
 clients connect to the Mac/Linux/Windows host's real IP address.
 
@@ -404,20 +473,28 @@ Use this checklist for remote sessions:
 ## Relationship to Upstream VICE
 
 This is a fork of the [VICE SVN mirror](https://github.com/VICE-Team/svn-mirror).
-The MCP server is implemented as a self-contained subsystem in `src/mcp/` — it
-touches VICE internals through well-defined interfaces but doesn't modify core
-emulation logic.
+The MCP server lives in `vice/src/mcp/`. Integrating it touches a few core
+files: `init.c`, `monitor/monitor.c` (step, pause and checkpoint holds),
+`interrupt.c` (trap queue, interrupt state across snapshot loads),
+`mainc64cpu.c`, `joyport/`, `configure.ac` and `src/Makefile.am`.
 
-The `main` branch tracks upstream VICE. The `mcp-server` branch contains all
-MCP additions.
+`main` is upstream VICE (merged in from `upstream/main`) plus all MCP work;
+there is no separate MCP branch.
 
-The goal is to contribute this work back to the VICE project. The implementation
-is structured to export cleanly as unified diffs for SVN submission.
+The goal is to contribute this work back to the VICE project. Generated
+autotools files (`configure`, `Makefile.in`, …) are currently committed, so a
+raw diff against upstream is not yet ready to submit.
 
 ## Tool Reference
 
 <details>
-<summary><strong>Click to expand full reference for all 61 tools</strong></summary>
+<summary><strong>Click to expand full reference for all 62 tools</strong></summary>
+
+Address parameters accept a JSON number (0-65535), a hex string with a `$` or
+`0x` prefix (`"$C000"`, `"0xC000"`), or the name of a loaded symbol. A decimal
+string such as `"4096"` is looked up as a symbol name, not parsed as a number.
+The schemas published by `tools/list` declare address parameters as strings;
+numbers are accepted all the same.
 
 ### Execution Control
 
@@ -466,11 +543,14 @@ paused at the next instruction boundary and the reply also carries
 | `frames` | number | | Whole frames to run before stopping again (default: 1, max: 1000) |
 
 #### `vice.run_until`
-Run until address or for N cycles with timeout.
+Set a temporary exec breakpoint at `address` (deleted when hit) and resume.
+The call returns at once without waiting for the target; poll `vice.ping` or
+`vice.registers.get` to see when the machine has stopped. Reply:
+`target_address`, `target_symbol` (when known), `message`.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `address` | string | | Target address (hex, decimal, or symbol name) |
-| `cycles` | number | | Max cycles to run |
+| `address` | number \| string | yes | Target address |
+| `cycles` | number | | Not implemented. Ignored when `address` is given (echoed as `cycle_limit` with a `note`); on its own it returns error -32000 |
 
 ---
 
@@ -483,8 +563,8 @@ Get all CPU registers (A, X, Y, SP, PC, status flags). No parameters.
 Set a CPU register value.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `register` | string | yes | Register name: `PC` `A` `X` `Y` `SP` `N` `V` `B` `D` `I` `Z` `C` |
-| `value` | number | yes | Value to set |
+| `register` | string | yes | Register name, uppercase (case-sensitive): `PC` `A` `X` `Y` `SP` `N` `V` `B` `D` `I` `Z` `C` |
+| `value` | number | yes | PC 0-65535; A/X/Y/SP 0-255; flags 0 or 1 |
 
 ---
 
@@ -494,15 +574,16 @@ Set a CPU register value.
 Read a memory range with optional bank selection.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `address` | string | yes | Address: number, hex (`$1000`), or symbol name |
+| `address` | number \| string | yes | Start address |
 | `size` | number | yes | Bytes to read (1-65535) |
-| `bank` | string | | Memory bank name (use `vice.memory.banks` to list) |
+| `bank` | string \| number | | Bank name (see `vice.memory.banks`) or number 0-255; default is the CPU view |
+| `encoding` | string | | `array` (default): `data` is an array of 2-digit hex strings (`["A9","00",…]`); `hex`: `data_hex` is one string (`"A900…"`) |
 
 #### `vice.memory.write`
 Write bytes to memory.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `address` | string | yes | Address: number, hex (`$1000`), or symbol name |
+| `address` | number \| string | yes | Start address |
 | `data` | number[] | yes | Bytes to write (0-255 each) |
 
 #### `vice.memory.banks`
@@ -512,32 +593,39 @@ List available memory banks for the current machine. No parameters.
 Search for byte patterns with optional wildcard mask.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `start` | string | yes | Start address |
-| `end` | string | yes | End address |
-| `pattern` | number[] | yes | Byte pattern, e.g. `[0x4C, 0x00, 0xA0]` |
-| `mask` | number[] | | Per-byte mask: `0xFF`=exact, `0x00`=wildcard |
+| `start` | number \| string | yes | Start address |
+| `end` | number \| string | yes | End address (inclusive, ≥ `start`) |
+| `pattern` | number[] | yes | 1-256 bytes, e.g. `[0x4C, 0x00, 0xA0]` |
+| `mask` | number[] | | Same length as `pattern`; per-byte `0xFF`=exact, `0x00`=wildcard |
 | `max_results` | number | | Max matches (default: 100, max: 10000) |
+
+Reply: `matches` (`"$XXXX"` strings), `total_matches`, `truncated`.
 
 #### `vice.memory.fill`
 Fill a memory range with a repeating byte pattern.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `start` | string | yes | Start address |
-| `end` | string | yes | End address (inclusive) |
-| `pattern` | number[] | yes | Byte pattern to repeat |
+| `start` | number \| string | yes | Start address |
+| `end` | number \| string | yes | End address (inclusive) |
+| `pattern` | number[] | yes | Byte pattern to repeat (1-256 bytes, each 0-255) |
 
 #### `vice.memory.compare`
-Compare two memory ranges or compare against a snapshot.
+Compare two memory ranges or compare against a snapshot. Each difference is
+`{address, current, reference}`; in `ranges` mode `current` is range 1 and
+`reference` is range 2. Snapshot mode needs a C64-family snapshot: it reads
+the RAM stored in the snapshot and compares it with live RAM, so ROM or I/O
+banked in over RAM does not show up as differences. `ranges` mode compares
+what the CPU sees.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `mode` | string | yes | `ranges` or `snapshot` |
-| `range1_start` | string | ranges | Start of first range |
-| `range1_end` | string | ranges | End of first range |
-| `range2_start` | string | ranges | Start of second range |
+| `range1_start` | number \| string | ranges | Start of first range |
+| `range1_end` | number \| string | ranges | End of first range |
+| `range2_start` | number \| string | ranges | Start of second range (must fit below `$FFFF`) |
 | `snapshot_name` | string | snapshot | Snapshot to compare against |
-| `start` | string | snapshot | Start address to compare |
-| `end` | string | snapshot | End address to compare |
-| `max_differences` | number | | Max diffs to return (default: 100) |
+| `start` | number \| string | snapshot | Start address to compare |
+| `end` | number \| string | snapshot | End address to compare |
+| `max_differences` | number | | Max diffs to return (default: 100, max: 10000) |
 
 ---
 
@@ -547,12 +635,12 @@ Compare two memory ranges or compare against a snapshot.
 Add a checkpoint (breakpoint, watchpoint, or tracepoint).
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `start` | string | yes | Start address |
-| `end` | string | | End address (default = start) |
+| `start` | number \| string | yes | Start address |
+| `end` | number \| string | | End address (default = start) |
 | `stop` | boolean | | Stop on hit (default: true) |
 | `load` | boolean | | Break on memory read (default: false) |
 | `store` | boolean | | Break on memory write (default: false) |
-| `exec` | boolean | | Break on execution (default: true) |
+| `exec` | boolean | | Break on execution. Default: true only when `load` and `store` are unset; with either set, pass `exec: true` to also break on execution |
 
 #### `vice.checkpoint.delete`
 Delete a checkpoint.
@@ -575,28 +663,31 @@ Set a condition expression on a checkpoint.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `checkpoint_num` | number | yes | Checkpoint number |
-| `condition` | string | yes | Expression, e.g. `A == $42` |
+| `condition` | string | yes | Only `<reg> == <value>`: reg is `A`, `X`, `Y`, `PC` or `SP`; `=` also accepted; value is `$hex`, `0xhex` or decimal. E.g. `A == $42` |
+
+`vice.checkpoint.list` reports conditions as text (`"A == $42"`), including
+expression trees set in the VICE monitor.
 
 #### `vice.checkpoint.set_ignore_count`
 Set how many hits to ignore before stopping.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `checkpoint_num` | number | yes | Checkpoint number |
-| `count` | number | yes | Hits to ignore |
+| `count` | number | yes | Hits to ignore (≥ 0) |
 
 #### `vice.checkpoint.group.create`
 Create a named checkpoint group.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | yes | Group name |
-| `checkpoint_ids` | number[] | | Initial checkpoint IDs |
+| `name` | string | yes | Unique group name (max 63 chars; max 32 groups) |
+| `checkpoint_ids` | number[] | | Initial checkpoint IDs: existing checkpoints only, max 64 per group; otherwise error -32602 and no group is created |
 
 #### `vice.checkpoint.group.add`
 Add checkpoints to an existing group.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `group` | string | yes | Group name |
-| `checkpoint_ids` | number[] | yes | Checkpoint IDs to add |
+| `checkpoint_ids` | number[] | yes | Existing checkpoint IDs to add; past 64 members, or an unknown ID, is error -32602 and nothing is added. Reply `added` |
 
 #### `vice.checkpoint.group.toggle`
 Enable or disable all checkpoints in a group.
@@ -611,7 +702,7 @@ List all checkpoint groups. No parameters.
 
 ---
 
-### Sprites (C64/C128/DTV)
+### Sprites (C64, C64SC, SCPU64, C128, C64DTV)
 
 #### `vice.sprite.get`
 Get sprite state.
@@ -634,15 +725,29 @@ Set sprite properties.
 | `color` | number | | Sprite color 0-15 |
 
 #### `vice.sprite.inspect`
-Visual ASCII art representation of a sprite's bitmap.
+Visual ASCII art representation of a sprite's bitmap. Returns `pointer` (the
+address of the sprite-pointer byte, not its value), `data_address`,
+`dimensions`, `multicolor`, `colors` (`main`, plus `multi1`/`multi2` when
+multicolor), `raw_data` (63 bytes) and `bitmap`. The VIC bank, screen base and
+colors come from the I/O chips, and the data is read as the VIC-II sees it
+(RAM, plus the character ROM at `$1000-$1FFF` of VIC banks 0 and 2 on the C64
+family).
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `sprite_number` | number | yes | Sprite number 0-7 |
-| `format` | string | | `ascii` (default), `binary`, or `png_base64` |
+| `format` | string | | `ascii` (default) or `binary`. `png_base64` returns error -32000 (not implemented) |
 
 ---
 
 ### Chip State
+
+VIC-II and CIA tools work on C64, C64SC, SCPU64, C128 and C64DTV; on other
+machines they return error -32000 (`<chip> not available on this machine`).
+The `set_state` tools (and `vice.sprite.set`) write to the chips through the
+I/O bank, whatever `$01` maps at `$D000`. Every value is checked first: one
+invalid value or register entry fails the call with -32602 and nothing is
+written. Decoded colors are 0-15 (the VIC-II drives only the low nibble; the
+DTV's color registers are 8-bit). The raw `registers` arrays are unmasked.
 
 #### `vice.vicii.get_state`
 Get VIC-II internal state. No parameters.
@@ -651,7 +756,17 @@ Get VIC-II internal state. No parameters.
 Set VIC-II registers.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `registers` | object[] | | Array of `{offset, value}` (offset 0x00-0x2E) |
+| `registers` | object[] | | Array of `{offset, value}` (offset 0x00-0x2E, value 0-255) |
+| `border_color` | number | | `$D020`, 0-15 (0-255 on the DTV) |
+| `background_color` | number | | `$D021`, 0-15 (0-255 on the DTV) |
+| `background_color_1` `background_color_2` `background_color_3` | number | | `$D022-$D024`, 0-15 (0-255 on the DTV) |
+| `control_1` | number | | `$D011` raw byte |
+| `control_2` | number | | `$D016` raw byte |
+| `memory_pointers` | number | | `$D018` raw byte |
+| `irq_raster_line` | number | | Raster IRQ compare line 0-511 (writes `$D012` and bit 7 of `$D011`) |
+| `interrupt_enable` | number | | `$D01A`, 0-15 |
+
+Reply includes `registers_updated` (the number of register writes).
 
 #### `vice.sid.get_state`
 Get SID state (voices, filter, ADSR). No parameters.
@@ -661,6 +776,10 @@ Set SID registers.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `registers` | object[] | | Array of `{offset, value}` (offset 0x00-0x1C) |
+| `voice0` `voice1` `voice2` | object | | 0-based (`get_state` numbers voices 1-3). Keys: `frequency` (16-bit), `pulse_width` (12-bit), `control`, `attack_decay`, `sustain_release` (raw bytes) |
+| `filter_cutoff` | number | | 11-bit cutoff, split across `$D415`/`$D416` |
+| `filter_resonance` | number | | Raw `$D417` byte (resonance bits 4-7, voice routing bits 0-3) |
+| `filter_mode_volume` | number | | Raw `$D418` byte (mode bits 4-7, volume bits 0-3) |
 
 #### `vice.cia.get_state`
 Get CIA state (timers, ports).
@@ -674,6 +793,7 @@ Set CIA registers.
 |---|---|---|---|
 | `cia1_registers` | object[] | | Array of `{offset, value}` (offset 0x00-0x0F) |
 | `cia2_registers` | object[] | | Array of `{offset, value}` (offset 0x00-0x0F) |
+| `cia1` `cia2` | object | | Named writes: `port_a`, `port_b`, `ddr_a`, `ddr_b`, `timer_a_low`, `timer_a_high`, `timer_b_low`, `timer_b_high` (timer latches), `interrupt_control` (a write sets the ICR mask), `control_a`, `control_b` |
 
 ---
 
@@ -684,6 +804,7 @@ Attach a disk image to a drive.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `unit` | number | yes | Drive unit (8-11) |
+| `drive` | number | | Drive 0 or 1 within a dual-drive unit (default: 0) |
 | `path` | string | yes | Path to disk image (.d64, .g64, etc.) |
 
 #### `vice.disk.detach`
@@ -691,6 +812,7 @@ Detach a disk image.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `unit` | number | yes | Drive unit (8-11) |
+| `drive` | number | | Drive 0 or 1 within a dual-drive unit (default: 0) |
 
 #### `vice.disk.list`
 List directory contents of an attached disk.
@@ -711,26 +833,43 @@ Read raw sector data.
 ### Machine Control
 
 #### `vice.autostart`
-Autostart a PRG or disk image.
+Autostart a disk, tape, snapshot, cartridge or PRG/P00 file. The type is
+auto-detected; disk images go to unit 8.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Path to .prg, .d64, .g64, etc. |
 | `program` | string | | Program name to load from disk |
 | `run` | boolean | | Run after loading (default: true) |
-| `index` | number | | Program index on disk, 0-based |
+| `index` | number | | Directory entry to load when `program` is omitted: 1 = first file, 2 = second, …; 0 or omitted loads `*` |
 
 #### `vice.machine.reset`
 Reset the machine.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `mode` | string | | `soft` (default) or `hard` (power cycle) |
+| `mode` | string | | `soft` (default; `cpu` is an alias) or `hard` (power cycle; `power` is an alias) |
 | `run_after` | boolean | | Resume after reset (default: true) |
 
 #### `vice.machine.config.get`
 Get machine configuration — chips, memory map, resources. No parameters.
 
 #### `vice.machine.config.set`
-Set machine resources.
+Set whitelisted integer resources:
+
+- All machines: `MachineVideoStandard` (1=PAL, 2=NTSC, 3=NTSC-Old, 4=PAL-N), `WarpMode` (0/1), `Speed` (percent)
+- C64/C64SC/SCPU64: `SidModel`, `CIA1Model`, `CIA2Model`
+- C128: those plus `VDCRevision`, `VDC64KB`, `C128FullBanks`
+- C64DTV: `SidModel`
+- VIC-20: `RAMBlock0/1/2/3/5`
+- Plus/4: `RamSize`, `Acia1Enable`
+- PET: `RamSize`, `IOSize`, `Crtc`, `VideoSize`, `SuperPET`
+- CBM-II: `RamSize`, `ModelLine`, `SidModel`
+
+Changing anything other than `WarpMode` or `Speed` power-cycles the machine
+and resumes it. The request is all or nothing: every pair is checked first,
+and if a resource rejects its value the pairs already applied are restored.
+Returns `changes_applied` (`resource`, `old_value`, `new_value`,
+`needs_reset`), `machine_reset`, and `new_config` (same shape as
+`vice.machine.config.get`).
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `resources` | object | yes | Resource name/value pairs, e.g. `{"WarpMode": 1}` |
@@ -740,15 +879,18 @@ Set machine resources.
 ### Display
 
 #### `vice.display.screenshot`
-Capture the screen.
+Capture the primary canvas. On x128 that is the VDC 80-column display, not
+the VIC-II.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `path` | string | | File path to save |
-| `format` | string | | `PNG` (default) or `BMP` |
-| `return_base64` | boolean | | Return as base64 data URI |
+| `path` | string | unless `return_base64` | File to write. Omitted with `return_base64: true`: a temp file is used and deleted |
+| `format` | string | | `PNG` or `BMP` (lower case accepted). Default `PNG`, or `BMP` if VICE was built without libpng |
+| `return_base64` | boolean | | Also return the image as `base64`, `data_uri` and `size` (bytes) |
 
 #### `vice.display.get_dimensions`
-Get display dimensions. No parameters.
+Get display dimensions. No parameters. Returns `width`, `height` (physical
+canvas, or the visible size when headless), `visible_width` and
+`visible_height`. On x128 this is the VDC canvas.
 
 ---
 
@@ -761,20 +903,30 @@ Type text with automatic PETSCII conversion.
 | `text` | string | yes | Text to type (`\n` for Return) |
 | `petscii_upper` | boolean | | Uppercase mapping (default: true) |
 
-#### `vice.keyboard.key_press`
-Press a key.
+#### `vice.keyboard.petscii`
+Feed exact PETSCII bytes into the KERNAL keyboard buffer, with no ASCII
+conversion. Bytes share VICE's keyboard-buffer queue with
+`vice.keyboard.type` and are delivered as the running KERNAL empties its
+buffer. Returns `bytes_queued`; fails if the queue is full or keyboard-buffer
+injection is unavailable.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `key` | string | yes | Key name or single char |
-| `modifiers` | string[] | | `shift`, `control`, `alt`, `meta`, etc. |
+| `data` | number[] | yes | 1-4096 PETSCII byte values, each 1-255 (`13` = Return; `0` is not allowed) |
+
+#### `vice.keyboard.key_press`
+Press a host key; it goes through the active host keymap.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `key` | string \| number | yes | Case-sensitive name: `Return`/`Enter`, `Space`, `BackSpace`, `Delete`, `Escape`, `Tab`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `F1`-`F8`; a single character; or a numeric VHK key code |
+| `modifiers` | string[] | | `shift`, `control`/`ctrl`, `alt`, `meta`, `command`/`cmd`; unknown names are ignored |
 | `hold_frames` | number | | Hold duration in frames (1-300) |
-| `hold_ms` | number | | Hold duration in ms (1-5000) |
+| `hold_ms` | number | | Hold duration in ms (1-5000), converted at 20 ms/frame; overrides `hold_frames` |
 
 #### `vice.keyboard.key_release`
 Release a key.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `key` | string | yes | Key name or single char |
+| `key` | string \| number | yes | Same as `vice.keyboard.key_press` |
 | `modifiers` | string[] | | Modifiers to release |
 
 #### `vice.keyboard.restore`
@@ -784,33 +936,52 @@ Press/release the RESTORE key (triggers NMI).
 | `pressed` | boolean | | true=press, false=release (default: true) |
 
 #### `vice.keyboard.matrix`
-Direct keyboard matrix control for games.
+Direct keyboard matrix control for games. Positions are the C64 matrix layout.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `key` | string | | Key name: `A`-`Z`, `0`-`9`, `SPACE`, `RETURN`, etc. |
+| `key` | string | | C64 key name, case-insensitive (takes precedence over `row`/`col`): `A`-`Z`, `0`-`9`, `SPACE`, `RETURN`/`ENTER`, `STOP`/`RUNSTOP`, `F1` `F3` `F5` `F7`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `LSHIFT`/`SHIFT`, `RSHIFT`, `CTRL`/`CONTROL`, `CBM`/`C=`, `HOME`/`CLR`, `DEL`/`INST`, `POUND`, `ARROWUP`, `ARROWLEFT`, `PLUS`, `MINUS`, `ASTERISK`, `AT`, `COLON`, `SEMICOLON`, `EQUALS`, `COMMA`, `PERIOD`, `SLASH`. `UP` and `LEFT` are SHIFT + CRSR DOWN/RIGHT on the C64, so they press SHIFT too (reply has `shift: true`) |
 | `row` | number | | Matrix row 0-7 (alternative to key) |
 | `col` | number | | Matrix column 0-7 (alternative to key) |
 | `pressed` | boolean | | Key state (default: true) |
-| `hold_frames` | number | | Hold duration in frames |
-| `hold_ms` | number | | Hold duration in ms |
+| `hold_frames` | number | | Auto-release after N frames (0-300; 0 = no auto-release) |
+| `hold_ms` | number | | Auto-release after N ms (0-5000, 20 ms/frame, at least 1 frame); overrides `hold_frames` |
+
+`vice.keyboard.matrix` and `vice.keyboard.chord` share 16 auto-release slots
+(`vice.keyboard.key_press` has its own 16). A held press that finds no free
+slot fails with -32603 and presses nothing.
+
+#### `vice.keyboard.chord`
+Press several keyboard-matrix keys at the same instant, hold them, then
+release them all. Uses C64 matrix positions. Returns `keys` (the `row`/`col`
+of each), `hold_frames` (plus `hold_ms` if given) and
+`auto_release_scheduled`. If the shared auto-release pool cannot take every
+key, the call fails and presses nothing.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `keys` | array | yes | 1-16 entries. Each is a key name (as `vice.keyboard.matrix`; `UP`/`LEFT` add SHIFT, counting toward the 16), `{"key": name}`, or `{"row": 0-7, "col": 0-7}` |
+| `hold_frames` | number | | Frames to hold before release (1-300, default: 3) |
+| `hold_ms` | number | | Milliseconds to hold (1-5000, 20 ms/frame); overrides `hold_frames` |
+
+Example: cursor up = `{"keys": ["UP"]}`, the same as `{"keys": ["SHIFT", "DOWN"]}`.
 
 #### `vice.joystick.set`
-Set joystick state.
+Set joystick state. The reply's `value` is a bitmask: up=1, down=2, left=4,
+right=8, fire=16.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `port` | number | | Port 1 or 2 (default: 1) |
-| `direction` | string | | `up`, `down`, `left`, `right`, `center` |
+| `direction` | string \| string[] | | `up`, `down`, `left`, `right`, `center`/`none`; an array combines directions, e.g. `["up","left"]` |
 | `fire` | boolean | | Fire button (default: false) |
 
 #### `vice.joystick.tap`
-Tap joystick.
+Set a direction and/or fire for a fixed time, then center.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `port` | number | | Port 1 or 2 (default: 1) |
-| `direction` | string | | `up`, `down`, `left`, `right`, `center` |
+| `direction` | string \| string[] | | As `vice.joystick.set` |
 | `fire` | boolean | | Fire button (default: false) |
-| `duration_frames` | number | | Tap duration in frames (default: 3) |
-| `duration_ms` | number | | Tap duration in ms (default: 0) |
+| `duration_frames` | number | | Frames before auto-center (1-300, default: 3) |
+| `duration_ms` | number | | Milliseconds before auto-center (1-5000, 20 ms/frame); overrides `duration_frames` |
 
 #### `vice.paddle.set`
 Set both paddle positions on a C64 control port. The values feed SID POTX/POTY reads at `$D419`/`$D41A` through VICE's normal port selection and sampling. `255` means an open paddle input; analog SID reads may vary slightly due to VICE's paddle noise model. After a port is set, MCP values override attached paddle or mouse input on that port until VICE exits.
@@ -829,7 +1000,7 @@ Set both paddle positions on a C64 control port. The values feed SID POTX/POTY r
 Disassemble memory to 6502 instructions.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `address` | string | yes | Start address |
+| `address` | number \| string | yes | Start address |
 | `count` | number | | Instructions to disassemble (default: 10, max: 100) |
 | `show_symbols` | boolean | | Show symbol names (default: true) |
 
@@ -838,7 +1009,9 @@ Load a symbol/label file.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Path to .sym or .lbl file |
-| `format` | string | | `auto`, `kickasm`, `vice`, or `simple` |
+| `format` | string | | `auto` (default), `kickasm`, `vice`, or `simple`; anything else is error -32602. `vice` and `simple` both read `al C:xxxx .name`, ld65's `al 00xxxx .name`, and `name = xxxx` lines (value hex, `$` optional, spaces around `=` optional) |
+
+Reply: `format_detected`, `symbols_loaded`.
 
 #### `vice.symbols.lookup`
 Look up a symbol by name or address.
@@ -851,16 +1024,22 @@ Look up a symbol by name or address.
 Add a memory watchpoint.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `address` | string | yes | Address to watch |
+| `address` | number \| string | yes | Address to watch |
 | `size` | number | | Bytes to watch (default: 1) |
 | `type` | string | | `read`, `write`, or `both` (default: `write`) |
 | `load` | boolean | | Alternative to `type`: watch reads, as in `vice.checkpoint.add` |
 | `store` | boolean | | Alternative to `type`: watch writes, as in `vice.checkpoint.add` |
 | `stop` | boolean | | Stop on hit (default: true); `false` counts hits without stopping |
-| `condition` | string | | Condition, e.g. `A == $42` |
+| `condition` | string | | Same grammar as `vice.checkpoint.set_condition`, e.g. `A == $42` |
+
+`type` overrides `load`/`store` when both are given; `load: false, store: false`
+is an error.
 
 #### `vice.backtrace`
-Show call stack from JSR return addresses.
+Heuristic call stack: reads 2-byte pairs from SP+1 upward as return
+addresses, skipping values below `$0200` or above `$FFFC`. `called_from` and
+`called_target` appear only where a JSR precedes the address; data pushed
+with PHA can misalign or pad the list.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `depth` | number | | Max frames (default: 16, max: 64) |
@@ -876,7 +1055,9 @@ Measure elapsed CPU cycles.
 ### Snapshots
 
 #### `vice.snapshot.save`
-Save complete emulator state.
+Save complete emulator state. Fails if a snapshot with that name already
+exists. Files go in `mcp_snapshots/` under the VICE user config directory;
+`vice.snapshot.list` returns the `directory`.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Snapshot name (alphanumeric, `_`, `-`) |
@@ -897,20 +1078,26 @@ List all snapshots with metadata. No parameters.
 
 ## Project Status
 
-This is active, working software. The MCP server compiles and runs on Linux, macOS,
-and Windows. All 61 tools are implemented and tested. CI produces binaries for all
-three platforms on every push.
+This is active, working software. The MCP server compiles and runs on Linux,
+macOS and Windows. 62 tools are registered. CI builds binaries for all three
+platforms on every push to `main`; pull requests and pushes to `main` build a
+headless VICE and run the C unit suite (`vice/src/mcp/tests`). The live
+protocol suite (`tools/tests`) is run by hand.
 
 **What's solid:**
 - Full tool suite — execution, memory, breakpoints, sprites, chip state, disk, input, debugging
-- Machine-aware responses across all VICE-emulated platforms
-- Python client with retry logic and full test coverage
+- Machine-aware responses across the VICE emulators (chip-state tools cover the C64 family)
+- Python client with retry logic and its own unit tests
 - Cross-platform builds: Linux x86_64 (GUI + headless), macOS arm64 (GUI + headless), Windows x86_64 (headless)
 - Automated CI/CD pipeline with binary releases
 
-**What's in progress:**
+**Not done yet:**
 - Event streaming. `GET /events` is reserved but returns `501 Not Implemented` today.
-- Execution tracing and interrupt logging hooks into VICE CPU core
+- Execution tracing and interrupt logging. The handlers in
+  `mcp_tools_trace.c` only store configuration and are not registered; no
+  hooks into the CPU core exist.
+- `vice.run_until` cycle limits and `vice.sprite.inspect` `png_base64` output
+  (both return error -32000).
 
 ## Contributing
 
@@ -929,7 +1116,8 @@ and modern AI tooling. Contributions from either world (or both) are welcome.
 - **Documentation** — Tutorials, example workflows, video demos
 - **Testing** — Running the protocol test suite against edge cases
 
-The MCP server is entirely contained in `vice/src/mcp/`. Start there.
+The MCP server lives in `vice/src/mcp/` (hooks in `init.c`, `monitor/monitor.c`,
+`interrupt.c`, `mainc64cpu.c`, `joyport/`). Start there.
 
 ### Versioning & releases
 
@@ -938,13 +1126,18 @@ This repo follows the Walker Heavy Industries Build & Release Standard:
 - **Conventional Commits** are required. Versioning is automated with
   [Cocogitto](https://docs.cocogitto.io/) — `feat:` bumps the minor, `fix:` the
   patch, and a `!`/`BREAKING CHANGE` bumps the major. Install the local commit
-  hook once with `cog install-hook --all` (CI also validates commits).
+  hook once with `cog install-hook --all` (CI validates commits on every push;
+  it does not run on pull requests).
 - On every push to `main`, CI runs `cog bump --auto`, which tags the next
   `vX.Y.Z`, updates `CHANGELOG.md`, and publishes a GitHub Release with the
   generated changelog notes.
-- The multi-OS build matrix (Linux/macOS/Windows) attaches its artifacts to that
-  Release. The latest `v` tag / Release is the single source of truth for the
-  version — there is no `compute-version.sh` and no `vice-mcp-*` tag prefix.
+- The multi-OS build matrix (Linux/macOS/Windows) attaches its artifacts to the
+  Release for the latest `v` tag. A push with no bump-worthy commits still
+  rebuilds, overwrites that Release's assets (`--clobber`) and refreshes its
+  notes. Releases are not gated on the unit tests.
+- The latest `v` tag / Release is the single source of truth for the version.
+  `compute-version.sh` and the `vice-mcp-*` tag scheme are retired (old
+  `vice-mcp-*` tags remain on the remote).
 
 ## License
 

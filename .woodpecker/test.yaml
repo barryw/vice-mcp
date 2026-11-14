@@ -2,8 +2,8 @@
 #
 # The build-* pipelines only fire on push to main and never run the unit
 # suite, so PRs had no checks at all. This one is deliberately small: a
-# headless x64sc build (catches core compile breaks, not just MCP ones)
-# followed by vice/src/mcp/tests.
+# headless build of all emulators (catches core compile breaks, not just MCP
+# ones) followed by vice/src/mcp/tests.
 when:
   - event: pull_request
   - event: push

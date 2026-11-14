@@ -1,5 +1,16 @@
 # VICE MCP Server Schema Analysis
 
+> **Status (re-checked 2026-11-14): historical audit.** The schema builder is
+> now `mcp_tool_tools_list()` in `vice/src/mcp/mcp_tools_protocol.c`; the line
+> numbers below are out of date. #1, #2 and #4 are fixed. #3 is obsolete
+> (`vice.memory.map` is not registered). #5-#7 are fixed: the register arrays
+> and the named-field parameters are advertised. The "verified correct"
+> list below includes tools that are no longer registered (auto-snapshot,
+> trace, interrupt log) and predates `frame.advance`, `keyboard.petscii`,
+> `keyboard.chord`, `joystick.tap`, `paddle.set` and `machine.config.get/set`.
+> Today 62 `vice.*` tools are registered; `tools/list` returns 66 entries
+> including the 4 protocol methods.
+
 **Date:** 2026-02-05
 **Branch:** feature/mcp-server
 **Analyzed:** `vice/src/mcp/mcp_tools.c` (tools/list schema generator vs handler implementations)

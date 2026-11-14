@@ -4,21 +4,32 @@ This document describes how to test the VICE MCP server integration end-to-end.
 
 ## Prerequisites
 
-1. VICE built with MCP support (see doc/vice.texi "Building with MCP" section)
+1. VICE built with MCP support (see "Building from Source" in the repository
+   root `README.md`; configure with `--enable-mcp-server`)
 2. `curl` for HTTP testing
 3. `python3` with json.tool for pretty-printing responses
+4. `requests` (`pip install requests`) for the Python example
+
+For an automated run against a live instance, see the pytest suite in
+`tools/tests/test_mcp_protocol.py` at the repository root.
 
 ## Build Verification
 
 After building VICE with `--enable-mcp-server`, verify the MCP server compiled correctly:
 
 ```bash
-cd /path/to/vice/build
-./configure --enable-headlessui --disable-pdf-docs --enable-mcp-server
-make -j8
+cd /path/to/vice
+./autogen.sh
+# not "build": vice/build/ is VICE's packaging directory
+mkdir -p build-headless && cd build-headless
+../configure --enable-headlessui --disable-pdf-docs --enable-mcp-server
+make -j"$(getconf _NPROCESSORS_ONLN)"
 ```
 
-Expected: No linker errors for `_mcp_server_*` symbols, `libmcp.a` successfully linked to all emulators.
+Expected: No linker errors for `_mcp_server_*` symbols; `libmcp.a` linked into
+every emulator except `vsid` (VSID has no MCP server).
+
+The commands below run from the build directory (`./src/x64sc`).
 
 ## Test Suite
 
@@ -52,7 +63,9 @@ lsof -i :6540  # Should show x128 listening
 **Expected Output**: Each emulator process listening on its assigned port
 
 **Troubleshooting**:
-- If process exits immediately: Emulator is in headless mode and needs a UI. This is expected behavior.
+- If process exits immediately: something failed at startup (missing ROMs, or
+  a port below 1024, which `-mcpserverport` rejects). Run it in the foreground
+  and read the log. Headless builds keep running until killed.
 - If "Connection refused": Server didn't start. Check logs for errors.
 - If "Address already in use": Another process is using the port. Choose a different port.
 
@@ -75,7 +88,8 @@ curl -X POST http://127.0.0.1:6510/mcp \
     "result": {
         "status": "ok",
         "version": "3.10",
-        "machine": "C64SC"
+        "machine": "C64SC",
+        "execution": "running"
     }
 }
 ```
@@ -105,6 +119,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
     "result": {
         "address": 1024,
         "size": 16,
+        "encoding": "array",
         "data": ["20", "20", "20", "20", "20", "20", "20", "20",
                  "20", "20", "20", "20", "20", "20", "20", "20"]
     }
@@ -113,14 +128,15 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Notes**:
 - Address 1024 (0x0400) is C64 screen memory
-- 0x20 = space character in PETSCII
-- Data is returned as hex strings
+- 0x20 = space (screen code and PETSCII)
+- Data is returned as hex strings; pass `"encoding": "hex"` to get one
+  `data_hex` string instead
 
 ### Test 4: Memory Write
 
 **Objective**: Write to emulated machine memory
 
-**Command** (write "HELLO" to screen in PETSCII):
+**Command** (write "HELLO" to screen RAM as screen codes):
 ```bash
 curl -s -X POST http://127.0.0.1:6510/mcp \
   -H "Content-Type: application/json" \
@@ -157,6 +173,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
     "result": {
         "address": 1024,
         "size": 5,
+        "encoding": "array",
         "data": ["08", "05", "0C", "0C", "0F"]
     }
 }
@@ -174,17 +191,18 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
   | python3 -m json.tool
 ```
 
-**Expected Output**:
+**Expected Output** (values depend on where the CPU is; this is the KERNAL
+idle loop after boot):
 ```json
 {
     "jsonrpc": "2.0",
     "id": 5,
     "result": {
-        "PC": 0,
+        "PC": 58833,
         "A": 0,
         "X": 0,
-        "Y": 0,
-        "SP": 0,
+        "Y": 10,
+        "SP": 243,
         "N": false,
         "V": false,
         "B": false,
@@ -227,13 +245,13 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 }
 ```
 
-**Valid Registers**: PC, A, X, Y, SP, N, V, B, D, I, Z, C
+**Valid Registers** (upper case): PC, A, X, Y, SP, N, V, B, D, I, Z, C
 
 ### Test 7: Execution Control
 
 **Objective**: Pause, step, and resume execution
 
-**Pause**:
+**Pause** (returns `{"status": "ok", "message": "Execution paused"}`):
 ```bash
 curl -s -X POST http://127.0.0.1:6510/mcp \
   -H "Content-Type: application/json" \
@@ -241,7 +259,8 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
   | python3 -m json.tool
 ```
 
-**Step** (execute 1 instruction):
+**Step** (execute 1 instruction; returns `instructions`, `step_over`,
+`completed: true` and the new `PC`):
 ```bash
 curl -s -X POST http://127.0.0.1:6510/mcp \
   -H "Content-Type: application/json" \
@@ -249,7 +268,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
   | python3 -m json.tool
 ```
 
-**Resume**:
+**Resume** (returns `{"status": "ok", "message": "Execution resumed"}`):
 ```bash
 curl -s -X POST http://127.0.0.1:6510/mcp \
   -H "Content-Type: application/json" \
@@ -291,14 +310,15 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
   | python3 -m json.tool
 ```
 
-**Expected**:
+**Expected** (a string address that is not `$hex`/`0xhex` is looked up as a
+symbol name):
 ```json
 {
     "jsonrpc": "2.0",
     "id": 2,
     "error": {
         "code": -32602,
-        "message": "Invalid parameter types"
+        "message": "Cannot resolve address: symbol not found"
     }
 }
 ```
@@ -313,10 +333,15 @@ All emulators should support the same MCP tool API:
 | xvic     | VIC20       | Varies | 5KB-32KB depending on config |
 | xpet     | PET         | Varies | 8KB-96KB depending on model |
 | x128     | C128        | 128KB  | Dual 8502/Z80 CPUs |
-| x64      | C64         | 64KB   | Fast C64 emulation |
+| x64      | C64         | 64KB   | Fast C64 emulation; built only with `--enable-x64` |
 | xplus4   | PLUS4       | 64KB   | TED chip instead of VIC-II |
-| xcbm2    | CBM2        | Varies | Business machine |
+| xcbm2    | CBM-II      | Varies | Business machine (6x0/7x0) |
+| xcbm5x0  | CBM-II      | Varies | Business machine (5x0) |
 | xscpu64  | SCPU64      | 64KB+  | SuperCPU accelerator |
+| x64dtv   | C64DTV      | 2MB    | C64 Direct-to-TV |
+
+The VIC-II, sprite and CIA tools only work on the C64 family (x64sc, x64,
+x128, xscpu64, x64dtv). `vsid` has no MCP server.
 
 ## Integration with External Tools
 
@@ -325,7 +350,7 @@ All emulators should support the same MCP tool API:
 Claude Code (MCP client) can connect to the VICE MCP server for AI-assisted debugging:
 
 1. Start VICE with MCP server enabled
-2. Configure Claude Code with VICE MCP server URL
+2. Add it to Claude Code: `claude mcp add --transport http vice http://127.0.0.1:6510/mcp`
 3. Use natural language to interact with emulator:
    - "Read memory at $C000"
    - "Set register A to $FF"
@@ -404,31 +429,41 @@ kill $VICE_PID
 **Cause**: Incorrect method name
 
 **Solutions**:
-1. Use dots not underscores: `vice.memory.read` not `vice_memory_read`
+1. Both `vice.memory.read` and `vice_memory_read` are accepted (`tools/list`
+   publishes the underscore form)
 2. Check spelling exactly
-3. Verify method is registered in mcp_tools.c
+3. Verify the tool is registered in `tool_registry[]` in `src/mcp/mcp_tools.c`
 
-### Issue: "Invalid parameter types"
+### Issue: Error -32602 (invalid params)
 
 **Cause**: Wrong parameter types or names
 
 **Solutions**:
-1. Memory read needs `address` (number) and `size` (number)
-2. Memory write needs `address` (number) and `data` (array of numbers)
+1. Memory read needs `address` (0-65535, `"$C000"`/`"0xC000"`, or a loaded
+   symbol name) and `size` (1-65535)
+2. Memory write needs `address` (as above) and `data` (array of numbers)
 3. Register set needs `register` (string) and `value` (number)
 4. Check that arrays contain numbers not strings
 
+### Issue: HTTP 401
+
+**Cause**: VICE was started with `-mcpservertoken`
+
+**Solution**: Send `Authorization: Bearer <token>` with every request.
+
 ### Issue: Emulator exits immediately
 
-**Cause**: Headless emulator with no UI has nothing to do
+**Cause**: Startup failed. Headless builds keep running until killed, so an
+immediate exit is an error.
 
 **Solutions**:
-1. This is expected behavior in headless mode
-2. Use UI-enabled build if you need emulator to stay running
-3. Or use `-autostart` to load a program
-4. MCP server works fine during brief lifecycle
+1. Run in the foreground and read the log
+2. Check that the ROMs are found (`-directory`, or an installed VICE)
+3. Use a port from 1024 to 65535
 
 ## Test Results Summary
+
+Historical record of the first run (2026-02-02), kept as-is.
 
 **Date**: 2026-02-02
 
@@ -476,21 +511,28 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
     "result": {
         "status": "ok",
         "name": "debug_checkpoint_1",
-        "path": "/Users/<username>/.config/vice/mcp_snapshots/debug_checkpoint_1.vsf"
+        "path": "/Users/<username>/.config/vice/mcp_snapshots/debug_checkpoint_1.vsf",
+        "description": "State before bug reproduction",
+        "include_roms": false,
+        "include_disks": false
     }
 }
 ```
 
 **Notes**:
-- Snapshots are stored in `~/.config/vice/mcp_snapshots/`
-- A metadata JSON file is created alongside: `debug_checkpoint_1.vsf.json`
+- Snapshots are stored in `mcp_snapshots/` under the VICE user config
+  directory: `$XDG_CONFIG_HOME/vice` (default `~/.config/vice`) on Linux and
+  macOS, `%APPDATA%\vice` on Windows
+- A metadata JSON file is created alongside: `debug_checkpoint_1.json`
 - Name must contain only alphanumeric characters, underscores, and hyphens
-- Optional parameters: `save_roms` (default: false), `save_disks` (default: true)
+- Optional parameters: `include_roms` (default: false), `include_disks` (default: false)
+- Saving over an existing name fails (-32602). There is no delete tool; remove
+  the `.vsf` and `.json` files before re-running Tests 8 and 11
 
 **Verification** (check files exist):
 ```bash
 ls -la ~/.config/vice/mcp_snapshots/
-# Should show: debug_checkpoint_1.vsf and debug_checkpoint_1.vsf.json
+# Should show: debug_checkpoint_1.vsf and debug_checkpoint_1.json
 ```
 
 ### Test 9: Load Snapshot
@@ -512,7 +554,9 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
     "id": 11,
     "result": {
         "status": "ok",
-        "name": "debug_checkpoint_1"
+        "name": "debug_checkpoint_1",
+        "path": "/Users/<username>/.config/vice/mcp_snapshots/debug_checkpoint_1.vsf",
+        "message": "Snapshot loaded successfully"
     }
 }
 ```
@@ -520,7 +564,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 **Notes**:
 - Emulator state is fully restored to the saved point
 - Useful for repeatable debugging sessions
-- If snapshot doesn't exist, returns error code -32004
+- If snapshot doesn't exist, returns error code -32602
 
 ### Test 10: List Snapshots
 
@@ -546,9 +590,8 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
                 "name": "debug_checkpoint_1",
                 "path": "/Users/<username>/.config/vice/mcp_snapshots/debug_checkpoint_1.vsf",
                 "description": "State before bug reproduction",
-                "timestamp": "2026-02-03T14:30:00Z",
-                "machine": "C64SC",
-                "vice_version": "3.10"
+                "created": "2026-02-03T14:30:00Z",
+                "machine": "C64SC"
             }
         ]
     }
@@ -557,7 +600,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
 
 **Notes**:
 - Lists all `.vsf` files in the snapshots directory
-- Includes metadata from companion `.vsf.json` files if available
+- Includes metadata from companion `.json` files if available
 - Snapshots without metadata files still appear but with limited info
 
 ### Test 11: Snapshot Save/Load Cycle
@@ -617,7 +660,7 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
     "id": 1,
     "error": {
         "code": -32602,
-        "message": "Invalid snapshot name: must contain only alphanumeric, underscore, hyphen"
+        "message": "Invalid name: use only alphanumeric characters, underscores, and hyphens"
     }
 }
 ```
@@ -635,16 +678,16 @@ curl -s -X POST http://127.0.0.1:6510/mcp \
     "jsonrpc": "2.0",
     "id": 1,
     "error": {
-        "code": -32004,
-        "message": "Snapshot failed: file not found or load error"
+        "code": -32602,
+        "message": "Snapshot not found. Use vice.snapshot.list to see available snapshots."
     }
 }
 ```
 
 ## Next Steps
 
-1. Add automated integration tests to CI/CD pipeline
-2. Test remaining emulators (x64, xplus4, xcbm2, xscpu64, vsid, x64dtv)
+1. Run the live protocol suite (`tools/tests/test_mcp_protocol.py`) in CI
+2. Test remaining emulators (x64, xplus4, xcbm2, xcbm5x0, xscpu64, x64dtv)
 3. Performance testing under load
 4. Long-running stability tests
 5. Add UI integration for MCP settings

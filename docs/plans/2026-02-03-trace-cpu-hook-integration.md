@@ -1,5 +1,10 @@
 # Trace CPU Hook Integration Design
 
+> **Status (as of 2026-11-14): not implemented.**
+> Only MCP-side configuration storage exists (`vice/src/mcp/mcp_tools_trace.c`). `trace.start/stop` are **not registered** in `tool_registry[]`, so they cannot be called.
+> No CPU hook was added: nothing in `maincpu.c`, `mainc64cpu.c`, `6510core.c` or `interrupt.c` calls into tracing, and none of the API functions below exist. No trace file is ever written.
+> File references here are stale: the handlers moved out of `mcp_tools.c`, `6502core.c` does not exist, and the disassembler entry point is `mon_disassemble_to_string_ex()`.
+
 ## Overview
 
 This document describes the VICE-side integration needed to make the MCP trace tools (`vice.trace.start`, `vice.trace.stop`) fully functional. The MCP side stores trace configuration; the VICE side needs CPU hooks to perform actual instruction recording.
