@@ -18,6 +18,7 @@ Run with:
 
 import base64
 import json
+import os
 import time
 
 import pytest
@@ -29,7 +30,9 @@ import requests
 # ---------------------------------------------------------------------------
 
 MCP_HOST = "127.0.0.1"
-MCP_PORT = 6520
+# VICE_MCP_PORT points the suite at a test VICE on another port, so it never
+# drives an emulator someone else is using on the default port.
+MCP_PORT = int(os.environ.get("VICE_MCP_PORT", "6520"))
 MCP_URL = f"http://{MCP_HOST}:{MCP_PORT}/mcp"
 
 # JSON-RPC 2.0 error codes
@@ -1241,7 +1244,8 @@ class TestJoystick:
     def test_config_set_refuses_mcp_server_resources(self, mcp):
         """config.set takes any integer resource but those that would
         reconfigure the MCP server or open other listeners."""
-        for name in ("MCPServerPort", "BinaryMonitorServer", "SaveResourcesOnExit"):
+        for name in ("MCPServerPort", "BinaryMonitorServer", "SaveResourcesOnExit",
+                     "UserportDevice", "FileSystemDevice8", "Printer4"):
             error = mcp.call_tool_error("vice.machine.config.set",
                                         {"resources": {name: 1}})
             assert error["code"] == ERROR_INVALID_PARAMS

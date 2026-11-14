@@ -402,10 +402,12 @@ validation against a live VICE:
 
 ```bash
 # Requires Python 3.10+, pytest, requests, and VICE started with -mcpserver
-# on 127.0.0.1:6520 (hard-coded). Without a server every test is skipped.
-pytest tools/tests/test_mcp_protocol.py -v
+# on 127.0.0.1:6520, or on the port in VICE_MCP_PORT. Without a server every
+# test is skipped. Many tests reset and rewrite the machine: point the suite
+# at a VICE of its own, not one you are using.
+VICE_MCP_PORT=6531 pytest tools/tests/test_mcp_protocol.py -v
 
-# Skip the test that needs a disk in unit 8 and the 43 that change
+# Skip the test that needs a disk in unit 8 and the 47 that change
 # emulator state
 pytest tools/tests/test_mcp_protocol.py -v -m "not stateful and not disk_required"
 ```
@@ -876,11 +878,18 @@ Get machine configuration — chips, memory map, resources. No parameters.
 #### `vice.machine.config.set`
 Set integer VICE resources, by the names `vicerc` uses, plus `WarpMode` (0/1).
 For example `{"JoyPort1Device": 1}` plugs a joystick into control port 1 and
-`{"JoyPort1Device": 0}` unplugs it. Resources that would reconfigure the MCP
-server (`MCPServer*`), open other listeners (`MonitorServer*`,
-`BinaryMonitorServer*`, `NetworkServer*`, `NetworkControl`, `IDE64USBServer`),
-write log or core files (`MonitorLog*`, `Log*`, `DoCoreDump`) or save the
-configuration (`SaveResourcesOnExit`) are refused, as are string resources.
+`{"JoyPort1Device": 0}` unplugs it. String resources are refused, and so are
+integer resources (by name prefix) that would:
+
+- reconfigure the MCP server: `MCPServer*`
+- open network listeners or connections: `MonitorServer*`,
+  `BinaryMonitorServer*`, `NetworkServer*`, `NetworkControl`,
+  `IDE64USBServer`, `ETHERNET*`, `WIC64*`
+- attach host files or devices: `FileSystemDevice*`, `FSDevice*`,
+  `TrapDevice*`, `Printer*`, `Acia*`, `RsUser*`, `RsDevice*`, `Userport*`
+  (WIC64, RS232 and other user port devices), `Sampler*`
+- write log or core files, or save the configuration: `MonitorLog*`, `Log*`,
+  `DoCoreDump`, `SaveResourcesOnExit`
 
 Changing a model resource power-cycles the machine and resumes it:
 
@@ -889,7 +898,7 @@ Changing a model resource power-cycles the machine and resumes it:
 - C128: those plus `VDCRevision`, `VDC64KB`, `C128FullBanks`
 - C64DTV: `SidModel`
 - VIC-20: `RAMBlock0/1/2/3/5`
-- Plus/4: `RamSize`, `Acia1Enable`
+- Plus/4: `RamSize`
 - PET: `RamSize`, `IOSize`, `Crtc`, `VideoSize`, `SuperPET`
 - CBM-II: `RamSize`, `ModelLine`, `SidModel`
 

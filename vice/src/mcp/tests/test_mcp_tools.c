@@ -9584,7 +9584,10 @@ TEST(machine_config_set_refuses_denied_resources)
     static const char *const denied[] = {
         "MCPServerPort", "mcpserverenabled", "BinaryMonitorServer",
         "MonitorServer", "NetworkServerPort", "SaveResourcesOnExit",
-        "MonitorLogEnabled", "IDE64USBServer", "LogToFile", "DoCoreDump", NULL
+        "MonitorLogEnabled", "IDE64USBServer", "LogToFile", "DoCoreDump",
+        "UserportDevice", "Acia1Enable", "RsUserDev", "RsDevice1Baud",
+        "FileSystemDevice8", "FSDeviceOverwrite", "TrapDevice8", "Printer4",
+        "PrinterUserport", "WIC64DHCP", "ETHERNETCART_ACTIVE", "SamplerDevice", NULL
     };
     int i, code, port = 0;
 

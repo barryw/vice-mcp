@@ -99,7 +99,6 @@ static const mcp_resource_info_t resources_c64dtv[] = {
 /** @brief Resources specific to Plus/4. */
 static const mcp_resource_info_t resources_plus4[] = {
     { "RamSize", "RAM size in KB (16, 32, or 64)", 1 },
-    { "Acia1Enable", "Enable ACIA at $FD00 (0=off, 1=on)", 1 },
     { NULL, NULL, 0 }
 };
 
@@ -156,12 +155,20 @@ static const mcp_resource_info_t *get_machine_resources(void)
 
 /* Integer resources config.set refuses, matched as name prefixes the way
  * VICE matches names (ignoring case): they would reconfigure the MCP server
- * under the request, open other network listeners, write log or core files,
- * or save the configuration. */
+ * under the request, open network listeners or connections, attach host
+ * files or devices (file system drives, printers, RS232, user port devices
+ * such as WIC64, the sampler's audio input), write log or core files, or
+ * save the configuration. */
 static const char *const resources_denied_prefixes[] = {
+    /* MCP server and network listeners */
     "MCPServer", "MonitorServer", "BinaryMonitorServer", "NetworkServer",
-    "NetworkControl", "IDE64USBServer", "MonitorLog", "Log", "DoCoreDump",
-    "SaveResourcesOnExit", NULL
+    "NetworkControl", "IDE64USBServer",
+    /* host files, devices and network connections */
+    "Userport", "WIC64", "ETHERNET", "Acia", "RsUser", "RsDevice",
+    "FileSystemDevice", "FSDevice", "TrapDevice", "Printer", "Sampler",
+    /* logs, core dumps, the saved configuration */
+    "MonitorLog", "Log", "DoCoreDump", "SaveResourcesOnExit",
+    NULL
 };
 
 /** @brief Can config.set change this resource? Any integer resource can,
@@ -836,9 +843,11 @@ cJSON *mcp_tool_machine_config_set(cJSON *params)
             char err_msg[384];
 
             snprintf(err_msg, sizeof(err_msg),
-                     "'%s' is not an integer resource of %s that MCP may set "
-                     "(MCP server, monitor and network server, IDE64 USB server, "
-                     "log, DoCoreDump and SaveResourcesOnExit resources are refused).",
+                     "'%s' is not an integer resource of %s that MCP may set. "
+                     "Refused: resources that reconfigure the MCP server, open network "
+                     "listeners or connections, attach host files or devices (file system "
+                     "drives, printers, RS232, user port devices), write logs, or save "
+                     "the configuration.",
                      res_name,
                      mach_name ? mach_name : "unknown");
 

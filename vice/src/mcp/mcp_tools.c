@@ -198,8 +198,9 @@ const mcp_tool_t tool_registry[] = {
     { "vice.machine.config.set",
       "Set integer VICE resources, all or nothing: any integer resource, by the name vicerc "
       "uses (e.g. JoyPort1Device=1 plugs a joystick into control port 1), "
-      "plus WarpMode (0/1). MCP server, monitor and network server, IDE64 USB server, log, "
-      "DoCoreDump and SaveResourcesOnExit resources are refused. Model resources (SidModel, CIA1Model, "
+      "plus WarpMode (0/1). Refused: resources that reconfigure the MCP server, open network "
+      "listeners or connections, attach host files or devices (file system drives, printers, "
+      "RS232, user port devices such as WIC64), write logs, or save the configuration. Model resources (SidModel, CIA1Model, "
       "MachineVideoStandard, ...) power-cycle the machine. Returns the new configuration.",
       mcp_tool_machine_config_set },
 
