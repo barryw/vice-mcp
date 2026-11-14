@@ -19,7 +19,6 @@ After building VICE with `--enable-mcp-server`, verify the MCP server compiled c
 
 ```bash
 cd /path/to/vice
-./autogen.sh
 # not "build": vice/build/ is VICE's packaging directory
 mkdir -p build-headless && cd build-headless
 ../configure --enable-headlessui --disable-pdf-docs --enable-mcp-server

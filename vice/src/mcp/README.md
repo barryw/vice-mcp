@@ -39,8 +39,7 @@ The MCP server is organized into three layers:
 ## Building
 
 Requires libmicrohttpd 0.9.71 or newer (the transport uses `enum MHD_Result`).
-`configure.ac` checks for it; regenerate `configure` with `./autogen.sh`, since
-the committed copy is out of date.
+`configure` checks for it.
 
 ```bash
 # Configure with MCP server support

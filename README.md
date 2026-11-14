@@ -295,13 +295,12 @@ sessions.
 These match the CI pipelines (`.woodpecker/build-linux.yaml`,
 `.woodpecker/build-macos.yaml`), which add optional codec and I/O libraries.
 libmicrohttpd 0.9.71 or newer is needed (the transport uses `enum MHD_Result`;
-`configure.ac` checks for it, so run `./autogen.sh` as below).
+`configure` checks for it).
 
 ### Build
 
 ```bash
 cd vice
-./autogen.sh   # regenerates configure and Makefile.in; the committed copies are stale
 # not "build": vice/build/ is VICE's packaging directory
 mkdir -p build-gtk && cd build-gtk
 ../configure --enable-mcp-server --enable-gtk3ui
@@ -309,9 +308,12 @@ make -j"$(getconf _NPROCESSORS_ONLN)"
 ```
 
 For a headless build use `--enable-headlessui` instead of `--enable-gtk3ui`;
-without ALSA or PulseAudio add `--without-alsa --without-pulse`. If `make`
-keeps re-running autotools, apply the timestamp fix-up the CI pipelines run
-after `./autogen.sh`.
+without ALSA or PulseAudio add `--without-alsa --without-pulse`.
+
+The generated `configure`, `Makefile.in` and parser files are committed, so a
+checkout builds as above. After changing `configure.ac` or a `Makefile.am`,
+run `./autogen.sh` (autoconf, automake, libtool) and commit what it
+regenerates; CI regenerates them on every build regardless.
 
 ### Verify
 
