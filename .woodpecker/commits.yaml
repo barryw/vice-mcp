@@ -2,7 +2,8 @@
 #
 # CI safety net for the Walker Heavy Industries Build & Release Standard.
 # Developers should also install the local hook: `cog install-hook --all`.
-# cog only checks commits since the latest v tag (from_latest_tag = true).
+# Check this branch's commits since the latest v tag. Imported upstream
+# history does not follow Conventional Commits and must not fail our checks.
 when:
   - event: push
 
@@ -20,5 +21,9 @@ steps:
   - name: validate-commits
     image: ghcr.io/cocogitto/cog:latest
     commands:
-      - cog check --from-latest-tag
+      - |
+        VERSION=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+        for commit in $$(git rev-list --first-parent --no-merges "$${VERSION}..HEAD"); do
+          git show -s --format=%B "$${commit}" | cog verify --file - || exit 1
+        done
       - echo "All commits follow conventional commit format"
