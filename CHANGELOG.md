@@ -2,6 +2,24 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v3.15.0](https://github.com/barryw/vice-mcp/compare/b417600119d2554e7f43d2a8956e4c62cebe47a3..v3.15.0) - 2026-11-14
+#### Features
+- (**mcp**) select the x128 display and add the run_until cycle limit - ([04d63b4](https://github.com/barryw/vice-mcp/commit/04d63b42daac5a9eedea1a01be75e002fe2e562b)) - Barry Walker, Claude Opus 5.5
+#### Bug Fixes
+- (**client**) match the Python client to the server's tools - ([4d176b6](https://github.com/barryw/vice-mcp/commit/4d176b676385b6869e0976b856969265d38aff2b)) - Barry Walker, Claude Opus 5.5
+- (**mcp**) make chip, input and protocol tools do what they report - ([815e75a](https://github.com/barryw/vice-mcp/commit/815e75a6cc9b5e7b897da789e0572830126e9ba7)) - Barry Walker, Claude Opus 5.5
+#### Documentation
+- (**readme**) update protocol suite test count - ([a0aef16](https://github.com/barryw/vice-mcp/commit/a0aef162d5c4c69055c841ec5e6f5aa71723f7ce)) - Barry Walker, Claude Opus 5.5
+- the committed build files are current again - ([72e1297](https://github.com/barryw/vice-mcp/commit/72e12974e7edfdd0739fcb464439358a885de5a2)) - Barry Walker, Claude Opus 5.5
+- correct documentation to match the code - ([8f5e5b3](https://github.com/barryw/vice-mcp/commit/8f5e5b38817e63a1a768b5ca9ca319c8cfdcc12d)) - Barry Walker, Claude Opus 5.5
+#### Build
+- regenerate the committed autotools, bison and flex outputs - ([b607a44](https://github.com/barryw/vice-mcp/commit/b607a44c1ba6f2c438cc140c5517f687e0f82c4a)) - Barry Walker, Claude Opus 5.5
+#### CI/CD
+- publish only the release a push created and gate it on tests - ([4566b06](https://github.com/barryw/vice-mcp/commit/4566b0652d8cfcdb5beb5630ef8973400fcc5f02)) - Barry Walker, Claude Opus 5.5
+- configure identity required by cog verify - ([b417600](https://github.com/barryw/vice-mcp/commit/b417600119d2554e7f43d2a8956e4c62cebe47a3)) - Barry Walker
+
+- - -
+
 ## [v3.14.1](https://github.com/barryw/vice-mcp/compare/eb723e0f2780b62f9fca1e305eb4134bda2a4ba0..v3.14.1) - 2026-11-14
 #### Bug Fixes
 - (**ci**) release upstream integration without rejecting vendor history - ([dd84183](https://github.com/barryw/vice-mcp/commit/dd841832baa88de231ab2ec41e9825f929023419)) - Barry Walker
