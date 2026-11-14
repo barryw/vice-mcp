@@ -243,17 +243,18 @@ class TestBaseProtocol:
             "capabilities": {},
             "clientInfo": {"name": "pytest", "version": "1.0"},
         })
-        assert "protocolVersion" in result
+        assert result["protocolVersion"] == "2024-11-05"  # supported: echoed
         assert "capabilities" in result
         assert "serverInfo" in result
         assert result["serverInfo"]["name"] == "VICE MCP"
 
     def test_initialize_unsupported_version(self, mcp):
-        """Initialize with unsupported protocol version should fail."""
-        error = mcp.direct_call_error("initialize", {
+        """MCP lifecycle: an unsupported version is answered with the
+        server's latest supported version, not an error."""
+        result = mcp.direct_call("initialize", {
             "protocolVersion": "9999-01-01",
         })
-        assert error["code"] == ERROR_INVALID_PARAMS
+        assert result["protocolVersion"] == "2025-11-25"
 
     def test_notifications_initialized(self, mcp):
         """The initialized notification should return HTTP 202 or empty body."""
@@ -1032,6 +1033,27 @@ class TestDisplay:
         })
         assert result.get("status") == "ok" or "path" in result
 
+    def test_display_param(self, mcp):
+        """display picks the screen read and is reported; only x128 has a VDC."""
+        machine = mcp.call_tool_result("vice.ping").get("machine")
+        dims = mcp.call_tool_result("vice.display.get_dimensions",
+                                    {"display": "vicii"})
+        assert dims["display"] == "vicii"
+        shot = mcp.call_tool_result("vice.display.screenshot",
+                                    {"display": "vicii", "return_base64": True})
+        assert shot["display"] == "vicii"
+        if machine == "C128":
+            dims = mcp.call_tool_result("vice.display.get_dimensions",
+                                        {"display": "vdc"})
+            assert dims["display"] == "vdc"
+        else:
+            error = mcp.call_tool_error("vice.display.get_dimensions",
+                                        {"display": "vdc"})
+            assert error["code"] == ERROR_INVALID_PARAMS
+        error = mcp.call_tool_error("vice.display.screenshot",
+                                    {"display": "vic", "return_base64": True})
+        assert error["code"] == ERROR_INVALID_PARAMS
+
 
 # ---------------------------------------------------------------------------
 # Test: Keyboard Input
@@ -1291,6 +1313,31 @@ class TestAdvancedDebugging:
         # Either error (no address) or an indication of what's needed
         assert "result" in data or "error" in data
 
+    def test_run_until_cycles_stops_machine(self, mcp):
+        """cycles alone resumes the machine and stops it that many cycles on."""
+        mcp.call_tool_result("vice.execution.pause")
+        mcp.call_tool_result("vice.cycles.stopwatch", {"action": "reset"})
+        result = mcp.call_tool_result("vice.run_until", {"cycles": 100000})
+        assert result["cycle_limit"] == 100000
+        assert "note" not in result
+        deadline = time.time() + 5
+        while (mcp.call_tool_result("vice.ping").get("execution") != "paused"
+               and time.time() < deadline):
+            time.sleep(0.05)
+        assert mcp.call_tool_result("vice.ping").get("execution") == "paused"
+        elapsed = mcp.call_tool_result("vice.cycles.stopwatch",
+                                       {"action": "read"})["cycles"]
+        # It stops at the next instruction boundary; VIC-II DMA can stall
+        # the CPU for a bad line before it gets there
+        assert 100000 <= elapsed < 100000 + 64
+        mcp.call_tool("vice.execution.run")
+
+    def test_run_until_rejects_bad_cycles(self, mcp):
+        """cycles must be an integer from 1 to 100000000."""
+        for cycles in (0, -5, 100000001, 2.5, "1000"):
+            error = mcp.call_tool_error("vice.run_until", {"cycles": cycles})
+            assert error["code"] == ERROR_INVALID_PARAMS
+
 
 # ---------------------------------------------------------------------------
 # Test: Snapshots
@@ -1499,12 +1546,19 @@ EXPECTED_SCHEMAS = {
     },
     "vice_vicii_get_state": {"properties": {}, "required": []},
     "vice_vicii_set_state": {
-        "properties": {"registers": "array"},
+        "properties": {"registers": "array", "border_color": "number",
+                       "background_color": "number", "background_color_1": "number",
+                       "background_color_2": "number", "background_color_3": "number",
+                       "control_1": "number", "control_2": "number",
+                       "memory_pointers": "number", "irq_raster_line": "number",
+                       "interrupt_enable": "number"},
         "required": [],
     },
     "vice_sid_get_state": {"properties": {}, "required": []},
     "vice_sid_set_state": {
-        "properties": {"registers": "array"},
+        "properties": {"registers": "array", "voice0": "object", "voice1": "object",
+                       "voice2": "object", "filter_cutoff": "number",
+                       "filter_resonance": "number", "filter_mode_volume": "number"},
         "required": [],
     },
     "vice_cia_get_state": {
@@ -1512,15 +1566,16 @@ EXPECTED_SCHEMAS = {
         "required": [],
     },
     "vice_cia_set_state": {
-        "properties": {"cia1_registers": "array", "cia2_registers": "array"},
+        "properties": {"cia1_registers": "array", "cia2_registers": "array",
+                       "cia1": "object", "cia2": "object"},
         "required": [],
     },
     "vice_disk_attach": {
-        "properties": {"unit": "number", "path": "string"},
+        "properties": {"unit": "number", "drive": "number", "path": "string"},
         "required": ["unit", "path"],
     },
     "vice_disk_detach": {
-        "properties": {"unit": "number"},
+        "properties": {"unit": "number", "drive": "number"},
         "required": ["unit"],
     },
     "vice_disk_list": {
@@ -1542,10 +1597,13 @@ EXPECTED_SCHEMAS = {
     },
     "vice_display_screenshot": {
         "properties": {"path": "string", "format": "string",
-                        "return_base64": "boolean"},
+                        "return_base64": "boolean", "display": "string"},
         "required": [],
     },
-    "vice_display_get_dimensions": {"properties": {}, "required": []},
+    "vice_display_get_dimensions": {
+        "properties": {"display": "string"},
+        "required": [],
+    },
     "vice_keyboard_type": {
         "properties": {"text": "string", "petscii_upper": "boolean"},
         "required": ["text"],
@@ -1660,7 +1718,7 @@ EXPECTED_SCHEMAS = {
     "vice_checkpoint_group_list": {"properties": {}, "required": []},
     "vice_machine_config_get": {"properties": {}, "required": []},
     "vice_machine_config_set": {
-        "properties": {"resources": "string"},
+        "properties": {"resources": "object"},
         "required": ["resources"],
     },
     "vice_sprite_inspect": {

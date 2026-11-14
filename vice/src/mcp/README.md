@@ -4,40 +4,42 @@ This directory contains the embedded Model Context Protocol (MCP) server for VIC
 
 ## Architecture
 
-The MCP server is organized into three main components:
+The MCP server is organized into three layers:
 
 ### 1. MCP Server Core (`mcp_server.c/h`)
 - Initialization and lifecycle management
-- VICE resource integration (MCPServerEnabled, MCPServerPort, MCPServerHost)
-- Command-line options (-mcpserver, -mcpserverport, etc.)
-- Configuration API
+- VICE resources (`MCPServerEnabled`, `MCPServerPort`, `MCPServerHost`,
+  `MCPServerToken`, `MCPServerCORSOrigin`)
+- Command-line options (`-mcpserver`, `+mcpserver`, `-mcpserverport`,
+  `-mcpserverhost`, `-mcpservertoken`, `-mcpservercorsorigin`)
+- Changing a resource while the server runs restarts it with the new setting
 
 ### 2. Transport Layer (`mcp_transport.c/h`)
-- Streamable HTTP transport (`POST /mcp`)
-- JSON-RPC 2.0 message handling
-- Reserved Server-Sent Events endpoint (`GET /events`) that returns `501 Not Implemented`
+- HTTP via libmicrohttpd: JSON-RPC 2.0 over `POST /mcp`, plain JSON replies
+- `GET /mcp` (and any non-POST method on `/mcp`) returns `405 Method Not Allowed`,
+  the MCP answer for "no SSE stream"; the reserved `GET /events` returns `501`
+- Bearer-token auth and single-origin CORS
+- Dispatch onto the emulator: through a CPU trap while the machine runs, under
+  VICE's mainlock while the UI is paused or the machine is held, directly while
+  the monitor is open. Calls are serialized by a dispatch mutex; `vice.ping`
+  and `vice.execution.pause` bypass it.
 - Default port: 6510 (chosen for 6510 CPU reference)
 
-### 3. Tool Dispatch (`mcp_tools.c/h`)
-- MCP tool registry and dispatch
-- Tool implementations (execution control, memory, registers, etc.)
-- Direct access to VICE internal state (zero-copy architecture)
-- Tool responses for live emulator state
-
-## Current Status
-
-**Phase 1 - HTTP Transport Layer (COMPLETE)**
-- ✅ Basic file structure created
-- ✅ HTTP server integration (libmicrohttpd 1.0+)
-- ✅ JSON library integration (cJSON bundled)
-- ✅ VICE internal API integration
-- ✅ JSON-RPC 2.0 endpoint (POST /mcp)
-- ✅ Reserved Server-Sent Events endpoint (`GET /events`) returning `501 Not Implemented`
-- ✅ Thread safety (pthread mutex)
-- ✅ Security hardening (request limits, timeouts, CORS)
-- ✅ Comprehensive test coverage
+### 3. Tools (`mcp_tools*.c/h`)
+- `mcp_tools.c` - tool registry (`tool_registry[]`), name matching, dispatch
+- `mcp_tools_protocol.c` - `initialize`, `tools/list` (JSON Schemas),
+  `tools/call`, `vice.ping`
+- One file per area: `_execution`, `_memory`, `_checkpoint`, `_chipstate`
+  (sprites, VIC-II, SID, CIA), `_disk`, `_display`, `_input`, `_machine`,
+  `_debug`, `_snapshot`
+- `mcp_tools_helpers.c`, `mcp_tools_validation.c` - shared parsing and checks
+- `mcp_tools_trace.c` - execution-trace and interrupt-log handlers. These are
+  compiled but **not registered**, so clients cannot call them.
 
 ## Building
+
+Requires libmicrohttpd 0.9.71 or newer (the transport uses `enum MHD_Result`).
+`configure` checks for it.
 
 ```bash
 # Configure with MCP server support
@@ -57,9 +59,9 @@ The MCP server can be configured via resources or command-line options:
 **Resources:**
 - `MCPServerEnabled` (0/1) - Enable/disable MCP server
 - `MCPServerPort` (1024-65535) - Port to listen on (default: 6510)
-- `MCPServerHost` (string) - Host to bind to (default: 127.0.0.1)
+- `MCPServerHost` (string) - IPv4 address to bind to (default: 127.0.0.1). Host names and IPv6 are rejected.
 - `MCPServerToken` (string) - Optional bearer token. Required for CORS; strongly recommended for non-loopback binds.
-- `MCPServerCORSOrigin` (string) - Optional exact CORS origin. Wildcards are rejected.
+- `MCPServerCORSOrigin` (string) - Optional exact CORS origin. `*` is rejected.
 
 **Command-line:**
 ```bash
@@ -158,7 +160,8 @@ curl -sS http://127.0.0.1:6510/mcp \
   "result": {
     "status": "ok",
     "version": "3.10",
-    "machine": "C64"
+    "machine": "C64SC",
+    "execution": "running"
   },
   "id": 1
 }
@@ -176,17 +179,33 @@ curl -sS http://127.0.0.1:6510/mcp \
 }
 ```
 
-### GET /events - Server-Sent Events (SSE)
+`version` is the VICE version, `machine` the emulated machine (`C64SC` under
+`x64sc`, `C64` under `x64`), and `execution` is `running` or `paused`.
 
-SSE is not implemented in this transport. The endpoint returns `501 Not Implemented`
-until it can stream real events instead of pretending to work.
+Other responses:
+
+- Notifications (requests without `id`, e.g. `notifications/initialized`) get
+  `202 Accepted` with no body.
+- Wrong `Content-Type`: `415`. An `Accept` header that allows neither
+  `application/json` nor `*/*`: `406`. Missing or wrong bearer token when one
+  is configured: `401`. Any other path: `404`.
+
+### GET /mcp, GET /events - Server-Sent Events (SSE)
+
+SSE is not implemented in this transport. `GET /mcp` (and any other non-POST
+method on `/mcp`) returns `405 Method Not Allowed` with `Allow: POST, OPTIONS`,
+which MCP clients read as "this server offers no SSE stream". The reserved
+`GET /events` returns `501 Not Implemented`.
 
 ### Transport Configuration
 
-- **Maximum request size:** 10MB
+- **Maximum request size:** 10MB (larger requests are dropped)
 - **Connection limit:** 100 concurrent connections
 - **Connection timeout:** 30 seconds
-- **CORS:** Disabled by default. Enable only with `MCPServerCORSOrigin` and `MCPServerToken`.
+- **Tool dispatch timeout:** 5 seconds waiting for the emulator to run a
+  queued call (error -32000)
+- **CORS:** Disabled by default. Enable only with `MCPServerCORSOrigin` and
+  `MCPServerToken`. A preflight `OPTIONS` from any other origin gets `403`.
 
 ## Security
 
@@ -219,18 +238,12 @@ location /mcp {
 
 ## Available MCP Tools
 
-### Phase 1 (Basic Control)
-- `vice.ping` - Check if VICE is responding
-- `vice.execution.run` - Resume execution
-- `vice.execution.pause` - Pause execution
-- `vice.execution.step` - Step instructions
-- `vice.registers.get` - Get CPU registers
-- `vice.registers.set` - Set register values
-- `vice.memory.read` - Read memory
-- `vice.memory.write` - Write memory
-
-### Future Phases
-See `/docs/plans/2026-02-02-vice-mcp-server-design.md` for complete roadmap.
+62 `vice.*` tools are registered in `tool_registry[]` (`mcp_tools.c`): execution
+control, registers, memory, checkpoints and groups, sprites, VIC-II/SID/CIA
+state, disk, machine and config, display, keyboard/joystick/paddle input,
+debugging (disassembly, symbols, watchpoints, backtrace, stopwatch) and
+snapshots. `tools/list` returns their JSON Schemas at runtime. The full
+reference is in the repository root `README.md` ("Tool Reference").
 
 ## Testing
 
@@ -253,10 +266,11 @@ The transport regression tests cover both sides of the bind/auth policy:
 
 ### Integration Tests
 
-Test HTTP transport with running VICE:
+`tools/tests/test_mcp_protocol.py` (repository root) is a pytest suite that
+runs against a live VICE instance. For a quick manual check:
 ```bash
 # Terminal 1: Start VICE with MCP server
-x64sc -mcpserver -mcpserverhost 0.0.0.0
+x64sc -mcpserver
 
 # Terminal 2: Hit the live MCP endpoint
 curl -sS http://127.0.0.1:6510/mcp \
@@ -269,8 +283,9 @@ See `tests/README.md` for detailed testing documentation.
 
 ## Design Documentation
 
-Full design documentation is available at:
-`/docs/plans/2026-02-02-vice-mcp-server-design.md`
+The original design and plans are in `docs/plans/` at the repository root.
+They predate the implementation; each starts with a status note saying what
+was built, what changed and what was not done.
 
 ## Contributing
 

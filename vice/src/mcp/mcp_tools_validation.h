@@ -81,19 +81,4 @@ extern int mcp_build_memory_map(mcp_mem_region_t *regions);
 /** @brief Convert region type enum to string. */
 extern const char *mcp_mem_type_to_string(mcp_mem_region_type_t type);
 
-/* -------------------------------------------------------------------------
- * Shared machine_has_* helpers (used by chipstate, machine config, validation)
- * ------------------------------------------------------------------------- */
-
-extern int mcp_machine_has_vicii(void);
-extern int mcp_machine_has_sid(void);
-extern int mcp_machine_has_cia(void);
-extern int mcp_machine_has_ted(void);
-extern int mcp_machine_has_vdc(void);
-extern int mcp_machine_has_crtc(void);
-extern int mcp_machine_has_vic(void);
-extern int mcp_machine_has_via(void);
-extern int mcp_machine_has_pia(void);
-extern int mcp_machine_has_acia(void);
-
 #endif /* VICE_MCP_TOOLS_VALIDATION_H */

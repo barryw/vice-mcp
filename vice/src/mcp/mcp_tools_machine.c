@@ -363,6 +363,28 @@ static void add_chip(cJSON *arr, const char *name, const char *model,
     cJSON_AddItemToArray(arr, chip);
 }
 
+/* Model names for the SidModel and CIAnModel resource values. */
+static const char *sid_model_name(void)
+{
+    int model = 0;
+
+    resources_get_int("SidModel", &model);
+    switch (model) {
+        case 1: return "8580";
+        case 2: return "8580D";
+        case 3: return "DTV";
+        default: return "6581";
+    }
+}
+
+static const char *cia_model_name(const char *resource)
+{
+    int model = 0;
+
+    resources_get_int(resource, &model);
+    return model == 1 ? "6526A" : "6526";
+}
+
 /** @brief Build JSON array of chips present on the current machine.
  *  @return cJSON array (caller owns), or NULL on OOM. */
 static cJSON *build_chips_array(void)
@@ -385,10 +407,10 @@ static cJSON *build_chips_array(void)
                      (video == 2 || video == 3) ? "6567" : "6569",
                      "video, sprites",
                      "D000-D3FF");
-            add_chip(chips, "SID", "6581", "audio", "D400-D7FF");
-            add_chip(chips, "CIA1", "6526", "I/O, keyboard, joystick",
+            add_chip(chips, "SID", sid_model_name(), "audio", "D400-D7FF");
+            add_chip(chips, "CIA1", cia_model_name("CIA1Model"), "I/O, keyboard, joystick",
                      "DC00-DCFF");
-            add_chip(chips, "CIA2", "6526", "I/O, serial bus, user port",
+            add_chip(chips, "CIA2", cia_model_name("CIA2Model"), "I/O, serial bus, user port",
                      "DD00-DDFF");
             break;
 
@@ -399,10 +421,10 @@ static cJSON *build_chips_array(void)
                      "D000-D3FF");
             add_chip(chips, "VDC", "8563", "80-column video",
                      "D600-D601");
-            add_chip(chips, "SID", "6581", "audio", "D400-D7FF");
-            add_chip(chips, "CIA1", "6526", "I/O, keyboard, joystick",
+            add_chip(chips, "SID", sid_model_name(), "audio", "D400-D7FF");
+            add_chip(chips, "CIA1", cia_model_name("CIA1Model"), "I/O, keyboard, joystick",
                      "DC00-DCFF");
-            add_chip(chips, "CIA2", "6526", "I/O, serial bus, user port",
+            add_chip(chips, "CIA2", cia_model_name("CIA2Model"), "I/O, serial bus, user port",
                      "DD00-DDFF");
             break;
 
@@ -410,6 +432,8 @@ static cJSON *build_chips_array(void)
             add_chip(chips, "VIC-II", "DTV", "video, sprites, DTV extensions",
                      "D000-D3FF");
             add_chip(chips, "SID", "DTV", "audio (DTV variant)", "D400-D7FF");
+            add_chip(chips, "CIA1", "6526", "I/O, keyboard, joystick", "DC00-DCFF");
+            add_chip(chips, "CIA2", "6526", "I/O, serial bus, user port", "DD00-DDFF");
             break;
 
         case VICE_MACHINE_VIC20:
@@ -445,24 +469,29 @@ static cJSON *build_chips_array(void)
             }
             break;
         }
+        /* CBM-II I/O decoding: cbm5x0mem.c / cbm2mem.c io_source_t tables */
         case VICE_MACHINE_CBM5x0:
             add_chip(chips, "VIC-II",
                      (video == 2 || video == 3) ? "6567" : "6569",
                      "video, sprites",
-                     "D000-D3FF");
-            add_chip(chips, "SID", "6581", "audio", "D400-D7FF");
-            add_chip(chips, "CIA", "6526", "I/O", "D800-D8FF");
+                     "D800-D8FF");
+            add_chip(chips, "SID", sid_model_name(), "audio", "DA00-DAFF");
+            add_chip(chips, "CIA", "6526", "I/O", "DC00-DCFF");
             add_chip(chips, "ACIA", "6551", "serial communication",
-                     "D900-D9FF");
+                     "DD00-DDFF");
+            add_chip(chips, "TPI1", "6525", "IEEE-488, cassette", "DE00-DEFF");
+            add_chip(chips, "TPI2", "6525", "keyboard", "DF00-DFFF");
             break;
 
         case VICE_MACHINE_CBM6x0:
             add_chip(chips, "CRTC", "6545", "video controller",
-                     "D800-D801");
-            add_chip(chips, "SID", "6581", "audio", "DA00-DAFF");
-            add_chip(chips, "CIA", "6526", "I/O", "DB00-DBFF");
+                     "D800-D8FF");
+            add_chip(chips, "SID", sid_model_name(), "audio", "DA00-DAFF");
+            add_chip(chips, "CIA", "6526", "I/O", "DC00-DCFF");
             add_chip(chips, "ACIA", "6551", "serial communication",
-                     "DC00-DCFF");
+                     "DD00-DDFF");
+            add_chip(chips, "TPI1", "6525", "IEEE-488, cassette", "DE00-DEFF");
+            add_chip(chips, "TPI2", "6525", "keyboard", "DF00-DFFF");
             break;
 
         case VICE_MACHINE_VSID:
@@ -768,6 +797,9 @@ cJSON *mcp_tool_machine_config_get(cJSON *params)
 /* Public: machine.config.set handler                                        */
 /* ========================================================================= */
 
+/* Upper bound on resource pairs in one config.set request. */
+#define CONFIG_SET_MAX_PAIRS 32
+
 cJSON *mcp_tool_machine_config_set(cJSON *params)
 {
     cJSON *response;
@@ -778,6 +810,10 @@ cJSON *mcp_tool_machine_config_set(cJSON *params)
     int change_count = 0;
     int any_needs_reset = 0;
     const char *mach_name;
+    struct {
+        const char *name;
+        int old_value;
+    } applied[CONFIG_SET_MAX_PAIRS];
 
     log_message(mcp_tools_log, "Handling vice.machine.config.set");
 
@@ -802,20 +838,12 @@ cJSON *mcp_tool_machine_config_set(cJSON *params)
 
     mach_name = machine_get_name();
 
-    /* Iterate each key-value pair in the resources object */
+    /* Pass 1: validate every pair before changing anything. */
     child = NULL;
     cJSON_ArrayForEach(child, resources_obj) {
-        const char *res_name;
-        int old_val = 0;
-        int new_val;
-        int rc;
-        int res_needs_reset = 0;
-        cJSON *change_entry;
+        const char *res_name = child->string;
 
-        res_name = child->string;
-
-        /* 1. Validate resource name is whitelisted */
-        if (!is_resource_whitelisted(res_name, &res_needs_reset)) {
+        if (!is_resource_whitelisted(res_name, NULL)) {
             char valid_list[512];
             char err_msg[768];
 
@@ -830,7 +858,6 @@ cJSON *mcp_tool_machine_config_set(cJSON *params)
             return mcp_error(MCP_ERROR_INVALID_PARAMS, err_msg);
         }
 
-        /* 2. Validate value is a number */
         if (!cJSON_IsNumber(child)) {
             char err_msg[256];
 
@@ -841,9 +868,25 @@ cJSON *mcp_tool_machine_config_set(cJSON *params)
             return mcp_error(MCP_ERROR_INVALID_PARAMS, err_msg);
         }
 
-        new_val = child->valueint;
+        if (++change_count > CONFIG_SET_MAX_PAIRS) {
+            cJSON_Delete(changes_array);
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "Too many resources in one request");
+        }
+    }
+    change_count = 0;
 
-        /* 3. Read old value, 4. Set new value */
+    /* Pass 2: apply in order. If a resource rejects its value, restore the
+     * ones already applied, so the request is all or nothing. */
+    child = NULL;
+    cJSON_ArrayForEach(child, resources_obj) {
+        const char *res_name = child->string;
+        int old_val = 0;
+        int new_val = child->valueint;
+        int res_needs_reset = 0;
+        cJSON *change_entry;
+
+        is_resource_whitelisted(res_name, &res_needs_reset);
+
         if (strcmp(res_name, "WarpMode") == 0) {
             /* WarpMode is not a VICE resource; use vsync API */
             old_val = vsync_get_warp_mode();
@@ -851,20 +894,30 @@ cJSON *mcp_tool_machine_config_set(cJSON *params)
         } else {
             resources_get_int(res_name, &old_val);
 
-            rc = resources_set_int(res_name, new_val);
-            if (rc != 0) {
+            if (resources_set_int(res_name, new_val) != 0) {
                 char err_msg[256];
+                int j;
 
+                for (j = change_count - 1; j >= 0; j--) {
+                    if (strcmp(applied[j].name, "WarpMode") == 0) {
+                        vsync_set_warp_mode(applied[j].old_value);
+                    } else {
+                        resources_set_int(applied[j].name, applied[j].old_value);
+                    }
+                }
                 snprintf(err_msg, sizeof(err_msg),
-                         "Failed to set '%s' to %d. Resource rejected the value.",
+                         "Failed to set '%s' to %d. Resource rejected the value; "
+                         "no resources were changed.",
                          res_name, new_val);
 
                 cJSON_Delete(changes_array);
                 return mcp_error(MCP_ERROR_INVALID_PARAMS, err_msg);
             }
         }
+        applied[change_count].name = res_name;
+        applied[change_count].old_value = old_val;
 
-        /* 5. Track change */
+        /* Track change */
         change_entry = cJSON_CreateObject();
         if (change_entry != NULL) {
             cJSON_AddStringToObject(change_entry, "resource", res_name);

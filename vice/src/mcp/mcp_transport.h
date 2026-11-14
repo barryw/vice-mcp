@@ -86,5 +86,10 @@ extern int mcp_transport_test_ping_and_pause_skip_dispatch_slot(void);
 extern int mcp_transport_test_other_tools_wait_for_dispatch_slot(void);
 extern int mcp_transport_test_all_interfaces_without_token_starts(void);
 extern int mcp_transport_test_cors_without_token_rejected(void);
+/* Starts the transport on an ephemeral loopback port, sends one bodiless
+ * request, stops it. Returns the HTTP status (-1 on error) and copies the
+ * Allow header value, if any, into allow. */
+extern int mcp_transport_test_http_status(const char *method, const char *path,
+                                          char *allow, size_t allow_size);
 
 #endif /* VICE_MCP_TRANSPORT_H */

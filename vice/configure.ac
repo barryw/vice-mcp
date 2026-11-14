@@ -2330,7 +2330,7 @@ if test x"$enable_mcp_server" = "xyes"; then
       AC_MSG_ERROR([MCP server support requested, but required POSIX headers were not found.])
     fi
 
-    PKG_CHECK_MODULES(LIBMICROHTTPD, [libmicrohttpd >= 0.9.0], [have_libmicrohttpd=yes], [have_libmicrohttpd=no])
+    PKG_CHECK_MODULES(LIBMICROHTTPD, [libmicrohttpd >= 0.9.71], [have_libmicrohttpd=yes], [have_libmicrohttpd=no])
     if test x"$have_libmicrohttpd" = "xno"; then
       AC_MSG_ERROR([MCP server support requested, but libmicrohttpd was not found.])
     fi
@@ -2348,7 +2348,7 @@ if test x"$enable_mcp_server" = "xyes"; then
       AC_MSG_ERROR([MCP server support requested, but required headers (pthread.h, winsock2.h, ws2tcpip.h) were not found.])
     fi
 
-    PKG_CHECK_MODULES(LIBMICROHTTPD, [libmicrohttpd >= 0.9.0], [have_libmicrohttpd=yes], [have_libmicrohttpd=no])
+    PKG_CHECK_MODULES(LIBMICROHTTPD, [libmicrohttpd >= 0.9.71], [have_libmicrohttpd=yes], [have_libmicrohttpd=no])
     if test x"$have_libmicrohttpd" = "xno"; then
       AC_MSG_ERROR([MCP server support requested, but libmicrohttpd was not found.])
     fi

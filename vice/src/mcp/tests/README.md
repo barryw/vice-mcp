@@ -18,7 +18,10 @@ The MCP test suite validates the core functionality of the MCP server integratio
 
 - C compiler (gcc or clang)
 - Make
-- Configured VICE build tree with MCP enabled (`configure --enable-mcp-server`)
+- Configured VICE build tree with MCP enabled (`configure --enable-mcp-server`).
+  The Makefile looks for it at `vice/build` (`TOP_BUILDDIR=../../../build`);
+  point `TOP_BUILDDIR` elsewhere for another build directory. It links that
+  tree's `src/mcp/libmcp.a` and builds it first if it is missing.
 - libmicrohttpd development files discoverable by `pkg-config`, or set
   `LIBMICROHTTPD_CFLAGS` and `LIBMICROHTTPD_LIBS`
 
@@ -26,7 +29,8 @@ The MCP test suite validates the core functionality of the MCP server integratio
 
 ```bash
 cd /path/to/vice/src/mcp/tests
-make
+make                                   # build tree at vice/build
+make TOP_BUILDDIR=../../../build-headless   # or another build tree
 ```
 
 ### Run Tests
@@ -39,7 +43,7 @@ Expected output:
 ```
 === MCP Tools Test Suite ===
 
-Running test: ping_tool_returns_valid_response ... PASS
+Running test: memory_compare_does_not_trigger_side_effects ... PASS
 ...
 
 === Test Results ===
@@ -98,8 +102,8 @@ Available assertion macros:
 
 ## Limitations
 
-These are unit tests that validate individual MCP components in isolation.
-They do NOT test:
+These are unit tests that run the MCP handlers and transport against stubbed
+VICE dependencies (`vice_stubs.c`). They do NOT test:
 
 - Full VICE integration (requires running emulator)
 - End-to-end HTTP request handling against a real emulator process
@@ -107,11 +111,12 @@ They do NOT test:
 - Actual CPU state manipulation
 - Memory operations with real emulator
 
-For integration testing, use manual testing with a running VICE instance:
+For integration testing against a running VICE instance, use the pytest suite
+in `tools/tests/test_mcp_protocol.py` at the repository root, or check by hand:
 
 ```bash
 # Terminal 1
-x64sc -mcpserver -mcpserverhost 0.0.0.0
+x64sc -mcpserver
 
 # Terminal 2
 curl -sS http://127.0.0.1:6510/mcp \
@@ -124,26 +129,20 @@ curl -sS http://127.0.0.1:6510/mcp \
 
 Potential additions to the test suite:
 
-1. **Memory operation tests**: Validate read/write with mock memory
-2. **Register operation tests**: Test CPU register get/set with mocks
-3. **Error response formatting**: Validate JSON-RPC error structures
-4. **Integration tests**: Test against running VICE binary monitor
-5. **Performance tests**: Measure tool dispatch overhead
-6. **Fuzzing**: Test with malformed/malicious inputs
+1. **Performance tests**: Measure tool dispatch overhead
+2. **Fuzzing**: Test with malformed/malicious inputs
 
 ## Continuous Integration
 
-To integrate with CI/CD:
+`.woodpecker/test.yaml` builds a headless VICE (`build-headless/`) on every
+pull request and push to `main`, then runs:
 
 ```bash
-# In your CI script
-cd src/mcp/tests
-make test
-if [ $? -ne 0 ]; then
-    echo "MCP tests failed"
-    exit 1
-fi
+cd vice/src/mcp/tests
+make test TOP_BUILDDIR=../../../build-headless
 ```
+
+`make test` exits non-zero when any test fails.
 
 ## License
 

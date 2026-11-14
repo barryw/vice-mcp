@@ -1,5 +1,10 @@
 # Interrupt Log Hook Integration Design
 
+> **Status (as of 2026-11-14): not implemented.**
+> MCP-side log configuration and buffers exist in `vice/src/mcp/mcp_tools_trace.c`, but `interrupt.log.start/stop/read` are **not registered** in `tool_registry[]`, so they cannot be called.
+> No IRQ/NMI/BRK hook was added: nothing in `interrupt.c`, `6510core.c`, `maincpu.c` or `alarm.c` logs interrupts, and none of the API functions below exist; the log would always be empty.
+> File references here are stale: the handlers live in `mcp_tools_trace.c`, and `6502core.c` does not exist.
+
 ## Overview
 
 This document describes the VICE-side integration needed to make the MCP interrupt log tools (`vice.interrupt.log.start`, `vice.interrupt.log.stop`, `vice.interrupt.log.read`) fully functional. The MCP side stores log configuration and entries; the VICE side needs interrupt dispatch hooks to capture interrupt events.

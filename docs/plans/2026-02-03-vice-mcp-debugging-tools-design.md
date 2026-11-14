@@ -1,5 +1,11 @@
 # VICE MCP Debugging Tools - Design Document
 
+> **Status (as of 2026-11-14): partially implemented.**
+> Registered and callable: `memory.compare` (ranges and .vsf snapshot), `memory.search`, `memory.fill` (no `bank` parameter), `cycles.stopwatch` (main CPU only), `checkpoint.group.create/add/toggle/list`, `sprite.inspect` (`png_base64` returns error -32000), `watch.add` with `condition`, `keyboard.matrix`.
+> Handlers exist but are **not registered** (calls return -32601): `trace.start/stop`, `interrupt.log.start/stop/read` (no CPU or interrupt hooks; see the two hook-integration docs), `checkpoint.set_auto_snapshot/clear_auto_snapshot` (no checkpoint-hit hook), `memory.map`.
+> Not done: the `backtrace` enhancement (frames are still JSR-only).
+> The implementations scan with `mem_bank_peek` rather than the `mon_memory_*` primitives named here; code is in `vice/src/mcp/mcp_tools_{memory,debug,checkpoint,chipstate,trace}.c`.
+
 **Date:** 2026-02-03
 **Status:** Approved
 **Origin:** Chess agent wishlist from debugging session

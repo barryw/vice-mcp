@@ -419,7 +419,10 @@ cJSON* mcp_tool_checkpoint_list(cJSON *params)
         cJSON_AddBoolToObject(cp_obj, "temporary", cp->temporary);
 
         if (cp->condition != NULL) {
-            cJSON_AddStringToObject(cp_obj, "condition", "<expression>");  /* TODO: serialize condition */
+            char condition[256];
+
+            mcp_condition_to_string(cp->condition, condition, sizeof(condition));
+            cJSON_AddStringToObject(cp_obj, "condition", condition);
         }
 
         cJSON_AddItemToArray(checkpoints_array, cp_obj);
@@ -608,6 +611,28 @@ cJSON* mcp_tool_checkpoint_set_ignore_count(cJSON *params)
  *   - created (bool): true if created
  *   - name (string): Group name
  */
+/* Checks every entry of a checkpoint_ids array before any is stored: each
+ * must be the number of an existing checkpoint, and the group must have room
+ * for all of them. Returns an error message, or NULL when valid. */
+static const char *checkpoint_group_ids_error(cJSON *ids_item, int current_count)
+{
+    cJSON *id_item;
+
+    if (!cJSON_IsArray(ids_item)) {
+        return "checkpoint_ids must be an array of checkpoint numbers";
+    }
+    if (current_count + cJSON_GetArraySize(ids_item) > MCP_MAX_CHECKPOINTS_PER_GROUP) {
+        return "A group holds at most 64 checkpoints";
+    }
+    cJSON_ArrayForEach(id_item, ids_item) {
+        if (!cJSON_IsNumber(id_item) || id_item->valueint <= 0
+            || mon_breakpoint_find_checkpoint((int)id_item->valueint) == NULL) {
+            return "checkpoint_ids must contain numbers of existing checkpoints";
+        }
+    }
+    return NULL;
+}
+
 cJSON* mcp_tool_checkpoint_group_create(cJSON *params)
 {
     cJSON *response, *name_item, *ids_item;
@@ -637,6 +662,15 @@ cJSON* mcp_tool_checkpoint_group_create(cJSON *params)
         return mcp_error(MCP_ERROR_INVALID_PARAMS, "Group already exists");
     }
 
+    ids_item = cJSON_GetObjectItem(params, "checkpoint_ids");
+    if (ids_item != NULL) {
+        const char *ids_error = checkpoint_group_ids_error(ids_item, 0);
+
+        if (ids_error != NULL) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, ids_error);
+        }
+    }
+
     /* Find a free slot */
     group_idx = mcp_checkpoint_group_find_free();
     if (group_idx < 0) {
@@ -649,15 +683,12 @@ cJSON* mcp_tool_checkpoint_group_create(cJSON *params)
     checkpoint_groups[group_idx].checkpoint_count = 0;
     checkpoint_groups[group_idx].active = 1;
 
-    /* Add initial checkpoint IDs if provided */
-    ids_item = cJSON_GetObjectItem(params, "checkpoint_ids");
-    if (cJSON_IsArray(ids_item)) {
+    /* Add initial checkpoint IDs if provided (validated above) */
+    if (ids_item != NULL) {
         int array_size = cJSON_GetArraySize(ids_item);
-        for (i = 0; i < array_size && checkpoint_groups[group_idx].checkpoint_count < MCP_MAX_CHECKPOINTS_PER_GROUP; i++) {
-            cJSON *id_item = cJSON_GetArrayItem(ids_item, i);
-            if (cJSON_IsNumber(id_item)) {
-                checkpoint_groups[group_idx].checkpoint_ids[checkpoint_groups[group_idx].checkpoint_count++] = id_item->valueint;
-            }
+        for (i = 0; i < array_size; i++) {
+            checkpoint_groups[group_idx].checkpoint_ids[checkpoint_groups[group_idx].checkpoint_count++] =
+                cJSON_GetArrayItem(ids_item, i)->valueint;
         }
     }
 
@@ -714,16 +745,21 @@ cJSON* mcp_tool_checkpoint_group_add(cJSON *params)
         return mcp_error(MCP_ERROR_INVALID_PARAMS, "Group not found");
     }
 
-    /* Add checkpoint IDs */
+    {
+        const char *ids_error =
+            checkpoint_group_ids_error(ids_item, checkpoint_groups[group_idx].checkpoint_count);
+
+        if (ids_error != NULL) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, ids_error);
+        }
+    }
+
+    /* Add checkpoint IDs (validated above) */
     array_size = cJSON_GetArraySize(ids_item);
     for (i = 0; i < array_size; i++) {
-        cJSON *id_item = cJSON_GetArrayItem(ids_item, i);
-        if (cJSON_IsNumber(id_item)) {
-            if (checkpoint_groups[group_idx].checkpoint_count < MCP_MAX_CHECKPOINTS_PER_GROUP) {
-                checkpoint_groups[group_idx].checkpoint_ids[checkpoint_groups[group_idx].checkpoint_count++] = id_item->valueint;
-                added_count++;
-            }
-        }
+        checkpoint_groups[group_idx].checkpoint_ids[checkpoint_groups[group_idx].checkpoint_count++] =
+            cJSON_GetArrayItem(ids_item, i)->valueint;
+        added_count++;
     }
 
     /* Build response */

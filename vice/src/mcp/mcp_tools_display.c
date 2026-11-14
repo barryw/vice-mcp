@@ -84,6 +84,58 @@ static char* base64_encode(const uint8_t *data, size_t input_length, size_t *out
     return encoded;
 }
 
+/* Which screen a display tool reads: "vicii", the 40-column VIC-II (x128's
+ * canvas 1, the only canvas of the other machines that have one), "vdc",
+ * x128's 80-column VDC (canvas 0), or, with no display given, the machine's
+ * main screen: x128's VIC-II, canvas 0 elsewhere. Returns the canvas number
+ * and sets *used to the name of the screen's chip; or returns -1 with
+ * *error set. */
+static int mcp_display_select(cJSON *params, const char **used, const char **error)
+{
+    cJSON *item = cJSON_GetObjectItem(params, "display");
+    int c128 = (machine_class == VICE_MACHINE_C128);
+    const char *main_chip;
+
+    switch (machine_class) {
+        case VICE_MACHINE_VIC20:
+            main_chip = "vic";
+            break;
+        case VICE_MACHINE_PLUS4:
+            main_chip = "ted";
+            break;
+        case VICE_MACHINE_PET:
+        case VICE_MACHINE_CBM6x0:
+            main_chip = "crtc";
+            break;
+        default:    /* C64 family, x128, CBM-II 5x0, VSID */
+            main_chip = "vicii";
+            break;
+    }
+
+    if (item == NULL) {
+        *used = main_chip;
+        return c128 ? 1 : 0;
+    }
+    if (cJSON_IsString(item) && strcmp(item->valuestring, "vdc") == 0) {
+        if (!c128) {
+            *error = "display \"vdc\" is not available: only x128 has a VDC";
+            return -1;
+        }
+        *used = "vdc";
+        return 0;
+    }
+    if (cJSON_IsString(item) && strcmp(item->valuestring, "vicii") == 0) {
+        if (strcmp(main_chip, "vicii") != 0) {
+            *error = "display \"vicii\" is not available: this machine has no VIC-II";
+            return -1;
+        }
+        *used = "vicii";
+        return c128 ? 1 : 0;
+    }
+    *error = "display must be \"vicii\" or \"vdc\"";
+    return -1;
+}
+
 cJSON* mcp_tool_display_screenshot(cJSON *params)
 {
     cJSON *response, *format_item, *path_item, *base64_item;
@@ -93,6 +145,14 @@ cJSON* mcp_tool_display_screenshot(cJSON *params)
     int return_base64 = 0;
     char temp_path[256];
     int use_temp_file = 0;
+    int canvas_num;
+    const char *display = NULL;
+    const char *error = NULL;
+
+    canvas_num = mcp_display_select(params, &display, &error);
+    if (canvas_num < 0) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, error);
+    }
 
     /* Parse return_base64 parameter (optional, default=false) */
     base64_item = cJSON_GetObjectItem(params, "return_base64");
@@ -149,11 +209,10 @@ cJSON* mcp_tool_display_screenshot(cJSON *params)
         return mcp_error(MCP_ERROR_INVALID_PARAMS, "path required (or set return_base64=true)");
     }
 
-    log_message(mcp_tools_log, "Taking screenshot: format=%s, path=%s, base64=%d",
-                format, path, return_base64);
+    log_message(mcp_tools_log, "Taking screenshot: display=%s, format=%s, path=%s, base64=%d",
+                display, format, path, return_base64);
 
-    /* Get primary video canvas */
-    canvas = machine_video_canvas_get(0);
+    canvas = machine_video_canvas_get((unsigned int)canvas_num);
     if (canvas == NULL) {
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Cannot get video canvas");
     }
@@ -174,6 +233,7 @@ cJSON* mcp_tool_display_screenshot(cJSON *params)
 
     cJSON_AddStringToObject(response, "status", "ok");
     cJSON_AddStringToObject(response, "format", format);
+    cJSON_AddStringToObject(response, "display", display);
 
     if (!use_temp_file) {
         cJSON_AddStringToObject(response, "path", path);
@@ -233,13 +293,18 @@ cJSON* mcp_tool_display_get_dimensions(cJSON *params)
     struct video_canvas_s *canvas;
     unsigned int width;
     unsigned int height;
+    int canvas_num;
+    const char *display = NULL;
+    const char *error = NULL;
 
-    (void)params;  /* Unused */
+    canvas_num = mcp_display_select(params, &display, &error);
+    if (canvas_num < 0) {
+        return mcp_error(MCP_ERROR_INVALID_PARAMS, error);
+    }
 
-    log_message(mcp_tools_log, "Getting display dimensions");
+    log_message(mcp_tools_log, "Getting display dimensions: display=%s", display);
 
-    /* Get primary video canvas */
-    canvas = machine_video_canvas_get(0);
+    canvas = machine_video_canvas_get((unsigned int)canvas_num);
     if (canvas == NULL || canvas->draw_buffer == NULL) {
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Cannot get video canvas");
     }
@@ -260,6 +325,7 @@ cJSON* mcp_tool_display_get_dimensions(cJSON *params)
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
     }
 
+    cJSON_AddStringToObject(response, "display", display);
     cJSON_AddNumberToObject(response, "width", width);
     cJSON_AddNumberToObject(response, "height", height);
     cJSON_AddNumberToObject(response, "visible_width", canvas->draw_buffer->visible_width);

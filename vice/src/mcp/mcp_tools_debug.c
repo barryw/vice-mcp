@@ -26,6 +26,7 @@
 
 #include "mcp_tools_internal.h"
 
+#include "alarm.h"
 #include "maincpu.h"
 #include "mem.h"
 #include "monitor.h"
@@ -227,9 +228,17 @@ cJSON* mcp_tool_symbols_load(cJSON *params)
     }
     path = path_item->valuestring;
 
-    /* Optional format hint: "vice", "kickasm", or "auto" (default) */
+    /* Optional format hint: "auto" (default), "kickasm", "vice" or "simple" */
     format_item = cJSON_GetObjectItem(params, "format");
-    if (format_item != NULL && cJSON_IsString(format_item)) {
+    if (format_item != NULL) {
+        if (!cJSON_IsString(format_item)
+            || (strcmp(format_item->valuestring, "auto") != 0
+                && strcmp(format_item->valuestring, "kickasm") != 0
+                && strcmp(format_item->valuestring, "vice") != 0
+                && strcmp(format_item->valuestring, "simple") != 0)) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                             "format must be 'auto', 'kickasm', 'vice' or 'simple'");
+        }
         format = format_item->valuestring;
     }
 
@@ -399,8 +408,10 @@ cJSON* mcp_tool_symbols_load(cJSON *params)
         /* VICE format: "al C:xxxx .label_name" */
         if (strcmp(format, "vice") == 0 || strcmp(format, "simple") == 0) {
             if (strncmp(p, "al ", 3) == 0) {
+                /* "al C:0810 .name", or ld65 -Ln's "al 000810 .name" */
                 if (sscanf(p, "al C:%x .%127s", &addr, label) == 2 ||
-                    sscanf(p, "al %*c:%x .%127s", &addr, label) == 2) {
+                    sscanf(p, "al %*c:%x .%127s", &addr, label) == 2 ||
+                    sscanf(p, "al %x .%127s", &addr, label) == 2) {
                     mon_addr = new_addr(e_comp_space, (uint16_t)addr);
                     /* Must strdup - mon_add_name_to_symbol_table stores pointer */
                     mon_add_name_to_symbol_table(mon_addr, lib_strdup(label));
@@ -410,10 +421,11 @@ cJSON* mcp_tool_symbols_load(cJSON *params)
             }
         }
 
-        /* Simple format: "label = $xxxx" or "label = xxxx" */
+        /* Simple format: "label = $xxxx" or "label = xxxx" (hex), spaces
+         * around '=' optional */
         if (strcmp(format, "simple") == 0 || strcmp(format, "vice") == 0) {
-            if (sscanf(p, "%127s = $%x", label, &addr) == 2 ||
-                sscanf(p, "%127s = %x", label, &addr) == 2) {
+            if (sscanf(p, " %127[^= \t] = $%x", label, &addr) == 2 ||
+                sscanf(p, " %127[^= \t] = %x", label, &addr) == 2) {
                 mon_addr = new_addr(e_comp_space, (uint16_t)addr);
                 /* Must strdup - mon_add_name_to_symbol_table stores pointer */
                 mon_add_name_to_symbol_table(mon_addr, lib_strdup(label));
@@ -753,8 +765,67 @@ cJSON* mcp_tool_backtrace(cJSON *params)
     return response;
 }
 
-/* Run until an address is reached or a cycle limit is exceeded
- * This helps with step-over getting stuck in busy-wait loops */
+/* run_until's cycle limit: one alarm on the main CPU's alarm context,
+ * created at first use and re-armed by each run_until. */
+#define MCP_RUN_UNTIL_CYCLES_MAX 100000000
+
+static alarm_t *run_until_alarm = NULL;
+/* The temporary checkpoint the run_until that armed the limit set, and
+ * its address; 0 if it set none */
+static int run_until_checkpoint = 0;
+static uint16_t run_until_target = 0;
+/* mcp_stop_count() when the limit was armed */
+static unsigned int run_until_stops = 0;
+
+/* The limit is reached: on the emulator thread, from the CPU's alarm
+ * dispatch, which on x64sc comes part way through an instruction. So the
+ * machine is not held here: the stop is asked for as vice.execution.pause
+ * asks for it, and its trap holds the machine at the next instruction
+ * boundary, registers exported.
+ *
+ * The limit belongs to one run. If the machine has stopped since it was
+ * armed (run_until's checkpoint hit first, a pause, a step, any hold) or
+ * been reset (the CPU clock starts again from 0), that run is over and a
+ * client may have resumed the machine since, so the limit is stale and
+ * does nothing. A hold cannot unset the alarm itself: it lives in
+ * libmonitor, which must not call into libmcp, so it counts instead
+ * (mcp_stop_count()) and the count is compared here. */
+static void run_until_alarm_handler(CLOCK offset, void *data)
+{
+    mon_checkpoint_t *cp;
+
+    (void)offset;
+    (void)data;
+
+    alarm_unset(run_until_alarm);
+    if (mcp_stop_count() != run_until_stops) {
+        return;
+    }
+
+    /* Delete run_until's checkpoint, unless it has gone and its number
+     * has since been given to another (VICE numbers checkpoints from 1
+     * again once none are left) */
+    if (run_until_checkpoint > 0) {
+        cp = mon_breakpoint_find_checkpoint(run_until_checkpoint);
+        if (cp != NULL && cp->temporary
+            && addr_location(cp->start_addr) == run_until_target) {
+            mon_breakpoint_delete_checkpoint(run_until_checkpoint);
+        }
+        run_until_checkpoint = 0;
+    }
+
+    mcp_request_pause();
+}
+
+void mcp_run_until_cancel(void)
+{
+    if (run_until_alarm != NULL) {
+        alarm_unset(run_until_alarm);
+    }
+}
+
+/* Run until an address is reached or a number of cycles has run,
+ * whichever comes first. Returns at once; the machine stops later. */
 cJSON* mcp_tool_run_until(cJSON *params)
 {
     cJSON *response, *addr_item, *cycles_item;
@@ -764,7 +835,7 @@ cJSON* mcp_tool_run_until(cJSON *params)
     uint16_t target_addr = 0;
     int cycle_limit = 0;
     int has_addr = 0;
-    int bp_num;
+    int bp_num = 0;
 
     log_message(mcp_tools_log, "Handling vice.run_until");
 
@@ -785,20 +856,19 @@ cJSON* mcp_tool_run_until(cJSON *params)
         has_addr = 1;
     }
 
-    /* Get optional cycle limit */
+    /* Get optional cycle limit: an integer 1..MCP_RUN_UNTIL_CYCLES_MAX */
     cycles_item = cJSON_GetObjectItem(params, "cycles");
-    if (cycles_item != NULL && cJSON_IsNumber(cycles_item)) {
-        cycle_limit = cycles_item->valueint;
-        if (cycle_limit < 0) cycle_limit = 0;
-        if (cycle_limit > 10000000) cycle_limit = 10000000;  /* Max ~10M cycles */
+    if (cycles_item != NULL) {
+        double v = cJSON_IsNumber(cycles_item) ? cycles_item->valuedouble : 0.0;
+        if (v < 1.0 || v > (double)MCP_RUN_UNTIL_CYCLES_MAX || v != (double)(int)v) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                             "cycles must be an integer from 1 to 100000000");
+        }
+        cycle_limit = (int)v;
     }
 
     if (!has_addr && cycle_limit == 0) {
         return mcp_error(MCP_ERROR_INVALID_PARAMS, "Either 'address' or 'cycles' required");
-    }
-
-    if (!has_addr && cycle_limit > 0) {
-        return mcp_error(MCP_ERROR_NOT_IMPLEMENTED, "cycles-only mode not yet implemented; provide an address");
     }
 
     /* If we have an address target, set a temporary breakpoint */
@@ -818,9 +888,24 @@ cJSON* mcp_tool_run_until(cJSON *params)
         }
     }
 
-    /* TODO: Implement cycle-limited execution
-     * For now, we just set up the breakpoint and resume.
-     * A proper implementation would need to hook into VICE's cycle counter. */
+    /* This run replaces any limit an earlier run_until left pending */
+    mcp_run_until_cancel();
+    if (cycle_limit > 0) {
+        if (run_until_alarm == NULL) {
+            run_until_alarm = alarm_new(maincpu_alarm_context, "MCPRunUntil",
+                                        run_until_alarm_handler, NULL);
+            if (run_until_alarm == NULL) {
+                if (has_addr) {
+                    mon_breakpoint_delete_checkpoint(bp_num);
+                }
+                return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to create cycle alarm");
+            }
+        }
+        run_until_checkpoint = has_addr ? bp_num : 0;
+        run_until_target = target_addr;
+        run_until_stops = mcp_stop_count();
+        alarm_set(run_until_alarm, maincpu_clk + (CLOCK)cycle_limit);
+    }
 
     /* Resume execution */
     /* A machine stopped by vice.execution.pause, a completed step or a
@@ -846,9 +931,17 @@ cJSON* mcp_tool_run_until(cJSON *params)
     }
     if (cycle_limit > 0) {
         cJSON_AddNumberToObject(response, "cycle_limit", cycle_limit);
-        cJSON_AddStringToObject(response, "note", "Cycle limit not yet implemented - using breakpoint only");
     }
-    cJSON_AddStringToObject(response, "message", "Execution resumed, will stop at target or breakpoint");
+    if (has_addr && cycle_limit > 0) {
+        cJSON_AddStringToObject(response, "message",
+            "Execution resumed; stops at the target or after the cycle limit, whichever comes first");
+    } else if (has_addr) {
+        cJSON_AddStringToObject(response, "message",
+            "Execution resumed; stops at the target");
+    } else {
+        cJSON_AddStringToObject(response, "message",
+            "Execution resumed; stops after the cycle limit");
+    }
 
     return response;
 }

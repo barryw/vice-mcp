@@ -1,5 +1,11 @@
 # HTTP Transport Layer Implementation Plan
 
+> **Status (as of 2026-11-14): implemented with changes; SSE not implemented.**
+> Built: libmicrohttpd thread-per-connection server, `POST /mcp` JSON-RPC 2.0 with standard error codes, 404 routing (`vice/src/mcp/mcp_transport.c`).
+> Changed: default port **6510**, not 8080; host, port, token and CORS come from the `MCPServer*` resources; request limit **10MB** (larger requests are dropped, no 413); CORS **off by default**, one exact origin, `*` rejected, token required; optional `Authorization: Bearer` token (401); 415/406 header checks; 202 for notifications; 100-connection limit and 30 s connection timeout.
+> Tool calls are dispatched onto the emulator thread (CPU trap, 5 s timeout), not run on the HTTP thread.
+> Not built: SSE (Tasks 9-10). `GET /mcp` returns 405 (MCP's "no SSE stream") and `GET /events` returns 501. The shell test scripts planned here were replaced by C unit tests in `vice/src/mcp/tests/`.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Implement HTTP server with JSON-RPC 2.0 endpoint and SSE notifications for VICE MCP

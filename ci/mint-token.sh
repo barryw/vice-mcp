@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
 # mint-token.sh — vendored GitHub App installation-token minter for CI legs that
-# can NOT run the ghcr.io/barryw/woodpecker-release:go plugin image, i.e. the
-# darwin/local-backend and cross-platform-matrix release steps (WAL-74 / WAL-70b).
+# can NOT run the ghcr.io/barryw/woodpecker-release:go plugin image — currently
+# only the darwin/arm64 local-backend upload step in build-macos.yaml
+# (WAL-74 / WAL-70b).
 #
 # WHY: WAL-72 replaced the shared admin PAT with a per-pipeline mint step on the
 # Linux/k8s legs using the go plugin image. That image is linux/amd64 and can't
-# execute on the Apple-silicon local backend or in a powershell leg. This is a
+# execute on the Apple-silicon local backend. This is a
 # faithful, dependency-minimal port of
 # infrastructure/github-app-token/mint-installation-token.sh — same RS256 App
 # JWT -> installation-token exchange, but using ONLY bash + openssl + curl (no

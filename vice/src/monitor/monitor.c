@@ -118,6 +118,18 @@ void mcp_set_pause_pending(int pending)
     mcp_pause_pending = pending;
 }
 
+/* How many times the machine has been held for MCP clients
+ * (mcp_hold_paused()) or reset (monitor_reset_hook()). A stop armed for
+ * later, vice.run_until's cycle limit, compares it to tell whether the run
+ * it was armed for has ended since. Defined here for the same reason as
+ * mcp_step_active. */
+static unsigned int mcp_stops = 0;
+
+unsigned int mcp_stop_count(void)
+{
+    return mcp_stops;
+}
+
 /* When a checkpoint (breakpoint/watchpoint) fires and MCP is active,
  * suppress the interactive monitor and pause instead. */
 static int mcp_checkpoint_active = 0;
@@ -175,6 +187,7 @@ static void mcp_mark_checkpoint_if_active(void)
  * a client resumes it. */
 void mcp_hold_paused(void)
 {
+    mcp_stops++;
     mcp_pause_pending = 0;
     if (!ui_pause_active()) {
         ui_pause_enable();
@@ -473,6 +486,9 @@ static bool is_machine_ready(void)
 
 void monitor_reset_hook(void)
 {
+#ifdef HAVE_MCP_SERVER
+    mcp_stops++;
+#endif
     if (init_break_mode == ON_RESET) {
         init_break_mode = NONE;
 

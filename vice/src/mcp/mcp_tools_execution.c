@@ -118,7 +118,7 @@ static void mcp_pause_trap(uint16_t addr, void *data)
  * snapshot saved held the VIC-II between two frames (loaded later, it
  * draws every line one row low from then on), and a snapshot loaded left
  * the CPU's registers as they were. */
-static void mcp_request_pause(void)
+void mcp_request_pause(void)
 {
     mcp_set_pause_pending(1);
     interrupt_maincpu_trigger_trap(mcp_pause_trap, NULL);

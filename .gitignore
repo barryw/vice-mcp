@@ -16,14 +16,15 @@ __pycache__/
 /vice/build-test-*/
 /vice/build/src/
 
-# Generated files in the vendored SID library
-/vice/src/lib/libresidfp/Makefile.in
-/vice/src/lib/libresidfp/tests/Makefile.in
-/vice/src/lib/libresidfp/aclocal.m4
-/vice/src/lib/libresidfp/configure
-
-# Autotools and compiler outputs
+# Autotools and compiler outputs. The generated configure, Makefile.in,
+# aclocal.m4 and config.h.in files (libresidfp's included) are committed so a
+# checkout builds without ./autogen.sh.
 autom4te.cache/
+.aclocal.out
+.autoconf.out
+.autoheader.out
+.automake.out
+configure~
 config.log
 config.status
 *.o

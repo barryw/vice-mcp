@@ -60,6 +60,10 @@
 #ifdef HAVE_ARPA_INET_H
 #  include <arpa/inet.h>
 #endif
+#ifndef WINDOWS_COMPILE
+#  include <sys/time.h>  /* struct timeval for the test-only socket timeout */
+#  include <unistd.h>    /* close() for the test-only HTTP client */
+#endif
 
 #include <microhttpd.h>
 
@@ -220,9 +224,11 @@ static void mcp_add_cors_headers(struct MHD_Response *response,
     }
 }
 
-static enum MHD_Result mcp_queue_json_response(struct MHD_Connection *connection,
-                                               unsigned int status_code,
-                                               const char *json_body)
+/* allow: value for an Allow header (required by HTTP on a 405), or NULL. */
+static enum MHD_Result mcp_queue_json_response_allow(struct MHD_Connection *connection,
+                                                     unsigned int status_code,
+                                                     const char *json_body,
+                                                     const char *allow)
 {
     struct MHD_Response *response;
     enum MHD_Result ret;
@@ -236,10 +242,20 @@ static enum MHD_Result mcp_queue_json_response(struct MHD_Connection *connection
     }
 
     MHD_add_response_header(response, "Content-Type", "application/json");
+    if (allow != NULL) {
+        MHD_add_response_header(response, "Allow", allow);
+    }
     mcp_add_cors_headers(response, connection);
     ret = MHD_queue_response(connection, status_code, response);
     MHD_destroy_response(response);
     return ret;
+}
+
+static enum MHD_Result mcp_queue_json_response(struct MHD_Connection *connection,
+                                               unsigned int status_code,
+                                               const char *json_body)
+{
+    return mcp_queue_json_response_allow(connection, status_code, json_body, NULL);
 }
 
 static enum MHD_Result mcp_queue_auth_required(struct MHD_Connection *connection)
@@ -1061,7 +1077,18 @@ static enum MHD_Result http_handler(void *cls,
 
             return ret;
         }
-    } else if ((strcmp(url, "/mcp") == 0 || strcmp(url, "/events") == 0) && strcmp(method, "GET") == 0) {
+    } else if (strcmp(url, "/mcp") == 0) {
+        if (!mcp_request_is_authorized(connection)) {
+            log_warning(mcp_transport_log, "Unauthorized MCP %s request", method);
+            return mcp_queue_auth_required(connection);
+        }
+
+        /* MCP Streamable HTTP: no SSE stream (GET) and no sessions (DELETE),
+         * so everything but POST and OPTIONS is 405. */
+        return mcp_queue_json_response_allow(connection, 405,
+            "{\"error\":\"Method Not Allowed\",\"message\":\"This server does not offer an SSE stream; use POST /mcp\"}",
+            "POST, OPTIONS");
+    } else if (strcmp(url, "/events") == 0 && strcmp(method, "GET") == 0) {
         if (!mcp_request_is_authorized(connection)) {
             log_warning(mcp_transport_log, "Unauthorized MCP GET request");
             return mcp_queue_auth_required(connection);
@@ -1469,6 +1496,73 @@ int mcp_transport_test_all_interfaces_without_token_starts(void)
     }
 
     return started;
+}
+
+int mcp_transport_test_http_status(const char *method, const char *path,
+                                   char *allow, size_t allow_size)
+{
+#ifdef WINDOWS_COMPILE
+    (void)method; (void)path; (void)allow; (void)allow_size;
+    return -1;  /* ponytail: unit tests run on POSIX only */
+#else
+    const union MHD_DaemonInfo *info;
+    struct sockaddr_in sa;
+    struct timeval tv = { 2, 0 };
+    char request[256];
+    char reply[2048];
+    size_t got = 0;
+    ssize_t n;
+    int fd;
+    int status = -1;
+    const char *header;
+
+    if (allow != NULL && allow_size > 0) {
+        allow[0] = '\0';
+    }
+    if (mcp_transport_start("127.0.0.1", 0, NULL, NULL) < 0) {
+        return -1;
+    }
+
+    info = MHD_get_daemon_info(http_daemon, MHD_DAEMON_INFO_BIND_PORT);
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (info == NULL || fd < 0) {
+        if (fd >= 0) {
+            close(fd);
+        }
+        mcp_transport_stop();
+        return -1;
+    }
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(info->port);
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    snprintf(request, sizeof(request),
+             "%s %s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+             method, path);
+    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) == 0
+        && send(fd, request, strlen(request), 0) == (ssize_t)strlen(request)) {
+        while (got < sizeof(reply) - 1
+               && (n = recv(fd, reply + got, sizeof(reply) - 1 - got, 0)) > 0) {
+            got += (size_t)n;
+        }
+        reply[got] = '\0';
+        if (sscanf(reply, "HTTP/%*s %d", &status) != 1) {
+            status = -1;
+        }
+        header = strstr(reply, "\r\nAllow: ");
+        if (header != NULL && allow != NULL && allow_size > 0) {
+            header += strlen("\r\nAllow: ");
+            snprintf(allow, allow_size, "%.*s", (int)strcspn(header, "\r\n"), header);
+        }
+    }
+
+    close(fd);
+    mcp_transport_stop();
+    return status;
+#endif
 }
 
 int mcp_transport_test_cors_without_token_rejected(void)

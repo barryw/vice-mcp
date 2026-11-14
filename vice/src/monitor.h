@@ -280,6 +280,10 @@ void mcp_set_pause_pending(int pending);
  * pending pause. */
 void mcp_hold_paused(void);
 
+/* How many times the machine has been held by mcp_hold_paused() or reset.
+ * Read with the mainlock or on the emulator thread. */
+unsigned int mcp_stop_count(void);
+
 /* Drop a step that has not finished, so that it cannot stop the machine
  * later. Call with the machine held, or with the mainlock. */
 void mcp_cancel_step(void);
