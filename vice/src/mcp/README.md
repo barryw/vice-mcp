@@ -23,7 +23,7 @@ The MCP server is organized into three layers:
   VICE's mainlock while the UI is paused or the machine is held, directly while
   the monitor is open. Calls are serialized by a dispatch mutex; `vice.ping`
   and `vice.execution.pause` bypass it.
-- Default port: 6510 (chosen for 6510 CPU reference)
+- Default port: 6520. VICE's own monitor servers use 6502 (binary) and 6510 (text); VICE exits if the MCP port cannot be bound.
 
 ### 3. Tools (`mcp_tools*.c/h`)
 - `mcp_tools.c` - tool registry (`tool_registry[]`), name matching, dispatch
@@ -33,8 +33,9 @@ The MCP server is organized into three layers:
   (sprites, VIC-II, SID, CIA), `_disk`, `_display`, `_input`, `_machine`,
   `_debug`, `_snapshot`
 - `mcp_tools_helpers.c`, `mcp_tools_validation.c` - shared parsing and checks
-- `mcp_tools_trace.c` - execution-trace and interrupt-log handlers. These are
-  compiled but **not registered**, so clients cannot call them.
+- `mcp_tools_coverage.c` - execution coverage: a 64K map the main CPU core
+  (`6510core.c`, `6510dtvcore.c`) marks at each opcode fetch while
+  `mcp_coverage_map` points at it
 
 ## Building
 
@@ -48,7 +49,7 @@ Requires libmicrohttpd 0.9.71 or newer (the transport uses `enum MHD_Result`).
 # Build VICE
 make
 
-# Run with MCP server enabled on 127.0.0.1:6510
+# Run with MCP server enabled on 127.0.0.1:6520
 x64sc -mcpserver
 ```
 
@@ -58,7 +59,7 @@ The MCP server can be configured via resources or command-line options:
 
 **Resources:**
 - `MCPServerEnabled` (0/1) - Enable/disable MCP server
-- `MCPServerPort` (1024-65535) - Port to listen on (default: 6510)
+- `MCPServerPort` (1024-65535) - Port to listen on (default: 6520)
 - `MCPServerHost` (string) - IPv4 address to bind to (default: 127.0.0.1). Host names and IPv6 are rejected.
 - `MCPServerToken` (string) - Optional bearer token. Required for CORS; strongly recommended for non-loopback binds.
 - `MCPServerCORSOrigin` (string) - Optional exact CORS origin. `*` is rejected.
@@ -67,7 +68,7 @@ The MCP server can be configured via resources or command-line options:
 ```bash
 x64sc -mcpserver                  # Enable MCP server
 x64sc +mcpserver                  # Disable MCP server
-x64sc -mcpserverport 6510         # Set port
+x64sc -mcpserverport 6520         # Set port
 x64sc -mcpservertoken secret      # Require Authorization: Bearer secret
 x64sc -mcpserverhost 0.0.0.0
 x64sc -mcpserverhost 0.0.0.0 -mcpservertoken secret
@@ -79,8 +80,8 @@ x64sc -mcpservercorsorigin http://localhost:3000 -mcpservertoken secret
 - `127.0.0.1` means same-machine clients only. This is the default.
 - `0.0.0.0` means listen on every network interface.
 - Clients do not connect to `0.0.0.0`. Same-machine clients use
-  `http://127.0.0.1:6510/mcp`; remote clients use the host's real LAN IP, for
-  example `http://192.168.1.42:6510/mcp`.
+  `http://127.0.0.1:6520/mcp`; remote clients use the host's real LAN IP, for
+  example `http://192.168.1.42:6520/mcp`.
 
 Token behavior:
 
@@ -94,11 +95,11 @@ Common setups:
 
 | Use case | Start VICE with | Client URL | Auth header |
 |---|---|---|---|
-| Same machine | `x64sc -mcpserver` | `http://127.0.0.1:6510/mcp` | None |
+| Same machine | `x64sc -mcpserver` | `http://127.0.0.1:6520/mcp` | None |
 | Same machine, custom port | `x64sc -mcpserver -mcpserverport 7000` | `http://127.0.0.1:7000/mcp` | None |
-| LAN access | `x64sc -mcpserver -mcpserverhost 0.0.0.0` | `http://<host-ip>:6510/mcp` | None |
-| LAN access with token | `x64sc -mcpserver -mcpserverhost 0.0.0.0 -mcpservertoken secret` | `http://<host-ip>:6510/mcp` | `Authorization: Bearer secret` |
-| Browser client | `x64sc -mcpserver -mcpservercorsorigin http://localhost:3000 -mcpservertoken secret` | `http://127.0.0.1:6510/mcp` | `Authorization: Bearer secret` |
+| LAN access | `x64sc -mcpserver -mcpserverhost 0.0.0.0` | `http://<host-ip>:6520/mcp` | None |
+| LAN access with token | `x64sc -mcpserver -mcpserverhost 0.0.0.0 -mcpservertoken secret` | `http://<host-ip>:6520/mcp` | `Authorization: Bearer secret` |
+| Browser client | `x64sc -mcpserver -mcpservercorsorigin http://localhost:3000 -mcpservertoken secret` | `http://127.0.0.1:6520/mcp` | `Authorization: Bearer secret` |
 
 ## HTTP Transport Layer
 
@@ -114,7 +115,7 @@ Every request must use `Content-Type: application/json`. Clients should also sen
 VICE accepts direct JSON-RPC method calls:
 
 ```bash
-curl -sS http://127.0.0.1:6510/mcp \
+curl -sS http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json" \
   --data '{
@@ -129,7 +130,7 @@ names returned by `tools/list` use underscores so clients that dislike dotted
 names can call them safely:
 
 ```bash
-curl -sS http://127.0.0.1:6510/mcp \
+curl -sS http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json" \
   --data '{
@@ -146,7 +147,7 @@ curl -sS http://127.0.0.1:6510/mcp \
 If `MCPServerToken` is configured, add the bearer header to every request:
 
 ```bash
-curl -sS http://127.0.0.1:6510/mcp \
+curl -sS http://127.0.0.1:6520/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json" \
   -H "Authorization: Bearer secret" \
@@ -230,7 +231,7 @@ which MCP clients read as "this server offers no SSE stream". The reserved
 ```nginx
 # nginx reverse proxy with authentication
 location /mcp {
-    proxy_pass http://127.0.0.1:6510;
+    proxy_pass http://127.0.0.1:6520;
     auth_basic "VICE MCP Access";
     auth_basic_user_file /etc/nginx/.htpasswd;
 }
@@ -273,7 +274,7 @@ runs against a live VICE instance. For a quick manual check:
 x64sc -mcpserver
 
 # Terminal 2: Hit the live MCP endpoint
-curl -sS http://127.0.0.1:6510/mcp \
+curl -sS http://127.0.0.1:6520/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   --data '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"vice_ping","arguments":{}},"id":1}'

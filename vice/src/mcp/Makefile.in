@@ -118,7 +118,7 @@ am__libmcp_a_SOURCES_DIST = mcp_server.c mcp_server.h mcp_transport.c \
 	mcp_tools_helpers.c mcp_tools_display.c mcp_tools_disk.c \
 	mcp_tools_snapshot.c mcp_tools_input.c mcp_tools_execution.c \
 	mcp_tools_memory.c mcp_tools_debug.c mcp_tools_chipstate.c \
-	mcp_tools_checkpoint.c mcp_tools_trace.c mcp_tools_protocol.c \
+	mcp_tools_checkpoint.c mcp_tools_coverage.c mcp_tools_protocol.c \
 	mcp_tools_validation.c mcp_tools_validation.h \
 	mcp_tools_machine.c $(top_srcdir)/src/lib/cjson/cJSON.c \
 	$(top_srcdir)/src/lib/cjson/cJSON.h
@@ -136,7 +136,7 @@ am__libmcp_a_SOURCES_DIST = mcp_server.c mcp_server.h mcp_transport.c \
 @HAVE_MCP_SERVER_TRUE@	libmcp_a-mcp_tools_debug.$(OBJEXT) \
 @HAVE_MCP_SERVER_TRUE@	libmcp_a-mcp_tools_chipstate.$(OBJEXT) \
 @HAVE_MCP_SERVER_TRUE@	libmcp_a-mcp_tools_checkpoint.$(OBJEXT) \
-@HAVE_MCP_SERVER_TRUE@	libmcp_a-mcp_tools_trace.$(OBJEXT) \
+@HAVE_MCP_SERVER_TRUE@	libmcp_a-mcp_tools_coverage.$(OBJEXT) \
 @HAVE_MCP_SERVER_TRUE@	libmcp_a-mcp_tools_protocol.$(OBJEXT) \
 @HAVE_MCP_SERVER_TRUE@	libmcp_a-mcp_tools_validation.$(OBJEXT) \
 @HAVE_MCP_SERVER_TRUE@	libmcp_a-mcp_tools_machine.$(OBJEXT) \
@@ -172,7 +172,7 @@ am__depfiles_remade = ./$(DEPDIR)/libmcp_a-cJSON.Po \
 	./$(DEPDIR)/libmcp_a-mcp_tools_memory.Po \
 	./$(DEPDIR)/libmcp_a-mcp_tools_protocol.Po \
 	./$(DEPDIR)/libmcp_a-mcp_tools_snapshot.Po \
-	./$(DEPDIR)/libmcp_a-mcp_tools_trace.Po \
+	./$(DEPDIR)/libmcp_a-mcp_tools_coverage.Po \
 	./$(DEPDIR)/libmcp_a-mcp_tools_validation.Po \
 	./$(DEPDIR)/libmcp_a-mcp_transport.Po
 am__mv = mv -f
@@ -491,7 +491,7 @@ AM_CFLAGS = @VICE_CFLAGS@
 @HAVE_MCP_SERVER_TRUE@    mcp_tools_debug.c \
 @HAVE_MCP_SERVER_TRUE@    mcp_tools_chipstate.c \
 @HAVE_MCP_SERVER_TRUE@    mcp_tools_checkpoint.c \
-@HAVE_MCP_SERVER_TRUE@    mcp_tools_trace.c \
+@HAVE_MCP_SERVER_TRUE@    mcp_tools_coverage.c \
 @HAVE_MCP_SERVER_TRUE@    mcp_tools_protocol.c \
 @HAVE_MCP_SERVER_TRUE@    mcp_tools_validation.c \
 @HAVE_MCP_SERVER_TRUE@    mcp_tools_validation.h \
@@ -563,7 +563,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libmcp_a-mcp_tools_memory.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libmcp_a-mcp_tools_protocol.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libmcp_a-mcp_tools_snapshot.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libmcp_a-mcp_tools_trace.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libmcp_a-mcp_tools_coverage.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libmcp_a-mcp_tools_validation.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libmcp_a-mcp_transport.Po@am__quote@ # am--include-marker
 
@@ -769,19 +769,19 @@ libmcp_a-mcp_tools_checkpoint.obj: mcp_tools_checkpoint.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_JOBSERVER@am__nodep@)$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libmcp_a_CFLAGS) $(CFLAGS) -c -o libmcp_a-mcp_tools_checkpoint.obj `if test -f 'mcp_tools_checkpoint.c'; then $(CYGPATH_W) 'mcp_tools_checkpoint.c'; else $(CYGPATH_W) '$(srcdir)/mcp_tools_checkpoint.c'; fi`
 
-libmcp_a-mcp_tools_trace.o: mcp_tools_trace.c
-@am__fastdepCC_TRUE@	$(AM_JOBSERVER)$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libmcp_a_CFLAGS) $(CFLAGS) -MT libmcp_a-mcp_tools_trace.o -MD -MP -MF $(DEPDIR)/libmcp_a-mcp_tools_trace.Tpo -c -o libmcp_a-mcp_tools_trace.o `test -f 'mcp_tools_trace.c' || echo '$(srcdir)/'`mcp_tools_trace.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libmcp_a-mcp_tools_trace.Tpo $(DEPDIR)/libmcp_a-mcp_tools_trace.Po
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_JOBSERVER)$(AM_V_CC)source='mcp_tools_trace.c' object='libmcp_a-mcp_tools_trace.o' libtool=no @AMDEPBACKSLASH@
+libmcp_a-mcp_tools_coverage.o: mcp_tools_coverage.c
+@am__fastdepCC_TRUE@	$(AM_JOBSERVER)$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libmcp_a_CFLAGS) $(CFLAGS) -MT libmcp_a-mcp_tools_coverage.o -MD -MP -MF $(DEPDIR)/libmcp_a-mcp_tools_coverage.Tpo -c -o libmcp_a-mcp_tools_coverage.o `test -f 'mcp_tools_coverage.c' || echo '$(srcdir)/'`mcp_tools_coverage.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libmcp_a-mcp_tools_coverage.Tpo $(DEPDIR)/libmcp_a-mcp_tools_coverage.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_JOBSERVER)$(AM_V_CC)source='mcp_tools_coverage.c' object='libmcp_a-mcp_tools_coverage.o' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(AM_JOBSERVER@am__nodep@)$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libmcp_a_CFLAGS) $(CFLAGS) -c -o libmcp_a-mcp_tools_trace.o `test -f 'mcp_tools_trace.c' || echo '$(srcdir)/'`mcp_tools_trace.c
+@am__fastdepCC_FALSE@	$(AM_JOBSERVER@am__nodep@)$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libmcp_a_CFLAGS) $(CFLAGS) -c -o libmcp_a-mcp_tools_coverage.o `test -f 'mcp_tools_coverage.c' || echo '$(srcdir)/'`mcp_tools_coverage.c
 
-libmcp_a-mcp_tools_trace.obj: mcp_tools_trace.c
-@am__fastdepCC_TRUE@	$(AM_JOBSERVER)$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libmcp_a_CFLAGS) $(CFLAGS) -MT libmcp_a-mcp_tools_trace.obj -MD -MP -MF $(DEPDIR)/libmcp_a-mcp_tools_trace.Tpo -c -o libmcp_a-mcp_tools_trace.obj `if test -f 'mcp_tools_trace.c'; then $(CYGPATH_W) 'mcp_tools_trace.c'; else $(CYGPATH_W) '$(srcdir)/mcp_tools_trace.c'; fi`
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libmcp_a-mcp_tools_trace.Tpo $(DEPDIR)/libmcp_a-mcp_tools_trace.Po
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_JOBSERVER)$(AM_V_CC)source='mcp_tools_trace.c' object='libmcp_a-mcp_tools_trace.obj' libtool=no @AMDEPBACKSLASH@
+libmcp_a-mcp_tools_coverage.obj: mcp_tools_coverage.c
+@am__fastdepCC_TRUE@	$(AM_JOBSERVER)$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libmcp_a_CFLAGS) $(CFLAGS) -MT libmcp_a-mcp_tools_coverage.obj -MD -MP -MF $(DEPDIR)/libmcp_a-mcp_tools_coverage.Tpo -c -o libmcp_a-mcp_tools_coverage.obj `if test -f 'mcp_tools_coverage.c'; then $(CYGPATH_W) 'mcp_tools_coverage.c'; else $(CYGPATH_W) '$(srcdir)/mcp_tools_coverage.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libmcp_a-mcp_tools_coverage.Tpo $(DEPDIR)/libmcp_a-mcp_tools_coverage.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_JOBSERVER)$(AM_V_CC)source='mcp_tools_coverage.c' object='libmcp_a-mcp_tools_coverage.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(AM_JOBSERVER@am__nodep@)$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libmcp_a_CFLAGS) $(CFLAGS) -c -o libmcp_a-mcp_tools_trace.obj `if test -f 'mcp_tools_trace.c'; then $(CYGPATH_W) 'mcp_tools_trace.c'; else $(CYGPATH_W) '$(srcdir)/mcp_tools_trace.c'; fi`
+@am__fastdepCC_FALSE@	$(AM_JOBSERVER@am__nodep@)$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libmcp_a_CFLAGS) $(CFLAGS) -c -o libmcp_a-mcp_tools_coverage.obj `if test -f 'mcp_tools_coverage.c'; then $(CYGPATH_W) 'mcp_tools_coverage.c'; else $(CYGPATH_W) '$(srcdir)/mcp_tools_coverage.c'; fi`
 
 libmcp_a-mcp_tools_protocol.o: mcp_tools_protocol.c
 @am__fastdepCC_TRUE@	$(AM_JOBSERVER)$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libmcp_a_CFLAGS) $(CFLAGS) -MT libmcp_a-mcp_tools_protocol.o -MD -MP -MF $(DEPDIR)/libmcp_a-mcp_tools_protocol.Tpo -c -o libmcp_a-mcp_tools_protocol.o `test -f 'mcp_tools_protocol.c' || echo '$(srcdir)/'`mcp_tools_protocol.c
@@ -1017,7 +1017,7 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_memory.Po
 	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_protocol.Po
 	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_snapshot.Po
-	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_trace.Po
+	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_coverage.Po
 	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_validation.Po
 	-rm -f ./$(DEPDIR)/libmcp_a-mcp_transport.Po
 	-rm -f Makefile
@@ -1080,7 +1080,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_memory.Po
 	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_protocol.Po
 	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_snapshot.Po
-	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_trace.Po
+	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_coverage.Po
 	-rm -f ./$(DEPDIR)/libmcp_a-mcp_tools_validation.Po
 	-rm -f ./$(DEPDIR)/libmcp_a-mcp_transport.Po
 	-rm -f Makefile

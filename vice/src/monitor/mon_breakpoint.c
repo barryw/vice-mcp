@@ -414,6 +414,18 @@ void mon_breakpoint_set_checkpoint_command(int cp_num, char *cmd)
     }
 }
 
+/* A quiet checkpoint counts its hits without logging them. A client that
+ * reads hit counts (the MCP server) would otherwise flood the log with a
+ * line, a disassembly and a register dump per hit of a tracepoint. */
+void mon_breakpoint_set_checkpoint_quiet(int cp_num, bool quiet)
+{
+    mon_checkpoint_t *bp = mon_breakpoint_find_checkpoint(cp_num);
+
+    if (bp) {
+        bp->quiet = quiet;
+    }
+}
+
 static checkpoint_list_t *search_checkpoint_list(checkpoint_list_t *head, unsigned loc)
 {
     checkpoint_list_t *cur_entry;
@@ -564,6 +576,10 @@ bool mon_breakpoint_check_checkpoint(MEMSPACE mem, unsigned int addr, unsigned i
                 action_str = "Trace";
             }
 
+            if (cp->quiet) {
+                goto after_hit_log;
+            }
+
             mon_out("#%d (%s %5s %04x) ", cp->checknum, action_str, op_str, addr);
 
             if (mon_interfaces[mem]->get_line_cycle != NULL) {
@@ -597,6 +613,7 @@ bool mon_breakpoint_check_checkpoint(MEMSPACE mem, unsigned int addr, unsigned i
             }
             mon_interfaces[mem]->current_bank = monbank; /* restore value used in monitor */
 
+after_hit_log:
             if (cp->command) {
                 MEMSPACE tmpmem = default_memspace;
                 mon_out("Executing: %s\n", cp->command);
@@ -676,6 +693,7 @@ int breakpoint_add_checkpoint(MON_ADDR start_addr, MON_ADDR end_addr,
     new_cp->check_store = memory_op & e_store;
     new_cp->check_exec = memory_op & e_exec;
     new_cp->temporary = is_temp;
+    new_cp->quiet = false;
 
     mem = addr_memspace(start_addr);
     add_to_checkpoint_list(&all_checkpoints, new_cp);

@@ -49,6 +49,7 @@ struct mon_checkpoint_s {
     bool check_store;
     bool check_exec;
     bool temporary;
+    bool quiet;     /* hits are counted but not logged (MCP checkpoints) */
 };
 typedef struct mon_checkpoint_s mon_checkpoint_t;
 
@@ -60,6 +61,7 @@ void mon_breakpoint_print_checkpoints(void);
 void mon_breakpoint_delete_checkpoint(int brknum);
 void mon_breakpoint_set_checkpoint_condition(int brk_num, struct cond_node_s *cnode);
 void mon_breakpoint_set_checkpoint_command(int brk_num, char *cmd);
+void mon_breakpoint_set_checkpoint_quiet(int brk_num, bool quiet);
 bool mon_breakpoint_check_checkpoint(MEMSPACE mem, unsigned int addr,
                                      unsigned int lastpc, MEMORY_OP op);
 int mon_breakpoint_add_checkpoint(MON_ADDR start_addr, MON_ADDR end_addr,

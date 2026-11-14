@@ -15,6 +15,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <time.h>
 
@@ -52,6 +53,7 @@ extern cJSON* mcp_tool_keyboard_type(cJSON *params);
 extern cJSON* mcp_tool_keyboard_key_press(cJSON *params);
 extern cJSON* mcp_tool_keyboard_key_release(cJSON *params);
 extern cJSON* mcp_tool_joystick_set(cJSON *params);
+extern cJSON* mcp_tool_joystick_tap(cJSON *params);
 extern cJSON* mcp_tool_paddle_set(cJSON *params);
 extern void test_paddle_reset(void);
 extern int test_paddle_set_calls(void);
@@ -3867,6 +3869,104 @@ TEST(snapshot_save_rejects_existing_vsf)
     cJSON_Delete(response);
 }
 
+extern void test_snapshot_set_write_text(const char *text);
+extern cJSON* mcp_tool_snapshot_delete(cJSON *params);
+
+/* The text of a file, "" if missing */
+static void read_text_file(const char *path, char *buf, size_t size)
+{
+    FILE *f = fopen(path, "r");
+    size_t n = 0;
+
+    if (f != NULL) {
+        n = fread(buf, 1, size - 1, f);
+        fclose(f);
+    }
+    buf[n] = '\0';
+}
+
+/* overwrite: true replaces an existing snapshot and its sidecar;
+ * delete removes both and then reports the snapshot missing. */
+TEST(snapshot_overwrite_then_delete)
+{
+    const char *vsf = "/tmp/vice-test-config/mcp_snapshots/replace_me.vsf";
+    const char *json = "/tmp/vice-test-config/mcp_snapshots/replace_me.json";
+    cJSON *params, *response, *code;
+    char text[32];
+    int replaced, deleted, vsf_left, json_left, again_code;
+    FILE *f;
+
+    test_snapshot_reset();
+    mkdir("/tmp/vice-test-config", 0755);
+    mkdir("/tmp/vice-test-config/mcp_snapshots", 0755);
+    f = fopen(vsf, "w");
+    if (f) { fputs("old", f); fclose(f); }
+    test_snapshot_set_write_text("new");
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "replace_me");
+    cJSON_AddBoolToObject(params, "overwrite", 1);
+    response = mcp_tool_snapshot_save(params);
+    replaced = cJSON_IsTrue(cJSON_GetObjectItem(response, "replaced"));
+    cJSON_Delete(response);
+    read_text_file(vsf, text, sizeof(text));
+    ASSERT_INT_EQ(replaced, 1);
+    ASSERT_STR_EQ(text, "new");
+
+    cJSON_DeleteItemFromObject(params, "overwrite");
+    response = mcp_tool_snapshot_delete(params);
+    deleted = cJSON_IsTrue(cJSON_GetObjectItem(response, "deleted"));
+    cJSON_Delete(response);
+    vsf_left = access(vsf, F_OK) == 0;
+    json_left = access(json, F_OK) == 0;
+    response = mcp_tool_snapshot_delete(params);
+    code = cJSON_GetObjectItem(response, "code");
+    again_code = code ? code->valueint : 0;
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+    test_snapshot_reset();
+    remove(vsf);
+    remove(json);
+
+    ASSERT_INT_EQ(deleted, 1);
+    ASSERT_INT_EQ(vsf_left, 0);
+    ASSERT_INT_EQ(json_left, 0);
+    ASSERT_INT_EQ(again_code, -32602);
+}
+
+/* A failed replacement leaves the old snapshot as it was */
+TEST(snapshot_failed_overwrite_keeps_old)
+{
+    const char *vsf = "/tmp/vice-test-config/mcp_snapshots/keep_me.vsf";
+    cJSON *params, *response, *code;
+    char text[32];
+    int c;
+    FILE *f;
+
+    test_snapshot_reset();
+    mkdir("/tmp/vice-test-config", 0755);
+    mkdir("/tmp/vice-test-config/mcp_snapshots", 0755);
+    f = fopen(vsf, "w");
+    if (f) { fputs("old", f); fclose(f); }
+    test_snapshot_set_save_result(-1);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "name", "keep_me");
+    cJSON_AddBoolToObject(params, "overwrite", 1);
+    response = mcp_tool_snapshot_save(params);
+    code = cJSON_GetObjectItem(response, "code");
+    c = code ? code->valueint : 0;
+    cJSON_Delete(response);
+    cJSON_Delete(params);
+    read_text_file(vsf, text, sizeof(text));
+    test_snapshot_reset();
+    remove(vsf);
+    remove("/tmp/vice-test-config/mcp_snapshots/keep_me.vsf.tmp");
+
+    ASSERT_INT_EQ(c, MCP_ERROR_INTERNAL_ERROR);
+    ASSERT_STR_EQ(text, "old");
+}
+
 /* Test: Snapshot load with valid name succeeds */
 TEST(snapshot_load_with_name_succeeds)
 {
@@ -6770,1022 +6870,156 @@ TEST(checkpoint_clear_auto_snapshot_dispatch_works)
     cJSON_Delete(response);
 }
 
-/* =================================================================
- * Phase 5.4: Trace Tools Tests
- * ================================================================= */
+/* frame.advance names the stopping checkpoint that cut it short: the one
+ * whose hit count rose, not a tracepoint that was hit too */
+extern void test_checkpoint_reset(void);
+extern void test_checkpoint_hit(int id);
+extern int *mcp_stop_checkpoint_hits(int *size);
+extern cJSON *mcp_stop_checkpoints_fired(const int *before, int size);
+extern void lib_free(void *ptr);
 
-/* Trace tool declarations */
-extern cJSON* mcp_tool_trace_start(cJSON *params);
-extern cJSON* mcp_tool_trace_stop(cJSON *params);
-
-/* Trace config reset function - from libmcp.a */
-extern void mcp_trace_configs_reset(void);
-
-static void test_trace_configs_reset(void)
+TEST(frame_advance_names_stopping_checkpoint)
 {
-    mcp_trace_configs_reset();
+    int stop_a, trace_b, stop_c, size, n, first;
+    int *hits;
+    cJSON *fired;
+
+    test_checkpoint_reset();
+    stop_a = mon_breakpoint_add_checkpoint(0x1000, 0x1000, 1, 4, 0, 0);
+    trace_b = mon_breakpoint_add_checkpoint(0x2000, 0x2000, 0, 4, 0, 0);
+    stop_c = mon_breakpoint_add_checkpoint(0x3000, 0x3000, 1, 4, 0, 0);
+    test_checkpoint_hit(stop_a);            /* hit before the run: not news */
+    hits = mcp_stop_checkpoint_hits(&size);
+    test_checkpoint_hit(trace_b);
+    test_checkpoint_hit(stop_c);
+    fired = mcp_stop_checkpoints_fired(hits, size);
+    n = cJSON_GetArraySize(fired);
+    first = n > 0 ? cJSON_GetArrayItem(fired, 0)->valueint : -1;
+    cJSON_Delete(fired);
+    lib_free(hits);
+    test_checkpoint_reset();
+
+    ASSERT_INT_EQ(n, 1);
+    ASSERT_INT_EQ(first, stop_c);
 }
 
-/* Test: trace.start requires output_file */
-TEST(trace_start_requires_output_file)
+/* ping reports the executable's build time, which tells builds of one
+ * VICE version apart */
+extern void mcp_build_time_init(void);
+
+TEST(ping_reports_build_time)
 {
-    cJSON *response, *params, *code_item;
-
-    test_trace_configs_reset();
-
-    params = cJSON_CreateObject();
-    /* Missing output_file */
-
-    response = mcp_tool_trace_start(params);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(cJSON_IsNumber(code_item));
-    ASSERT_TRUE(code_item->valueint == -32602);  /* INVALID_PARAMS */
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: trace.start null params returns error */
-TEST(trace_start_null_params_returns_error)
-{
-    cJSON *response, *code_item;
-
-    test_trace_configs_reset();
-
-    response = mcp_tool_trace_start(NULL);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(cJSON_IsNumber(code_item));
-    ASSERT_TRUE(code_item->valueint == -32602);  /* INVALID_PARAMS */
-
-    cJSON_Delete(response);
-}
-
-/* Test: trace.start rejects empty output_file */
-TEST(trace_start_rejects_empty_output_file)
-{
-    cJSON *response, *params, *code_item;
-
-    test_trace_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "output_file", "");
-
-    response = mcp_tool_trace_start(params);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: trace.start with valid params succeeds */
-TEST(trace_start_with_valid_params_succeeds)
-{
-    cJSON *response, *params;
-    cJSON *trace_id_item, *file_item, *pc_filter, *max_item, *regs_item;
-
-    test_trace_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "output_file", "/tmp/trace.txt");
-
-    response = mcp_tool_trace_start(params);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    trace_id_item = cJSON_GetObjectItem(response, "trace_id");
-    ASSERT_NOT_NULL(trace_id_item);
-    ASSERT_TRUE(cJSON_IsString(trace_id_item));
-    ASSERT_TRUE(strncmp(trace_id_item->valuestring, "trace_", 6) == 0);
-
-    file_item = cJSON_GetObjectItem(response, "output_file");
-    ASSERT_NOT_NULL(file_item);
-    ASSERT_TRUE(strcmp(file_item->valuestring, "/tmp/trace.txt") == 0);
-
-    pc_filter = cJSON_GetObjectItem(response, "pc_filter");
-    ASSERT_NOT_NULL(pc_filter);
-    cJSON *start = cJSON_GetObjectItem(pc_filter, "start");
-    cJSON *end = cJSON_GetObjectItem(pc_filter, "end");
-    ASSERT_NOT_NULL(start);
-    ASSERT_NOT_NULL(end);
-    ASSERT_TRUE(start->valueint == 0);
-    ASSERT_TRUE(end->valueint == 65535);
-
-    max_item = cJSON_GetObjectItem(response, "max_instructions");
-    ASSERT_NOT_NULL(max_item);
-    ASSERT_TRUE(max_item->valueint == 10000);  /* Default */
-
-    regs_item = cJSON_GetObjectItem(response, "include_registers");
-    ASSERT_NOT_NULL(regs_item);
-    ASSERT_TRUE(cJSON_IsFalse(regs_item));  /* Default */
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: trace.start with all options */
-TEST(trace_start_with_all_options)
-{
-    cJSON *response, *params;
-    cJSON *pc_filter, *max_item, *regs_item;
-
-    test_trace_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "output_file", "/tmp/full_trace.txt");
-    cJSON_AddNumberToObject(params, "pc_filter_start", 0xC000);
-    cJSON_AddNumberToObject(params, "pc_filter_end", 0xCFFF);
-    cJSON_AddNumberToObject(params, "max_instructions", 5000);
-    cJSON_AddBoolToObject(params, "include_registers", true);
-
-    response = mcp_tool_trace_start(params);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    pc_filter = cJSON_GetObjectItem(response, "pc_filter");
-    ASSERT_NOT_NULL(pc_filter);
-    cJSON *start = cJSON_GetObjectItem(pc_filter, "start");
-    cJSON *end = cJSON_GetObjectItem(pc_filter, "end");
-    ASSERT_TRUE(start->valueint == 0xC000);
-    ASSERT_TRUE(end->valueint == 0xCFFF);
-
-    max_item = cJSON_GetObjectItem(response, "max_instructions");
-    ASSERT_NOT_NULL(max_item);
-    ASSERT_TRUE(max_item->valueint == 5000);
-
-    regs_item = cJSON_GetObjectItem(response, "include_registers");
-    ASSERT_NOT_NULL(regs_item);
-    ASSERT_TRUE(cJSON_IsTrue(regs_item));
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: trace.start rejects invalid PC filter range */
-TEST(trace_start_rejects_invalid_pc_filter_range)
-{
-    cJSON *response, *params, *code_item;
-
-    test_trace_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "output_file", "/tmp/trace.txt");
-    cJSON_AddNumberToObject(params, "pc_filter_start", 0xD000);
-    cJSON_AddNumberToObject(params, "pc_filter_end", 0xC000);  /* End < Start */
-
-    response = mcp_tool_trace_start(params);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: trace.start clamps max_instructions */
-TEST(trace_start_clamps_max_instructions)
-{
-    cJSON *response, *params;
-    cJSON *max_item;
-
-    test_trace_configs_reset();
-
-    /* Test lower bound clamp */
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "output_file", "/tmp/trace1.txt");
-    cJSON_AddNumberToObject(params, "max_instructions", 0);
-
-    response = mcp_tool_trace_start(params);
-    ASSERT_NOT_NULL(response);
-
-    max_item = cJSON_GetObjectItem(response, "max_instructions");
-    ASSERT_NOT_NULL(max_item);
-    ASSERT_TRUE(max_item->valueint == 1);  /* Clamped to minimum */
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-
-    test_trace_configs_reset();
-
-    /* Test upper bound clamp */
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "output_file", "/tmp/trace2.txt");
-    cJSON_AddNumberToObject(params, "max_instructions", 5000000);
-
-    response = mcp_tool_trace_start(params);
-    ASSERT_NOT_NULL(response);
-
-    max_item = cJSON_GetObjectItem(response, "max_instructions");
-    ASSERT_NOT_NULL(max_item);
-    ASSERT_TRUE(max_item->valueint == 1000000);  /* Clamped to maximum */
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: trace.stop requires trace_id */
-TEST(trace_stop_requires_trace_id)
-{
-    cJSON *response, *params, *code_item;
-
-    test_trace_configs_reset();
-
-    params = cJSON_CreateObject();
-    /* Missing trace_id */
-
-    response = mcp_tool_trace_stop(params);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: trace.stop null params returns error */
-TEST(trace_stop_null_params_returns_error)
-{
-    cJSON *response, *code_item;
-
-    test_trace_configs_reset();
-
-    response = mcp_tool_trace_stop(NULL);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);
-
-    cJSON_Delete(response);
-}
-
-/* Test: trace.stop rejects empty trace_id */
-TEST(trace_stop_rejects_empty_trace_id)
-{
-    cJSON *response, *params, *code_item;
-
-    test_trace_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "trace_id", "");
-
-    response = mcp_tool_trace_stop(params);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: trace.stop nonexistent returns stopped=false */
-TEST(trace_stop_nonexistent_returns_false)
-{
-    cJSON *response, *params;
-    cJSON *stopped_item;
-
-    test_trace_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "trace_id", "trace_nonexistent");
-
-    response = mcp_tool_trace_stop(params);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    stopped_item = cJSON_GetObjectItem(response, "stopped");
-    ASSERT_NOT_NULL(stopped_item);
-    ASSERT_TRUE(cJSON_IsFalse(stopped_item));
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: trace.stop stops existing trace */
-TEST(trace_stop_stops_existing_trace)
-{
-    cJSON *start_response, *stop_response, *start_params, *stop_params;
-    cJSON *trace_id_item, *stopped_item, *instr_item, *file_item, *cycles_item;
-    const char *trace_id;
-
-    test_trace_configs_reset();
-
-    /* First start a trace */
-    start_params = cJSON_CreateObject();
-    cJSON_AddStringToObject(start_params, "output_file", "/tmp/to_stop.txt");
-
-    start_response = mcp_tool_trace_start(start_params);
-    ASSERT_NOT_NULL(start_response);
-
-    trace_id_item = cJSON_GetObjectItem(start_response, "trace_id");
-    ASSERT_NOT_NULL(trace_id_item);
-    trace_id = trace_id_item->valuestring;
-
-    /* Now stop it */
-    stop_params = cJSON_CreateObject();
-    cJSON_AddStringToObject(stop_params, "trace_id", trace_id);
-
-    stop_response = mcp_tool_trace_stop(stop_params);
-    ASSERT_NOT_NULL(stop_response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(stop_response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    stopped_item = cJSON_GetObjectItem(stop_response, "stopped");
-    ASSERT_NOT_NULL(stopped_item);
-    ASSERT_TRUE(cJSON_IsTrue(stopped_item));
-
-    instr_item = cJSON_GetObjectItem(stop_response, "instructions_recorded");
-    ASSERT_NOT_NULL(instr_item);
-    ASSERT_TRUE(instr_item->valueint == 0);  /* No actual tracing happened */
-
-    file_item = cJSON_GetObjectItem(stop_response, "output_file");
-    ASSERT_NOT_NULL(file_item);
-    ASSERT_TRUE(strcmp(file_item->valuestring, "/tmp/to_stop.txt") == 0);
-
-    cycles_item = cJSON_GetObjectItem(stop_response, "cycles_elapsed");
-    ASSERT_NOT_NULL(cycles_item);
-    /* cycles_elapsed depends on maincpu_clk stub value */
-
-    cJSON_Delete(start_params);
-    cJSON_Delete(start_response);
-    cJSON_Delete(stop_params);
-    cJSON_Delete(stop_response);
-
-    /* Verify it's actually stopped by trying to stop again */
-    stop_params = cJSON_CreateObject();
-    cJSON_AddStringToObject(stop_params, "trace_id", trace_id);
-
-    stop_response = mcp_tool_trace_stop(stop_params);
-    ASSERT_NOT_NULL(stop_response);
-
-    stopped_item = cJSON_GetObjectItem(stop_response, "stopped");
-    ASSERT_NOT_NULL(stopped_item);
-    ASSERT_TRUE(cJSON_IsFalse(stopped_item));  /* Now returns false */
-
-    cJSON_Delete(stop_params);
-    cJSON_Delete(stop_response);
-}
-
-/* Test: trace.start is not advertised until CPU hooks exist */
-TEST(trace_start_dispatch_works)
-{
-    cJSON *response, *params;
-
-    test_trace_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "output_file", "/tmp/dispatch_test.txt");
-
-    response = mcp_tools_dispatch("vice.trace.start", params);
-    ASSERT_NOT_NULL(response);
-
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_METHOD_NOT_FOUND);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: trace.stop is not advertised until CPU hooks exist */
-TEST(trace_stop_dispatch_works)
-{
-    cJSON *response, *params;
-
-    test_trace_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "trace_id", "trace_1");
-
-    response = mcp_tools_dispatch("vice.trace.stop", params);
-    ASSERT_NOT_NULL(response);
-
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_METHOD_NOT_FOUND);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: multiple traces can run simultaneously */
-TEST(trace_multiple_traces_run_simultaneously)
-{
-    cJSON *response1, *response2, *params1, *params2;
-    cJSON *trace_id1_item, *trace_id2_item;
-    const char *trace_id1, *trace_id2;
-
-    test_trace_configs_reset();
-
-    /* Start first trace */
-    params1 = cJSON_CreateObject();
-    cJSON_AddStringToObject(params1, "output_file", "/tmp/trace1.txt");
-    response1 = mcp_tool_trace_start(params1);
-    ASSERT_NOT_NULL(response1);
-    trace_id1_item = cJSON_GetObjectItem(response1, "trace_id");
-    ASSERT_NOT_NULL(trace_id1_item);
-    trace_id1 = trace_id1_item->valuestring;
-
-    /* Start second trace */
-    params2 = cJSON_CreateObject();
-    cJSON_AddStringToObject(params2, "output_file", "/tmp/trace2.txt");
-    response2 = mcp_tool_trace_start(params2);
-    ASSERT_NOT_NULL(response2);
-    trace_id2_item = cJSON_GetObjectItem(response2, "trace_id");
-    ASSERT_NOT_NULL(trace_id2_item);
-    trace_id2 = trace_id2_item->valuestring;
-
-    /* Verify they have different IDs */
-    ASSERT_TRUE(strcmp(trace_id1, trace_id2) != 0);
-
-    cJSON_Delete(params1);
-    cJSON_Delete(response1);
-    cJSON_Delete(params2);
-    cJSON_Delete(response2);
-}
-
-/* =================================================================
- * Phase 5.4: Interrupt Log Tools Tests
- * ================================================================= */
-
-/* Interrupt log tool declarations */
-extern cJSON* mcp_tool_interrupt_log_start(cJSON *params);
-extern cJSON* mcp_tool_interrupt_log_stop(cJSON *params);
-extern cJSON* mcp_tool_interrupt_log_read(cJSON *params);
-
-/* Interrupt log config reset function - from libmcp.a */
-extern void mcp_interrupt_log_configs_reset(void);
-
-static void test_interrupt_log_configs_reset(void)
-{
-    mcp_interrupt_log_configs_reset();
-}
-
-/* Test: interrupt.log.start with null params works (uses defaults) */
-TEST(interrupt_log_start_null_params_works)
-{
-    cJSON *response;
-    cJSON *log_id_item, *types_item, *max_item;
-
-    test_interrupt_log_configs_reset();
-
-    response = mcp_tool_interrupt_log_start(NULL);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    log_id_item = cJSON_GetObjectItem(response, "log_id");
-    ASSERT_NOT_NULL(log_id_item);
-    ASSERT_TRUE(cJSON_IsString(log_id_item));
-    ASSERT_TRUE(strncmp(log_id_item->valuestring, "intlog_", 7) == 0);
-
-    types_item = cJSON_GetObjectItem(response, "types");
-    ASSERT_NOT_NULL(types_item);
-    ASSERT_TRUE(cJSON_IsArray(types_item));
-    ASSERT_TRUE(cJSON_GetArraySize(types_item) == 3);  /* irq, nmi, brk */
-
-    max_item = cJSON_GetObjectItem(response, "max_entries");
-    ASSERT_NOT_NULL(max_item);
-    ASSERT_TRUE(max_item->valueint == 1000);  /* Default */
-
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.start with empty params works */
-TEST(interrupt_log_start_empty_params_works)
-{
-    cJSON *response, *params;
-    cJSON *log_id_item;
-
-    test_interrupt_log_configs_reset();
-
-    params = cJSON_CreateObject();
-    response = mcp_tool_interrupt_log_start(params);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    log_id_item = cJSON_GetObjectItem(response, "log_id");
-    ASSERT_NOT_NULL(log_id_item);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.start with specific types */
-TEST(interrupt_log_start_with_specific_types)
-{
-    cJSON *response, *params, *types_array;
-    cJSON *types_item;
-    int found_irq = 0, found_nmi = 0, found_brk = 0;
-    int i, arr_size;
-
-    test_interrupt_log_configs_reset();
-
-    params = cJSON_CreateObject();
-    types_array = cJSON_CreateArray();
-    cJSON_AddItemToArray(types_array, cJSON_CreateString("irq"));
-    cJSON_AddItemToArray(types_array, cJSON_CreateString("nmi"));
-    cJSON_AddItemToObject(params, "types", types_array);
-
-    response = mcp_tool_interrupt_log_start(params);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    types_item = cJSON_GetObjectItem(response, "types");
-    ASSERT_NOT_NULL(types_item);
-    ASSERT_TRUE(cJSON_IsArray(types_item));
-
-    arr_size = cJSON_GetArraySize(types_item);
-    for (i = 0; i < arr_size; i++) {
-        cJSON *t = cJSON_GetArrayItem(types_item, i);
-        if (strcmp(t->valuestring, "irq") == 0) found_irq = 1;
-        if (strcmp(t->valuestring, "nmi") == 0) found_nmi = 1;
-        if (strcmp(t->valuestring, "brk") == 0) found_brk = 1;
+    cJSON *r, *build;
+    char text[32] = "";
+
+    mcp_build_time_init();
+    r = mcp_tool_ping(NULL);
+    build = cJSON_GetObjectItem(r, "build");
+    if (cJSON_IsString(build)) {
+        snprintf(text, sizeof(text), "%s", build->valuestring);
     }
-    ASSERT_TRUE(found_irq == 1);
-    ASSERT_TRUE(found_nmi == 1);
-    ASSERT_TRUE(found_brk == 0);  /* brk was not requested */
+    cJSON_Delete(r);
 
-    cJSON_Delete(params);
-    cJSON_Delete(response);
+    ASSERT_INT_EQ((int)strlen(text), 20);       /* 2026-11-14T19:25:52Z */
+    ASSERT_TRUE(text[4] == '-' && text[10] == 'T' && text[19] == 'Z');
 }
 
-/* Test: interrupt.log.start rejects invalid type */
-TEST(interrupt_log_start_rejects_invalid_type)
-{
-    cJSON *response, *params, *types_array, *code_item;
+/* =================================================================
+ * Execution coverage tests
+ * ================================================================= */
 
-    test_interrupt_log_configs_reset();
+extern cJSON* mcp_tool_coverage_start(cJSON *params);
+extern cJSON* mcp_tool_coverage_stop(cJSON *params);
+extern cJSON* mcp_tool_coverage_read(cJSON *params);
+extern uint8_t *mcp_coverage_map;
+extern void test_set_machine_class(int mc);
+
+/* start clears and arms the map the CPU core writes; read reports a
+ * range's executed addresses or a 64K bitmap; reset clears; stop disarms
+ * but keeps the data. */
+TEST(coverage_start_read_reset_stop)
+{
+    cJSON *r, *params, *addresses, *bitmap, *count, *enabled;
+    uint8_t *armed;
+    int n, first, second, bitmap_len, count_after_reset, stopped_enabled;
+
+    r = mcp_tool_coverage_start(NULL);
+    armed = mcp_coverage_map;
+    cJSON_Delete(r);
+    ASSERT_NOT_NULL(armed);
+    armed[0xC000] = 1;      /* as the CPU core does at each opcode fetch */
+    armed[0xC003] = 1;
+    armed[0x0801] = 1;
 
     params = cJSON_CreateObject();
-    types_array = cJSON_CreateArray();
-    cJSON_AddItemToArray(types_array, cJSON_CreateString("invalid"));
-    cJSON_AddItemToObject(params, "types", types_array);
-
-    response = mcp_tool_interrupt_log_start(params);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);  /* INVALID_PARAMS */
-
+    cJSON_AddStringToObject(params, "start", "$C000");
+    cJSON_AddStringToObject(params, "end", "$C00F");
+    r = mcp_tool_coverage_read(params);
     cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.start with max_entries */
-TEST(interrupt_log_start_with_max_entries)
-{
-    cJSON *response, *params;
-    cJSON *max_item;
-
-    test_interrupt_log_configs_reset();
+    addresses = cJSON_GetObjectItem(r, "addresses");
+    count = cJSON_GetObjectItem(r, "count");
+    n = cJSON_GetArraySize(addresses);
+    first = n > 0 ? cJSON_GetArrayItem(addresses, 0)->valueint : -1;
+    second = n > 1 ? cJSON_GetArrayItem(addresses, 1)->valueint : -1;
+    ASSERT_TRUE(count != NULL && count->valueint == 3);
+    cJSON_Delete(r);
+    ASSERT_INT_EQ(n, 2);
+    ASSERT_INT_EQ(first, 0xC000);
+    ASSERT_INT_EQ(second, 0xC003);
 
     params = cJSON_CreateObject();
-    cJSON_AddNumberToObject(params, "max_entries", 500);
-
-    response = mcp_tool_interrupt_log_start(params);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    max_item = cJSON_GetObjectItem(response, "max_entries");
-    ASSERT_NOT_NULL(max_item);
-    ASSERT_TRUE(max_item->valueint == 500);
-
+    cJSON_AddBoolToObject(params, "reset", 1);
+    r = mcp_tool_coverage_read(params);
     cJSON_Delete(params);
-    cJSON_Delete(response);
+    bitmap = cJSON_GetObjectItem(r, "bitmap");
+    bitmap_len = cJSON_IsString(bitmap) ? (int)strlen(bitmap->valuestring) : -1;
+    cJSON_Delete(r);
+    ASSERT_INT_EQ(bitmap_len, 10924);   /* base64 of 8192 bytes */
+
+    r = mcp_tool_coverage_read(NULL);
+    count = cJSON_GetObjectItem(r, "count");
+    count_after_reset = count ? count->valueint : -1;
+    cJSON_Delete(r);
+    ASSERT_INT_EQ(count_after_reset, 0);
+
+    r = mcp_tool_coverage_stop(NULL);
+    enabled = cJSON_GetObjectItem(r, "enabled");
+    stopped_enabled = cJSON_IsTrue(enabled);
+    cJSON_Delete(r);
+    ASSERT_TRUE(mcp_coverage_map == NULL);
+    ASSERT_INT_EQ(stopped_enabled, 0);
 }
 
-/* Test: interrupt.log.start clamps max_entries */
-TEST(interrupt_log_start_clamps_max_entries)
+TEST(coverage_read_rejects_reversed_range)
 {
-    cJSON *response, *params;
-    cJSON *max_item;
+    cJSON *params = cJSON_CreateObject();
+    cJSON *r, *code;
+    int c;
 
-    test_interrupt_log_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddNumberToObject(params, "max_entries", 99999);  /* Over limit */
-
-    response = mcp_tool_interrupt_log_start(params);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    max_item = cJSON_GetObjectItem(response, "max_entries");
-    ASSERT_NOT_NULL(max_item);
-    ASSERT_TRUE(max_item->valueint == 10000);  /* Clamped to max */
-
+    cJSON_AddNumberToObject(params, "start", 0x2000);
+    cJSON_AddNumberToObject(params, "end", 0x1000);
+    r = mcp_tool_coverage_read(params);
+    code = cJSON_GetObjectItem(r, "code");
+    c = code ? code->valueint : 0;
     cJSON_Delete(params);
-    cJSON_Delete(response);
+    cJSON_Delete(r);
+    ASSERT_INT_EQ(c, MCP_ERROR_INVALID_PARAMS);
 }
 
-/* Test: interrupt.log.stop requires log_id */
-TEST(interrupt_log_stop_requires_log_id)
+/* xscpu64's 65816 core has no coverage hook: say so, not an empty map */
+TEST(coverage_start_refused_on_scpu64)
 {
-    cJSON *response, *params, *code_item;
-
-    test_interrupt_log_configs_reset();
-
-    params = cJSON_CreateObject();
-    /* Missing log_id */
-
-    response = mcp_tool_interrupt_log_stop(params);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.stop null params returns error */
-TEST(interrupt_log_stop_null_params_returns_error)
-{
-    cJSON *response, *code_item;
-
-    test_interrupt_log_configs_reset();
-
-    response = mcp_tool_interrupt_log_stop(NULL);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);
-
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.stop rejects empty log_id */
-TEST(interrupt_log_stop_rejects_empty_log_id)
-{
-    cJSON *response, *params, *code_item;
-
-    test_interrupt_log_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "log_id", "");
-
-    response = mcp_tool_interrupt_log_stop(params);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.stop nonexistent returns stopped=false */
-TEST(interrupt_log_stop_nonexistent_returns_false)
-{
-    cJSON *response, *params;
-    cJSON *stopped_item, *entries_item, *total_item;
-
-    test_interrupt_log_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "log_id", "nonexistent_log");
-
-    response = mcp_tool_interrupt_log_stop(params);
-    ASSERT_NOT_NULL(response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    stopped_item = cJSON_GetObjectItem(response, "stopped");
-    ASSERT_NOT_NULL(stopped_item);
-    ASSERT_TRUE(cJSON_IsFalse(stopped_item));
-
-    entries_item = cJSON_GetObjectItem(response, "entries");
-    ASSERT_NOT_NULL(entries_item);
-    ASSERT_TRUE(cJSON_IsArray(entries_item));
-    ASSERT_TRUE(cJSON_GetArraySize(entries_item) == 0);
-
-    total_item = cJSON_GetObjectItem(response, "total_interrupts");
-    ASSERT_NOT_NULL(total_item);
-    ASSERT_TRUE(total_item->valueint == 0);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.stop stops existing log */
-TEST(interrupt_log_stop_stops_existing_log)
-{
-    cJSON *start_response, *stop_response, *start_params, *stop_params;
-    cJSON *log_id_item, *stopped_item;
-    const char *log_id;
-
-    test_interrupt_log_configs_reset();
-
-    /* Start a log */
-    start_params = cJSON_CreateObject();
-    start_response = mcp_tool_interrupt_log_start(start_params);
-    ASSERT_NOT_NULL(start_response);
-    log_id_item = cJSON_GetObjectItem(start_response, "log_id");
-    ASSERT_NOT_NULL(log_id_item);
-    log_id = log_id_item->valuestring;
-
-    /* Stop the log */
-    stop_params = cJSON_CreateObject();
-    cJSON_AddStringToObject(stop_params, "log_id", log_id);
-    stop_response = mcp_tool_interrupt_log_stop(stop_params);
-    ASSERT_NOT_NULL(stop_response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(stop_response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    stopped_item = cJSON_GetObjectItem(stop_response, "stopped");
-    ASSERT_NOT_NULL(stopped_item);
-    ASSERT_TRUE(cJSON_IsTrue(stopped_item));
-
-    cJSON_Delete(start_params);
-    cJSON_Delete(start_response);
-    cJSON_Delete(stop_params);
-    cJSON_Delete(stop_response);
-}
-
-/* Test: interrupt.log.read requires log_id */
-TEST(interrupt_log_read_requires_log_id)
-{
-    cJSON *response, *params, *code_item;
-
-    test_interrupt_log_configs_reset();
-
-    params = cJSON_CreateObject();
-    /* Missing log_id */
-
-    response = mcp_tool_interrupt_log_read(params);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.read null params returns error */
-TEST(interrupt_log_read_null_params_returns_error)
-{
-    cJSON *response, *code_item;
-
-    test_interrupt_log_configs_reset();
-
-    response = mcp_tool_interrupt_log_read(NULL);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);
-
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.read rejects nonexistent log */
-TEST(interrupt_log_read_nonexistent_returns_error)
-{
-    cJSON *response, *params, *code_item;
-
-    test_interrupt_log_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "log_id", "nonexistent_log");
-
-    response = mcp_tool_interrupt_log_read(params);
-    ASSERT_NOT_NULL(response);
-
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_TRUE(code_item->valueint == -32602);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.read returns empty entries for active log */
-TEST(interrupt_log_read_returns_empty_for_new_log)
-{
-    cJSON *start_response, *read_response, *start_params, *read_params;
-    cJSON *log_id_item, *entries_item, *next_idx_item, *total_item;
-    const char *log_id;
-
-    test_interrupt_log_configs_reset();
-
-    /* Start a log */
-    start_params = cJSON_CreateObject();
-    start_response = mcp_tool_interrupt_log_start(start_params);
-    ASSERT_NOT_NULL(start_response);
-    log_id_item = cJSON_GetObjectItem(start_response, "log_id");
-    ASSERT_NOT_NULL(log_id_item);
-    log_id = log_id_item->valuestring;
-
-    /* Read the log */
-    read_params = cJSON_CreateObject();
-    cJSON_AddStringToObject(read_params, "log_id", log_id);
-    read_response = mcp_tool_interrupt_log_read(read_params);
-    ASSERT_NOT_NULL(read_response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(read_response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    entries_item = cJSON_GetObjectItem(read_response, "entries");
-    ASSERT_NOT_NULL(entries_item);
-    ASSERT_TRUE(cJSON_IsArray(entries_item));
-    ASSERT_TRUE(cJSON_GetArraySize(entries_item) == 0);
-
-    next_idx_item = cJSON_GetObjectItem(read_response, "next_index");
-    ASSERT_NOT_NULL(next_idx_item);
-    ASSERT_TRUE(next_idx_item->valueint == 0);
-
-    total_item = cJSON_GetObjectItem(read_response, "total_entries");
-    ASSERT_NOT_NULL(total_item);
-    ASSERT_TRUE(total_item->valueint == 0);
-
-    cJSON_Delete(start_params);
-    cJSON_Delete(start_response);
-    cJSON_Delete(read_params);
-    cJSON_Delete(read_response);
-}
-
-/* Test: interrupt.log.read with since_index */
-TEST(interrupt_log_read_with_since_index)
-{
-    cJSON *start_response, *read_response, *start_params, *read_params;
-    cJSON *log_id_item, *next_idx_item;
-    const char *log_id;
-
-    test_interrupt_log_configs_reset();
-
-    /* Start a log */
-    start_params = cJSON_CreateObject();
-    start_response = mcp_tool_interrupt_log_start(start_params);
-    ASSERT_NOT_NULL(start_response);
-    log_id_item = cJSON_GetObjectItem(start_response, "log_id");
-    ASSERT_NOT_NULL(log_id_item);
-    log_id = log_id_item->valuestring;
-
-    /* Read with since_index (should work even if empty) */
-    read_params = cJSON_CreateObject();
-    cJSON_AddStringToObject(read_params, "log_id", log_id);
-    cJSON_AddNumberToObject(read_params, "since_index", 5);
-    read_response = mcp_tool_interrupt_log_read(read_params);
-    ASSERT_NOT_NULL(read_response);
-
-    /* Should not be an error */
-    cJSON *code_item = cJSON_GetObjectItem(read_response, "code");
-    ASSERT_TRUE(code_item == NULL);
-
-    next_idx_item = cJSON_GetObjectItem(read_response, "next_index");
-    ASSERT_NOT_NULL(next_idx_item);
-    /* since_index clamped to entry_count (0) */
-    ASSERT_TRUE(next_idx_item->valueint == 0);
-
-    cJSON_Delete(start_params);
-    cJSON_Delete(start_response);
-    cJSON_Delete(read_params);
-    cJSON_Delete(read_response);
-}
-
-/* Test: multiple interrupt logs can run simultaneously */
-TEST(interrupt_log_multiple_logs_run_simultaneously)
-{
-    cJSON *response1, *response2, *params1, *params2;
-    cJSON *log_id1_item, *log_id2_item;
-    const char *log_id1, *log_id2;
-
-    test_interrupt_log_configs_reset();
-
-    /* Start first log */
-    params1 = cJSON_CreateObject();
-    response1 = mcp_tool_interrupt_log_start(params1);
-    ASSERT_NOT_NULL(response1);
-    log_id1_item = cJSON_GetObjectItem(response1, "log_id");
-    ASSERT_NOT_NULL(log_id1_item);
-    log_id1 = log_id1_item->valuestring;
-
-    /* Start second log */
-    params2 = cJSON_CreateObject();
-    response2 = mcp_tool_interrupt_log_start(params2);
-    ASSERT_NOT_NULL(response2);
-    log_id2_item = cJSON_GetObjectItem(response2, "log_id");
-    ASSERT_NOT_NULL(log_id2_item);
-    log_id2 = log_id2_item->valuestring;
-
-    /* Verify they have different IDs */
-    ASSERT_TRUE(strcmp(log_id1, log_id2) != 0);
-
-    cJSON_Delete(params1);
-    cJSON_Delete(response1);
-    cJSON_Delete(params2);
-    cJSON_Delete(response2);
-}
-
-/* Test: interrupt.log.start is not advertised until interrupt hooks exist */
-TEST(interrupt_log_start_dispatch_works)
-{
-    cJSON *response;
-
-    test_interrupt_log_configs_reset();
-
-    response = mcp_tools_dispatch("vice.interrupt.log.start", NULL);
-    ASSERT_NOT_NULL(response);
-
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_METHOD_NOT_FOUND);
-
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.stop is not advertised until interrupt hooks exist */
-TEST(interrupt_log_stop_dispatch_works)
-{
-    cJSON *response, *params;
-
-    test_interrupt_log_configs_reset();
-
-    params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "log_id", "intlog_1");
-
-    response = mcp_tools_dispatch("vice.interrupt.log.stop", params);
-    ASSERT_NOT_NULL(response);
-
-    cJSON *code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_METHOD_NOT_FOUND);
-
-    cJSON_Delete(params);
-    cJSON_Delete(response);
-}
-
-/* Test: interrupt.log.read is not advertised until interrupt hooks exist */
-TEST(interrupt_log_read_dispatch_works)
-{
-    cJSON *read_response, *read_params;
-
-    test_interrupt_log_configs_reset();
-
-    /* Read the log via dispatch */
-    read_params = cJSON_CreateObject();
-    cJSON_AddStringToObject(read_params, "log_id", "intlog_1");
-
-    read_response = mcp_tools_dispatch("vice.interrupt.log.read", read_params);
-    ASSERT_NOT_NULL(read_response);
-
-    cJSON *code_item = cJSON_GetObjectItem(read_response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, MCP_ERROR_METHOD_NOT_FOUND);
-
-    cJSON_Delete(read_params);
-    cJSON_Delete(read_response);
+    cJSON *r, *code;
+    int c;
+
+    test_set_machine_class(1U << 10);   /* VICE_MACHINE_SCPU64 */
+    r = mcp_tool_coverage_start(NULL);
+    test_set_machine_class(1);          /* VICE_MACHINE_C64 */
+    code = cJSON_GetObjectItem(r, "code");
+    c = code ? code->valueint : 0;
+    cJSON_Delete(r);
+    ASSERT_INT_EQ(c, MCP_ERROR_NOT_IMPLEMENTED);
+    ASSERT_TRUE(mcp_coverage_map == NULL);
 }
 
 /* =================================================================
@@ -10325,6 +9559,97 @@ TEST(machine_config_set_rolls_back_on_rejected_value)
     ASSERT_INT_EQ(warp, 0);
 }
 
+/* Any integer resource can be set, not only the curated ones: a joystick
+ * can be plugged into control port 1. */
+TEST(machine_config_set_accepts_any_int_resource)
+{
+    cJSON *resources = cJSON_CreateObject();
+    int code, dev = -1;
+
+    test_setup_c64_defaults();
+    test_resources_set("JoyPort1Device", 0);
+    cJSON_AddNumberToObject(resources, "JoyPort1Device", 1);
+    code = config_set_code(resources);
+    resources_get_int("JoyPort1Device", &dev);
+    test_resources_reset();
+
+    ASSERT_INT_EQ(code, 0);
+    ASSERT_INT_EQ(dev, 1);
+}
+
+/* Resources that would reconfigure the MCP server, open listeners or
+ * persist the config are refused, whatever the case of the name. */
+TEST(machine_config_set_refuses_denied_resources)
+{
+    static const char *const denied[] = {
+        "MCPServerPort", "mcpserverenabled", "BinaryMonitorServer",
+        "MonitorServer", "NetworkServerPort", "SaveResourcesOnExit",
+        "MonitorLogEnabled", "IDE64USBServer", "LogToFile", "DoCoreDump",
+        "UserportDevice", "Acia1Enable", "RsUserDev", "RsDevice1Baud",
+        "FileSystemDevice8", "FSDeviceOverwrite", "TrapDevice8", "Printer4",
+        "PrinterUserport", "WIC64DHCP", "ETHERNETCART_ACTIVE", "SamplerDevice", NULL
+    };
+    int i, code, port = 0;
+
+    for (i = 0; denied[i] != NULL; i++) {
+        cJSON *resources = cJSON_CreateObject();
+
+        test_setup_c64_defaults();
+        test_resources_set(denied[i], 6520);
+        cJSON_AddNumberToObject(resources, denied[i], 1);
+        code = config_set_code(resources);
+        resources_get_int(denied[i], &port);
+        test_resources_reset();
+
+        ASSERT_INT_EQ(code, -32602);
+        ASSERT_INT_EQ(port, 6520);
+    }
+}
+
+/* Joystick input to a control port with nothing plugged in is refused
+ * rather than reported "ok"; a release to center is let through, and a port
+ * with a device takes anything. */
+TEST(joystick_set_refuses_empty_port)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON *tap = cJSON_CreateObject();
+    cJSON *release = cJSON_CreateObject();
+    cJSON *empty, *tapped, *plugged, *released, *code;
+    int empty_code, tapped_code;
+
+    test_resources_reset();
+    test_resources_set("JoyPort1Device", 0);   /* JOYPORT_ID_NONE */
+    test_resources_set("JoyPort2Device", 1);   /* JOYPORT_ID_JOYSTICK */
+    cJSON_AddNumberToObject(params, "port", 1);
+    cJSON_AddStringToObject(params, "direction", "up");
+    cJSON_AddNumberToObject(tap, "port", 1);
+    cJSON_AddBoolToObject(tap, "fire", 1);
+    cJSON_AddNumberToObject(release, "port", 1);
+    cJSON_AddStringToObject(release, "direction", "center");
+    empty = mcp_tool_joystick_set(params);
+    tapped = mcp_tool_joystick_tap(tap);
+    released = mcp_tool_joystick_set(release);
+    cJSON_ReplaceItemInObject(params, "port", cJSON_CreateNumber(2));
+    plugged = mcp_tool_joystick_set(params);
+    test_resources_reset();
+
+    code = cJSON_GetObjectItem(empty, "code");
+    empty_code = code ? code->valueint : 0;
+    code = cJSON_GetObjectItem(tapped, "code");
+    tapped_code = code ? code->valueint : 0;
+    ASSERT_INT_EQ(empty_code, -32602);
+    ASSERT_INT_EQ(tapped_code, -32602);
+    ASSERT_TRUE(plugged != NULL && cJSON_GetObjectItem(plugged, "code") == NULL);
+    ASSERT_TRUE(released != NULL && cJSON_GetObjectItem(released, "code") == NULL);
+    cJSON_Delete(params);
+    cJSON_Delete(tap);
+    cJSON_Delete(release);
+    cJSON_Delete(empty);
+    cJSON_Delete(tapped);
+    cJSON_Delete(plugged);
+    cJSON_Delete(released);
+}
+
 extern cJSON* mcp_tool_machine_config_get(cJSON *params);
 extern void test_resources_set(const char *name, int value);
 
@@ -10672,6 +9997,8 @@ int main(void)
     RUN_TEST(snapshot_save_with_options_succeeds);
     RUN_TEST(snapshot_save_failure_returns_error);
     RUN_TEST(snapshot_save_rejects_existing_vsf);
+    RUN_TEST(snapshot_overwrite_then_delete);
+    RUN_TEST(snapshot_failed_overwrite_keeps_old);
     RUN_TEST(snapshot_load_with_name_succeeds);
     RUN_TEST(snapshot_load_without_name_returns_error);
     RUN_TEST(snapshot_load_failure_returns_error);
@@ -10781,44 +10108,13 @@ int main(void)
     RUN_TEST(checkpoint_set_auto_snapshot_dispatch_works);
     RUN_TEST(checkpoint_clear_auto_snapshot_dispatch_works);
 
-    /* Trace tools tests */
-    RUN_TEST(trace_start_requires_output_file);
-    RUN_TEST(trace_start_null_params_returns_error);
-    RUN_TEST(trace_start_rejects_empty_output_file);
-    RUN_TEST(trace_start_with_valid_params_succeeds);
-    RUN_TEST(trace_start_with_all_options);
-    RUN_TEST(trace_start_rejects_invalid_pc_filter_range);
-    RUN_TEST(trace_start_clamps_max_instructions);
-    RUN_TEST(trace_stop_requires_trace_id);
-    RUN_TEST(trace_stop_null_params_returns_error);
-    RUN_TEST(trace_stop_rejects_empty_trace_id);
-    RUN_TEST(trace_stop_nonexistent_returns_false);
-    RUN_TEST(trace_stop_stops_existing_trace);
-    RUN_TEST(trace_start_dispatch_works);
-    RUN_TEST(trace_stop_dispatch_works);
-    RUN_TEST(trace_multiple_traces_run_simultaneously);
+    RUN_TEST(frame_advance_names_stopping_checkpoint);
+    RUN_TEST(ping_reports_build_time);
 
-    /* Interrupt log tools tests */
-    RUN_TEST(interrupt_log_start_null_params_works);
-    RUN_TEST(interrupt_log_start_empty_params_works);
-    RUN_TEST(interrupt_log_start_with_specific_types);
-    RUN_TEST(interrupt_log_start_rejects_invalid_type);
-    RUN_TEST(interrupt_log_start_with_max_entries);
-    RUN_TEST(interrupt_log_start_clamps_max_entries);
-    RUN_TEST(interrupt_log_stop_requires_log_id);
-    RUN_TEST(interrupt_log_stop_null_params_returns_error);
-    RUN_TEST(interrupt_log_stop_rejects_empty_log_id);
-    RUN_TEST(interrupt_log_stop_nonexistent_returns_false);
-    RUN_TEST(interrupt_log_stop_stops_existing_log);
-    RUN_TEST(interrupt_log_read_requires_log_id);
-    RUN_TEST(interrupt_log_read_null_params_returns_error);
-    RUN_TEST(interrupt_log_read_nonexistent_returns_error);
-    RUN_TEST(interrupt_log_read_returns_empty_for_new_log);
-    RUN_TEST(interrupt_log_read_with_since_index);
-    RUN_TEST(interrupt_log_multiple_logs_run_simultaneously);
-    RUN_TEST(interrupt_log_start_dispatch_works);
-    RUN_TEST(interrupt_log_stop_dispatch_works);
-    RUN_TEST(interrupt_log_read_dispatch_works);
+    /* Execution coverage tests */
+    RUN_TEST(coverage_start_read_reset_stop);
+    RUN_TEST(coverage_read_rejects_reversed_range);
+    RUN_TEST(coverage_start_refused_on_scpu64);
 
     /* Sprite inspect tests (Phase 5.5) */
     RUN_TEST(sprite_inspect_requires_sprite_number);
@@ -10931,6 +10227,9 @@ int main(void)
     RUN_TEST(memory_search_rejects_out_of_range_bytes);
     RUN_TEST(machine_config_set_validates_every_pair_first);
     RUN_TEST(machine_config_set_rolls_back_on_rejected_value);
+    RUN_TEST(machine_config_set_accepts_any_int_resource);
+    RUN_TEST(machine_config_set_refuses_denied_resources);
+    RUN_TEST(joystick_set_refuses_empty_port);
     RUN_TEST(machine_config_get_reports_cbm2_chip_addresses);
     RUN_TEST(machine_config_get_reports_configured_models);
     RUN_TEST(machine_config_get_lists_dtv_cias);

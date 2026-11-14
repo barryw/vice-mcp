@@ -166,6 +166,7 @@ extern cJSON* mcp_tool_joystick_tap(cJSON *params);
 extern cJSON* mcp_tool_snapshot_save(cJSON *params);
 extern cJSON* mcp_tool_snapshot_load(cJSON *params);
 extern cJSON* mcp_tool_snapshot_list(cJSON *params);
+extern cJSON* mcp_tool_snapshot_delete(cJSON *params);
 
 /* Tool handlers - Phase 5.1: Enhanced Debugging */
 extern cJSON* mcp_tool_cycles_stopwatch(cJSON *params);
@@ -184,14 +185,10 @@ extern cJSON* mcp_tool_checkpoint_group_list(cJSON *params);
 extern cJSON* mcp_tool_checkpoint_set_auto_snapshot(cJSON *params);
 extern cJSON* mcp_tool_checkpoint_clear_auto_snapshot(cJSON *params);
 
-/* Tool handlers - Phase 5.4: Execution Tracing */
-extern cJSON* mcp_tool_trace_start(cJSON *params);
-extern cJSON* mcp_tool_trace_stop(cJSON *params);
-
-/* Tool handlers - Phase 5.4: Interrupt Logging */
-extern cJSON* mcp_tool_interrupt_log_start(cJSON *params);
-extern cJSON* mcp_tool_interrupt_log_stop(cJSON *params);
-extern cJSON* mcp_tool_interrupt_log_read(cJSON *params);
+/* Tool handlers - Execution coverage */
+extern cJSON* mcp_tool_coverage_start(cJSON *params);
+extern cJSON* mcp_tool_coverage_stop(cJSON *params);
+extern cJSON* mcp_tool_coverage_read(cJSON *params);
 
 /* Tool handlers - Machine Configuration */
 extern cJSON* mcp_tool_machine_config_get(cJSON *params);

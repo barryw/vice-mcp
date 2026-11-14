@@ -1,6 +1,6 @@
 CC ?= cc
 TOP_SRCDIR ?= ../../..
-TOP_BUILDDIR ?= ../../../build
+TOP_BUILDDIR ?= ../../../build-headless
 LIBMCP ?= $(TOP_BUILDDIR)/src/mcp/libmcp.a
 
 LIBMICROHTTPD_CFLAGS ?= $(shell pkg-config --cflags libmicrohttpd 2>/dev/null)

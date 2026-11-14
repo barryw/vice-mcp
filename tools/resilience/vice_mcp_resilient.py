@@ -3,7 +3,7 @@ Resilience layer for the VICE C64 Emulator MCP Server.
 
 Provides a Python client with retry logic, fallback call paths, client-side
 schema validation, and reliability monitoring for the VICE MCP server at
-localhost:6510. It has one method per registered tool; any tool can also be
+localhost:6520. It has one method per registered tool; any tool can also be
 called by name with ``ViceMCPClient.call("vice.tool.name", **params)``.
 
 Usage::
@@ -17,7 +17,7 @@ Usage::
     regs = vice.registers_get()
 
     # Context manager
-    with ViceMCPClient(port=6510) as vice:
+    with ViceMCPClient(port=6520) as vice:
         vice.execution_pause()
         mem = vice.memory_read(0xC000, 256)
 
@@ -520,6 +520,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             ("description", "string"),
             ("include_roms", "boolean"),
             ("include_disks", "boolean"),
+            ("overwrite", "boolean"),
         ],
     },
     "vice.snapshot.load": {
@@ -531,6 +532,28 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "vice.snapshot.list": {
         "required": [],
         "optional": [],
+    },
+    "vice.snapshot.delete": {
+        "required": [
+            ("name", "string"),
+        ],
+        "optional": [],
+    },
+    "vice.coverage.start": {
+        "required": [],
+        "optional": [],
+    },
+    "vice.coverage.stop": {
+        "required": [],
+        "optional": [],
+    },
+    "vice.coverage.read": {
+        "required": [],
+        "optional": [
+            ("start", "string"),
+            ("end", "string"),
+            ("reset", "boolean"),
+        ],
     },
     "vice.cycles.stopwatch": {
         "required": [
@@ -814,7 +837,7 @@ class ViceMCPClient:
     host : str
         Hostname of the MCP server (default ``"127.0.0.1"``).
     port : int
-        Port of the MCP server (default ``6510``).
+        Port of the MCP server (default ``6520``).
     max_retries : int
         Maximum number of retries per call (default ``3``).
     retry_delay : float
@@ -834,7 +857,7 @@ class ViceMCPClient:
     def __init__(
         self,
         host: str = "127.0.0.1",
-        port: int = 6510,
+        port: int = 6520,
         max_retries: int = 3,
         retry_delay: float = 0.5,
         timeout: float = 10.0,
@@ -2217,6 +2240,7 @@ class ViceMCPClient:
         description: Optional[str] = None,
         include_roms: Optional[bool] = None,
         include_disks: Optional[bool] = None,
+        overwrite: Optional[bool] = None,
     ) -> Any:
         """Save a snapshot of the current machine state.
 
@@ -2230,6 +2254,9 @@ class ViceMCPClient:
             Include ROM data in the snapshot.
         include_disks : bool, optional
             Include disk image data in the snapshot.
+        overwrite : bool, optional
+            Replace a snapshot of the same name; the old one is kept if
+            the save fails.
         """
         args: Dict[str, Any] = {"name": name}
         if description is not None:
@@ -2238,6 +2265,8 @@ class ViceMCPClient:
             args["include_roms"] = include_roms
         if include_disks is not None:
             args["include_disks"] = include_disks
+        if overwrite is not None:
+            args["overwrite"] = overwrite
         return self.call("vice.snapshot.save", **args)
 
     def snapshot_load(self, name: str) -> Any:
@@ -2253,6 +2282,56 @@ class ViceMCPClient:
     def snapshot_list(self) -> Any:
         """List available snapshots."""
         return self.call("vice.snapshot.list")
+
+    def snapshot_delete(self, name: str) -> Any:
+        """Delete a snapshot and its metadata.
+
+        Parameters
+        ----------
+        name : str
+            Snapshot name.
+        """
+        return self.call("vice.snapshot.delete", name=name)
+
+    # -- Coverage -----------------------------------------------------------
+
+    def coverage_start(self) -> Any:
+        """Clear the execution coverage map and start recording."""
+        return self.call("vice.coverage.start")
+
+    def coverage_stop(self) -> Any:
+        """Stop recording execution coverage; the map is kept."""
+        return self.call("vice.coverage.stop")
+
+    def coverage_read(
+        self,
+        start: Optional[Union[int, str]] = None,
+        end: Optional[Union[int, str]] = None,
+        reset: Optional[bool] = None,
+    ) -> Any:
+        """Read the execution coverage map.
+
+        Without a range the reply carries ``bitmap``: base64 of 8192 bytes,
+        bit k (LSB first) of byte i being address 8*i+k. With ``start`` or
+        ``end`` it carries the range's executed ``addresses`` instead.
+
+        Parameters
+        ----------
+        start : int or str, optional
+            First address of the range (default 0).
+        end : int or str, optional
+            Last address of the range, inclusive (default $FFFF).
+        reset : bool, optional
+            Clear the map after reading it.
+        """
+        args: Dict[str, Any] = {}
+        if start is not None:
+            args["start"] = start
+        if end is not None:
+            args["end"] = end
+        if reset is not None:
+            args["reset"] = reset
+        return self.call("vice.coverage.read", **args)
 
     # -- Cycles / Stopwatch -------------------------------------------------
 
@@ -2273,7 +2352,7 @@ class ViceMCPClient:
 
 def connect(
     host: str = "127.0.0.1",
-    port: int = 6510,
+    port: int = 6520,
     **kwargs: Any,
 ) -> ViceMCPClient:
     """Create a ViceMCPClient (no connection is made until the first call).
@@ -2283,7 +2362,7 @@ def connect(
     host : str
         Server hostname (default ``"127.0.0.1"``).
     port : int
-        Server port (default ``6510``).
+        Server port (default ``6520``).
     **kwargs
         Forwarded to :class:`ViceMCPClient` (max_retries, retry_delay,
         timeout, validate, monitor, log_path).

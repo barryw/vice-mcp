@@ -453,6 +453,47 @@ int util_strncasecmp(const char *s1, const char *s2, size_t n)
     return strncasecmp(s1, s2, n);
 }
 
+int util_strcasecmp(const char *s1, const char *s2)
+{
+    return strcasecmp(s1, s2);
+}
+
+char *util_concat(const char *s1, ...)
+{
+    va_list ap;
+    const char *p;
+    size_t len = 0;
+    char *out;
+
+    va_start(ap, s1);
+    for (p = s1; p != NULL; p = va_arg(ap, const char *)) {
+        len += strlen(p);
+    }
+    va_end(ap);
+    out = malloc(len + 1);
+    if (out == NULL) {
+        return NULL;
+    }
+    out[0] = '\0';
+    va_start(ap, s1);
+    for (p = s1; p != NULL; p = va_arg(ap, const char *)) {
+        strcat(out, p);
+    }
+    va_end(ap);
+    return out;
+}
+
+/* An executable that exists, for vice.ping's build time */
+const char *archdep_program_path(void)
+{
+    return "/bin/sh";
+}
+
+int archdep_rename(const char *oldpath, const char *newpath)
+{
+    return rename(oldpath, newpath);
+}
+
 /* MCP step mode stubs - actual implementations since tests verify flag behavior */
 static int test_mcp_step_active = 0;
 
@@ -661,9 +702,18 @@ int mon_breakpoint_add_checkpoint(unsigned int start, unsigned int end, int stop
         test_checkpoints[idx].temporary = temporary;
         test_checkpoints[idx].enabled = 1;  /* Default enabled */
         test_checkpoints[idx].condition = NULL;
+        test_checkpoints[idx].hit_count = 0;
     }
 
     return test_checkpoint_last_num;
+}
+
+/* Count a hit of checkpoint `id`, as the monitor does */
+void test_checkpoint_hit(int id)
+{
+    if (id > 0 && id <= MAX_TEST_CHECKPOINTS && test_checkpoints[id - 1].checknum == id) {
+        test_checkpoints[id - 1].hit_count++;
+    }
 }
 
 void mon_breakpoint_delete_checkpoint(unsigned int id)
@@ -718,6 +768,12 @@ void mon_breakpoint_set_ignore_count(unsigned int id, unsigned int count)
 {
     (void)id;
     (void)count;
+}
+
+void mon_breakpoint_set_checkpoint_quiet(int brk_num, int quiet)
+{
+    (void)brk_num;
+    (void)quiet;
 }
 
 void mon_breakpoint_set_checkpoint_condition(int brk_num, void *cnode)
@@ -1053,6 +1109,8 @@ static char test_snapshot_last_saved[256] = "";
 static char test_snapshot_last_loaded[256] = "";
 static int test_snapshot_save_result = 0;
 static int test_snapshot_load_result = 0;
+/* When set, a successful save writes this text to the file, as VICE would */
+static const char *test_snapshot_write_text = NULL;
 
 int machine_write_snapshot(const char *name, int save_roms, int save_disks, int event_mode)
 {
@@ -1062,6 +1120,13 @@ int machine_write_snapshot(const char *name, int save_roms, int save_disks, int 
     if (name) {
         strncpy(test_snapshot_last_saved, name, sizeof(test_snapshot_last_saved) - 1);
         test_snapshot_last_saved[sizeof(test_snapshot_last_saved) - 1] = '\0';
+    }
+    if (name && test_snapshot_save_result == 0 && test_snapshot_write_text != NULL) {
+        FILE *f = fopen(name, "w");
+        if (f != NULL) {
+            fputs(test_snapshot_write_text, f);
+            fclose(f);
+        }
     }
     return test_snapshot_save_result;
 }
@@ -1081,11 +1146,13 @@ const char *test_snapshot_get_last_saved(void) { return test_snapshot_last_saved
 const char *test_snapshot_get_last_loaded(void) { return test_snapshot_last_loaded; }
 void test_snapshot_set_save_result(int result) { test_snapshot_save_result = result; }
 void test_snapshot_set_load_result(int result) { test_snapshot_load_result = result; }
+void test_snapshot_set_write_text(const char *text) { test_snapshot_write_text = text; }
 void test_snapshot_reset(void) {
     test_snapshot_last_saved[0] = '\0';
     test_snapshot_last_loaded[0] = '\0';
     test_snapshot_save_result = 0;
     test_snapshot_load_result = 0;
+    test_snapshot_write_text = NULL;
 }
 
 /* archdep stub for config path */
@@ -1555,6 +1622,18 @@ int resources_set_int(const char *name, int value) {
         test_resources[test_resource_count].value = value;
         test_resource_count++;
         return 0;
+    }
+    return -1;
+}
+
+/* Every test resource is an integer; names match ignoring case, as in VICE.
+ * Returns resource_type_t: RES_INTEGER (0), or -1 for an unknown name. */
+int resources_query_type(const char *name) {
+    int i;
+    for (i = 0; i < test_resource_count; i++) {
+        if (strcasecmp(test_resources[i].name, name) == 0) {
+            return 0;
+        }
     }
     return -1;
 }

@@ -37,7 +37,6 @@ static int mcp_tools_initialized = 0;  /* Double-initialization guard */
 
 /* MCP step mode state moved to mcp_tools_execution.c */
 /* Forward declarations for keyboard auto-release moved to mcp_tools_input.c */
-/* Trace/interrupt log data and functions moved to mcp_tools_trace.c */
 /* Helper functions moved to mcp_tools_helpers.c */
 
 /* Forward declarations now in mcp_tools_internal.h */
@@ -118,6 +117,18 @@ const mcp_tool_t tool_registry[] = {
     { "vice.watch.add", "Add memory watchpoint with optional condition (shorthand for checkpoint with store/load)", mcp_tool_watch_add },
     { "vice.backtrace", "Show call stack (JSR return addresses)", mcp_tool_backtrace },
     { "vice.run_until", "Resume until an address is reached or a number of cycles has run, whichever comes first; returns at once", mcp_tool_run_until },
+    { "vice.coverage.start",
+      "Clear the execution coverage map and start recording: every address the main CPU fetches an "
+      "opcode from is marked, at the cost of one test and store per instruction (no checkpoints). "
+      "Addresses are CPU addresses, so RAM and ROM at the same address share a mark. "
+      "Drive CPUs and the x128 Z80 are not recorded",
+      mcp_tool_coverage_start },
+    { "vice.coverage.stop", "Stop recording execution coverage; the map is kept for vice.coverage.read", mcp_tool_coverage_stop },
+    { "vice.coverage.read",
+      "Read the execution coverage map: count of executed addresses, and a bitmap of all 64K or the "
+      "executed addresses of a range; optionally clear it after reading. 'bitmap' is base64 of "
+      "8192 bytes: bit k (LSB first) of byte i is address 8*i+k",
+      mcp_tool_coverage_read },
     { "vice.keyboard.matrix", "Direct keyboard matrix control (for games that scan keyboard directly)", mcp_tool_keyboard_matrix },
     { "vice.keyboard.chord", "Press multiple C64 keyboard matrix keys together for a fixed number of frames", mcp_tool_keyboard_chord },
 
@@ -126,18 +137,20 @@ const mcp_tool_t tool_registry[] = {
       "Save complete emulator state to a named snapshot. "
       "Use this to capture a debugging checkpoint that can be restored later with snapshot.load. "
       "Snapshots are stored in mcp_snapshots/ under the VICE user config directory, with JSON metadata. "
-      "Fails if a snapshot with that name already exists.",
+      "Fails if a snapshot with that name already exists, unless overwrite is true.",
       mcp_tool_snapshot_save },
     { "vice.snapshot.load",
       "Restore emulator state from a previously saved snapshot. "
       "Use this to return to a known debugging checkpoint without re-running setup steps. "
-      "The emulator will be in the exact state it was when the snapshot was saved.",
+      "The emulator will be in the exact state it was when the snapshot was saved, including the "
+      "devices plugged into the control ports (JoyPort1Device, JoyPort2Device).",
       mcp_tool_snapshot_load },
     { "vice.snapshot.list",
       "List all available snapshots with their metadata. "
       "Returns snapshot names, descriptions, creation times, and machine types. "
       "Use this to find the right snapshot to load for debugging.",
       mcp_tool_snapshot_list },
+    { "vice.snapshot.delete", "Delete a snapshot and its metadata", mcp_tool_snapshot_delete },
 
     /* Phase 5.1: Enhanced Debugging Tools */
     { "vice.cycles.stopwatch",
@@ -183,10 +196,12 @@ const mcp_tool_t tool_registry[] = {
       "Returns machine type, available chips, memory layout, and configurable resources.",
       mcp_tool_machine_config_get },
     { "vice.machine.config.set",
-      "Set machine configuration resources (WarpMode, Speed, video standard, SID model, CIA model, etc). "
-      "WarpMode (0/1) disables speed limiting for fast execution. "
-      "Speed (1-10000, 0=unlimited) sets CPU speed percentage. "
-      "Only whitelisted resources can be changed. Returns the new configuration.",
+      "Set integer VICE resources, all or nothing: any integer resource, by the name vicerc "
+      "uses (e.g. JoyPort1Device=1 plugs a joystick into control port 1), "
+      "plus WarpMode (0/1). Refused: resources that reconfigure the MCP server, open network "
+      "listeners or connections, attach host files or devices (file system drives, printers, "
+      "RS232, user port devices such as WIC64), write logs, or save the configuration. Model resources (SidModel, CIA1Model, "
+      "MachineVideoStandard, ...) power-cycle the machine. Returns the new configuration.",
       mcp_tool_machine_config_set },
 
     /* Phase 5.5: Sprite Inspect */
@@ -262,6 +277,7 @@ int mcp_tools_init(void)
     log_message(mcp_tools_log, "MCP tools initializing...");
 
     /* Tools are registered statically in tool_registry[] above. */
+    mcp_build_time_init();
 
     log_message(mcp_tools_log, "MCP tools initialized - %d tools registered",
                 (int)MCP_TOOL_COUNT);
@@ -323,6 +339,5 @@ cJSON* mcp_tools_dispatch(const char *tool_name, cJSON *params)
 /* Protocol handlers (ping, initialize, tools/list, tools/call) moved to mcp_tools_protocol.c */
 /* Execution control and register tools moved to mcp_tools_execution.c */
 /* Memory read, write, banks, and search tools moved to mcp_tools_memory.c */
-/* Execution tracing and interrupt logging tools moved to mcp_tools_trace.c */
 
 /* Memory map tool moved to mcp_tools_memory.c */

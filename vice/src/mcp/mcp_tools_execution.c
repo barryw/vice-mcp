@@ -29,6 +29,7 @@
 #include "maincpu.h"
 #include "mos6510.h"
 #include "monitor.h"  /* For mon_instructions_step/next, exit_mon, mcp_hold_paused */
+#include "monitor/mon_breakpoint.h"
 #include "interrupt.h"  /* For interrupt_maincpu_trigger_trap */
 #include "mainlock.h"   /* For mainlock_obtain/release */
 #include "vsync.h"      /* For vsync_on_vsync_do */
@@ -507,12 +508,68 @@ static mcp_frame_end_t mcp_frame_advance_run(int frames, int *done)
     return result;
 }
 
+/* Hit counts of the stopping checkpoints, indexed by checkpoint number
+ * (0 where there is none), so mcp_stop_checkpoints_fired() can tell which
+ * of them stopped the machine since. NULL, with *size 0, when there are
+ * none. Free with lib_free(). */
+int *mcp_stop_checkpoint_hits(int *size)
+{
+    unsigned int n = 0;
+    unsigned int i;
+    mon_checkpoint_t **list = mon_breakpoint_checkpoint_list_get(&n);
+    int max = 0;
+    int *hits = NULL;
+
+    *size = 0;
+    for (i = 0; list != NULL && i < n; i++) {
+        if (list[i]->stop && list[i]->checknum > max) {
+            max = list[i]->checknum;
+        }
+    }
+    if (max > 0) {
+        hits = lib_calloc((size_t)max + 1, sizeof(*hits));
+        if (hits != NULL) {
+            for (i = 0; i < n; i++) {
+                if (list[i]->stop) {
+                    hits[list[i]->checknum] = list[i]->hit_count + 1;
+                }
+            }
+            *size = max + 1;
+        }
+    }
+    lib_free(list);
+    return hits;
+}
+
+/* The numbers of the stopping checkpoints hit since `before` was taken by
+ * mcp_stop_checkpoint_hits() */
+cJSON *mcp_stop_checkpoints_fired(const int *before, int size)
+{
+    unsigned int n = 0;
+    unsigned int i;
+    mon_checkpoint_t **list = mon_breakpoint_checkpoint_list_get(&n);
+    cJSON *fired = cJSON_CreateArray();
+
+    for (i = 0; fired != NULL && list != NULL && i < n; i++) {
+        int num = list[i]->checknum;
+
+        if (list[i]->stop && num < size && before[num] != 0
+            && list[i]->hit_count + 1 > before[num]) {
+            cJSON_AddItemToArray(fired, cJSON_CreateNumber(num));
+        }
+    }
+    lib_free(list);
+    return fired;
+}
+
 cJSON* mcp_tool_frame_advance(cJSON *params)
 {
     cJSON *response, *frames_item;
     mcp_frame_end_t result;
     int frames = 1;
     int done = 0;
+    int *hits;
+    int hits_size;
 
     log_message(mcp_tools_log, "Handling vice.frame.advance");
 
@@ -537,10 +594,12 @@ cJSON* mcp_tool_frame_advance(cJSON *params)
             "a stopping checkpoint or vice.execution.step");
     }
 
+    hits = mcp_stop_checkpoint_hits(&hits_size);
     result = mcp_frame_advance_run(frames, &done);
 
     response = cJSON_CreateObject();
     if (response == NULL) {
+        lib_free(hits);
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
     }
 
@@ -550,11 +609,19 @@ cJSON* mcp_tool_frame_advance(cJSON *params)
         cJSON_AddNumberToObject(response, "PC", maincpu_get_pc());
         cJSON_AddStringToObject(response, "message", "Stopped at the frame boundary");
     } else if (result == MCP_FRAME_STOPPED) {
+        cJSON *fired = mcp_stop_checkpoints_fired(hits, hits_size);
+
         cJSON_AddNumberToObject(response, "PC", maincpu_get_pc());
         cJSON_AddBoolToObject(response, "stopped_early", true);
         cJSON_AddStringToObject(response, "message",
-            "Something else stopped the machine before the frame boundary "
-            "(a checkpoint?); it is paused there");
+            cJSON_GetArraySize(fired) > 0
+            ? "A checkpoint in 'checkpoints' stopped the machine before the "
+              "frame boundary; it is paused there"
+            : "Something other than a checkpoint (a UI pause or a run_until "
+              "address) stopped the machine before the frame boundary; it is "
+              "paused there");
+        cJSON_AddItemToObject(response, "checkpoints",
+                              fired != NULL ? fired : cJSON_CreateArray());
     } else {
         /* No PC: the machine stops at the next instruction boundary, after
          * this reply has gone. */
@@ -564,6 +631,7 @@ cJSON* mcp_tool_frame_advance(cJSON *params)
             "A frame did not end within 2 s; the machine has been paused "
             "at the next instruction boundary");
     }
+    lib_free(hits);
 
     return response;
 }

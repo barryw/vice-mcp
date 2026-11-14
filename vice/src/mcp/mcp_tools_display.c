@@ -43,7 +43,7 @@ static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /* Encode binary data to base64 - caller must free returned string */
-static char* base64_encode(const uint8_t *data, size_t input_length, size_t *output_length)
+char *mcp_base64_encode(const uint8_t *data, size_t input_length, size_t *output_length)
 {
     size_t i;
     size_t j;
@@ -255,7 +255,7 @@ cJSON* mcp_tool_display_screenshot(cJSON *params)
                     size_t bytes_read = fread(file_data, 1, file_size, f);
                     if (bytes_read == (size_t)file_size) {
                         size_t b64_len;
-                        char *b64_data = base64_encode(file_data, file_size, &b64_len);
+                        char *b64_data = mcp_base64_encode(file_data, file_size, &b64_len);
                         if (b64_data != NULL) {
                             /* Add data URI prefix for easy use in HTML/web contexts */
                             const char *mime_type = strcmp(format, "PNG") == 0 ? "image/png" : "image/bmp";

@@ -611,12 +611,13 @@ cJSON* mcp_tool_watch_add(cJSON *params)
         stop,
         op,
         false,  /* is_temp */
-        true    /* do_print */
+        false   /* do_print */
     );
 
     if (checkpoint_num < 0) {
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to create watchpoint");
     }
+    mon_breakpoint_set_checkpoint_quiet(checkpoint_num, true);
 
     /* If condition provided, parse and set it on the checkpoint */
     if (condition_str != NULL && condition_str[0] != '\0') {
@@ -886,6 +887,7 @@ cJSON* mcp_tool_run_until(cJSON *params)
         if (bp_num < 0) {
             return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to create temporary breakpoint");
         }
+        mon_breakpoint_set_checkpoint_quiet(bp_num, true);
     }
 
     /* This run replaces any limit an earlier run_until left pending */
