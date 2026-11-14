@@ -96,6 +96,7 @@ extern cJSON *mcp_schema_object(cJSON *properties, cJSON *required_array);
 extern cJSON *mcp_prop_number(const char *desc);
 extern cJSON *mcp_prop_string(const char *desc);
 extern cJSON *mcp_prop_boolean(const char *desc);
+extern cJSON *mcp_prop_object(const char *desc);
 extern cJSON *mcp_prop_array(const char *item_type, const char *desc);
 
 /** @brief Resolve address from number, hex string ($1000), or symbol name.
@@ -127,6 +128,12 @@ extern cJSON *mcp_read_snapshot_metadata(const char *vsf_path);
  *  Supports: A == $xx, X == $xx, Y == $xx, PC == $xxxx, SP == $xx
  *  @return Allocated condition node tree, or NULL on parse failure. */
 extern cond_node_t *parse_simple_condition(const char *condition_str);
+/* Writes a monitor condition tree as text ("A == $42", "(X != $05) && ...").
+ * Truncates to fit; buf is always terminated. */
+extern void mcp_condition_to_string(const cond_node_t *node, char *buf, size_t size);
+
+/* Unit-test hook (mcp_tools_input.c): clear pending key/joystick auto-releases. */
+extern void mcp_input_test_reset_pending(void);
 
 /* -------------------------------------------------------------------------
  * Handler prototypes - Protocol (mcp_tools_protocol.c)

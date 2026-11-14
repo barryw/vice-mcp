@@ -243,17 +243,18 @@ class TestBaseProtocol:
             "capabilities": {},
             "clientInfo": {"name": "pytest", "version": "1.0"},
         })
-        assert "protocolVersion" in result
+        assert result["protocolVersion"] == "2024-11-05"  # supported: echoed
         assert "capabilities" in result
         assert "serverInfo" in result
         assert result["serverInfo"]["name"] == "VICE MCP"
 
     def test_initialize_unsupported_version(self, mcp):
-        """Initialize with unsupported protocol version should fail."""
-        error = mcp.direct_call_error("initialize", {
+        """MCP lifecycle: an unsupported version is answered with the
+        server's latest supported version, not an error."""
+        result = mcp.direct_call("initialize", {
             "protocolVersion": "9999-01-01",
         })
-        assert error["code"] == ERROR_INVALID_PARAMS
+        assert result["protocolVersion"] == "2025-11-25"
 
     def test_notifications_initialized(self, mcp):
         """The initialized notification should return HTTP 202 or empty body."""
@@ -1499,12 +1500,19 @@ EXPECTED_SCHEMAS = {
     },
     "vice_vicii_get_state": {"properties": {}, "required": []},
     "vice_vicii_set_state": {
-        "properties": {"registers": "array"},
+        "properties": {"registers": "array", "border_color": "number",
+                       "background_color": "number", "background_color_1": "number",
+                       "background_color_2": "number", "background_color_3": "number",
+                       "control_1": "number", "control_2": "number",
+                       "memory_pointers": "number", "irq_raster_line": "number",
+                       "interrupt_enable": "number"},
         "required": [],
     },
     "vice_sid_get_state": {"properties": {}, "required": []},
     "vice_sid_set_state": {
-        "properties": {"registers": "array"},
+        "properties": {"registers": "array", "voice0": "object", "voice1": "object",
+                       "voice2": "object", "filter_cutoff": "number",
+                       "filter_resonance": "number", "filter_mode_volume": "number"},
         "required": [],
     },
     "vice_cia_get_state": {
@@ -1512,15 +1520,16 @@ EXPECTED_SCHEMAS = {
         "required": [],
     },
     "vice_cia_set_state": {
-        "properties": {"cia1_registers": "array", "cia2_registers": "array"},
+        "properties": {"cia1_registers": "array", "cia2_registers": "array",
+                       "cia1": "object", "cia2": "object"},
         "required": [],
     },
     "vice_disk_attach": {
-        "properties": {"unit": "number", "path": "string"},
+        "properties": {"unit": "number", "drive": "number", "path": "string"},
         "required": ["unit", "path"],
     },
     "vice_disk_detach": {
-        "properties": {"unit": "number"},
+        "properties": {"unit": "number", "drive": "number"},
         "required": ["unit"],
     },
     "vice_disk_list": {
@@ -1660,7 +1669,7 @@ EXPECTED_SCHEMAS = {
     "vice_checkpoint_group_list": {"properties": {}, "required": []},
     "vice_machine_config_get": {"properties": {}, "required": []},
     "vice_machine_config_set": {
-        "properties": {"resources": "string"},
+        "properties": {"resources": "object"},
         "required": ["resources"],
     },
     "vice_sprite_inspect": {

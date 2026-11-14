@@ -40,6 +40,11 @@ static void mcp_keyboard_vsync_callback(void *unused);
 static void mcp_keyboard_schedule_vsync_check(void);
 static int add_pending_vhk_key_release(signed long key_code, int modifiers, int frames);
 static int add_pending_joystick_center(unsigned int port, int frames);
+static int free_key_release_slots(void);
+static int free_vhk_release_slots(void);
+
+#define NO_RELEASE_SLOT_MESSAGE \
+    "No free auto-release slot (16 releases pending); retry after some keys are released"
 
 /* =============================================================================
  * Phase 3.1: Input Control
@@ -355,16 +360,18 @@ cJSON* mcp_tool_keyboard_key_press(cJSON *params)
         if (hold_frames < 1) hold_frames = 1;
     }
 
+    if (hold_frames > 0 && free_vhk_release_slots() == 0) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, NO_RELEASE_SLOT_MESSAGE);
+    }
+
     log_message(mcp_tools_log, "Pressing key: code=%ld, modifiers=0x%04x", key_code, (unsigned int)modifiers);
 
     /* Press the key */
     keyboard_key_pressed(key_code, modifiers);
 
-    /* Schedule auto-release if hold duration specified */
+    /* Schedule auto-release if hold duration specified (a slot is free) */
     if (hold_frames > 0) {
-        if (add_pending_vhk_key_release(key_code, modifiers, hold_frames) < 0) {
-            log_warning(mcp_tools_log, "Failed to schedule auto-release (no slots)");
-        }
+        add_pending_vhk_key_release(key_code, modifiers, hold_frames);
     }
 
     response = cJSON_CreateObject();
@@ -821,6 +828,40 @@ static void mcp_keyboard_init_pending_releases(void)
     }
 }
 
+/* Free slots in a pending-release pool. Callers check before pressing, so a
+ * key is never left down with no release scheduled. */
+static int free_key_release_slots(void)
+{
+    int i;
+    int free_slots = 0;
+
+    mcp_keyboard_init_pending_releases();
+    for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
+        free_slots += !pending_key_releases[i].active;
+    }
+    return free_slots;
+}
+
+static int free_vhk_release_slots(void)
+{
+    int i;
+    int free_slots = 0;
+
+    mcp_keyboard_init_pending_releases();
+    for (i = 0; i < MAX_PENDING_KEY_RELEASES; i++) {
+        free_slots += !pending_vhk_releases[i].active;
+    }
+    return free_slots;
+}
+
+/* Unit-test hook: forget every pending auto-release and the queued vsync
+ * check (the tests run vsync callbacks by hand). */
+void mcp_input_test_reset_pending(void)
+{
+    keyboard_pending_releases_initialized = 0;
+    mcp_keyboard_init_pending_releases();
+}
+
 /* Add a pending matrix key release with frame count */
 static int add_pending_key_release(int row, int col, int frames)
 {
@@ -886,15 +927,18 @@ static int add_pending_joystick_center(unsigned int port, int frames)
     return -1;
 }
 
-static int matrix_key_name_to_row_col(const char *key, int *row, int *col)
+/* Maps a C64 key name (case-insensitive) to its matrix position. *shift is
+ * set for UP and LEFT, which on the C64 are SHIFT + CRSR DOWN / CRSR RIGHT. */
+static int matrix_key_name_to_row_col(const char *key, int *row, int *col, int *shift)
 {
     char normalized[16];
     size_t len;
     size_t i;
 
-    if (key == NULL || row == NULL || col == NULL) {
+    if (key == NULL || row == NULL || col == NULL || shift == NULL) {
         return -1;
     }
+    *shift = 0;
 
     len = strlen(key);
     if (len == 0 || len >= sizeof(normalized)) {
@@ -915,9 +959,9 @@ static int matrix_key_name_to_row_col(const char *key, int *row, int *col)
     if (strcmp(normalized, "F3") == 0)          { *row = 0; *col = 5; return 0; }
     if (strcmp(normalized, "F5") == 0)          { *row = 0; *col = 6; return 0; }
     if (strcmp(normalized, "F7") == 0)          { *row = 0; *col = 3; return 0; }
-    if (strcmp(normalized, "UP") == 0)          { *row = 0; *col = 7; return 0; }
+    if (strcmp(normalized, "UP") == 0)          { *row = 0; *col = 7; *shift = 1; return 0; }
     if (strcmp(normalized, "DOWN") == 0)        { *row = 0; *col = 7; return 0; }
-    if (strcmp(normalized, "LEFT") == 0)        { *row = 0; *col = 2; return 0; }
+    if (strcmp(normalized, "LEFT") == 0)        { *row = 0; *col = 2; *shift = 1; return 0; }
     if (strcmp(normalized, "RIGHT") == 0)       { *row = 0; *col = 2; return 0; }
     if (strcmp(normalized, "LSHIFT") == 0)      { *row = 1; *col = 7; return 0; }
     if (strcmp(normalized, "RSHIFT") == 0)      { *row = 6; *col = 4; return 0; }
@@ -975,14 +1019,15 @@ static int matrix_key_name_to_row_col(const char *key, int *row, int *col)
     return -1;
 }
 
-static int matrix_key_item_to_row_col(cJSON *item, int *row, int *col)
+static int matrix_key_item_to_row_col(cJSON *item, int *row, int *col, int *shift)
 {
     if (item == NULL) {
         return -1;
     }
+    *shift = 0;
 
     if (cJSON_IsString(item)) {
-        return matrix_key_name_to_row_col(item->valuestring, row, col);
+        return matrix_key_name_to_row_col(item->valuestring, row, col, shift);
     }
 
     if (cJSON_IsObject(item)) {
@@ -991,7 +1036,7 @@ static int matrix_key_item_to_row_col(cJSON *item, int *row, int *col)
         cJSON *col_item = cJSON_GetObjectItem(item, "col");
 
         if (key_item != NULL && cJSON_IsString(key_item)) {
-            return matrix_key_name_to_row_col(key_item->valuestring, row, col);
+            return matrix_key_name_to_row_col(key_item->valuestring, row, col, shift);
         }
 
         if (row_item != NULL && col_item != NULL && cJSON_IsNumber(row_item) && cJSON_IsNumber(col_item)) {
@@ -1013,6 +1058,7 @@ cJSON* mcp_tool_keyboard_matrix(cJSON *params)
     cJSON *hold_frames_item, *hold_ms_item;
     int row;
     int col;
+    int shift = 0;    /* UP/LEFT: also SHIFT (row 1, col 7) */
     int pressed = 1;  /* Default: press the key */
     int hold_frames = 0;
     int hold_ms = 0;
@@ -1037,72 +1083,8 @@ cJSON* mcp_tool_keyboard_matrix(cJSON *params)
     }
 
     if (key_item != NULL && cJSON_IsString(key_item)) {
-        const char *key = key_item->valuestring;
-
-        /* Map common key names to matrix positions
-         * C64 keyboard matrix (row, col):
-         * See https://sta.c64.org/cbm64kbdlay.html */
-        if (strcmp(key, "SPACE") == 0)       { row = 7; col = 4; }
-        else if (strcmp(key, "RETURN") == 0) { row = 0; col = 1; }
-        else if (strcmp(key, "STOP") == 0)   { row = 7; col = 7; }
-        else if (strcmp(key, "F1") == 0)     { row = 0; col = 4; }
-        else if (strcmp(key, "F3") == 0)     { row = 0; col = 5; }
-        else if (strcmp(key, "F5") == 0)     { row = 0; col = 6; }
-        else if (strcmp(key, "F7") == 0)     { row = 0; col = 3; }
-        else if (strcmp(key, "UP") == 0)     { row = 0; col = 7; }  /* Shifted CRSR DOWN */
-        else if (strcmp(key, "DOWN") == 0)   { row = 0; col = 7; }
-        else if (strcmp(key, "LEFT") == 0)   { row = 0; col = 2; }  /* Shifted CRSR RIGHT */
-        else if (strcmp(key, "RIGHT") == 0)  { row = 0; col = 2; }
-        /* Modifier keys */
-        else if (strcmp(key, "LSHIFT") == 0) { row = 1; col = 7; }
-        else if (strcmp(key, "RSHIFT") == 0) { row = 6; col = 4; }
-        else if (strcmp(key, "CTRL") == 0)   { row = 7; col = 2; }
-        else if (strcmp(key, "CBM") == 0 || strcmp(key, "C=") == 0) { row = 7; col = 5; }
-        /* Special keys */
-        else if (strcmp(key, "HOME") == 0)   { row = 6; col = 3; }
-        else if (strcmp(key, "CLR") == 0)    { row = 6; col = 3; }  /* Same as HOME, but shifted */
-        else if (strcmp(key, "DEL") == 0 || strcmp(key, "INST") == 0) { row = 0; col = 0; }
-        else if (strcmp(key, "POUND") == 0)  { row = 6; col = 0; }  /* £ key */
-        else if (strcmp(key, "ARROWUP") == 0){ row = 6; col = 6; }  /* ↑ key */
-        else if (strcmp(key, "ARROWLEFT") == 0) { row = 7; col = 1; } /* ← key */
-        else if (strcmp(key, "PLUS") == 0)   { row = 5; col = 0; }
-        else if (strcmp(key, "MINUS") == 0)  { row = 5; col = 3; }
-        else if (strcmp(key, "ASTERISK") == 0) { row = 6; col = 1; }
-        else if (strcmp(key, "AT") == 0)     { row = 5; col = 6; }  /* @ key */
-        else if (strcmp(key, "COLON") == 0)  { row = 5; col = 5; }
-        else if (strcmp(key, "SEMICOLON") == 0) { row = 6; col = 2; }
-        else if (strcmp(key, "EQUALS") == 0) { row = 6; col = 5; }
-        else if (strcmp(key, "COMMA") == 0)  { row = 5; col = 7; }
-        else if (strcmp(key, "PERIOD") == 0) { row = 5; col = 4; }
-        else if (strcmp(key, "SLASH") == 0)  { row = 6; col = 7; }
-        /* Letters (unshifted) */
-        else if (strlen(key) == 1 && key[0] >= 'A' && key[0] <= 'Z') {
-            /* Simple mapping for letters - this is approximate */
-            static const int letter_map[26][2] = {
-                {1,2}, /* A */ {3,4}, /* B */ {2,4}, /* C */ {2,2}, /* D */
-                {1,6}, /* E */ {2,5}, /* F */ {3,2}, /* G */ {3,5}, /* H */
-                {4,1}, /* I */ {4,2}, /* J */ {4,5}, /* K */ {5,2}, /* L */
-                {4,4}, /* M */ {4,7}, /* N */ {4,6}, /* O */ {5,1}, /* P */
-                {7,6}, /* Q */ {2,1}, /* R */ {1,5}, /* S */ {2,6}, /* T */
-                {3,6}, /* U */ {3,7}, /* V */ {1,1}, /* W */ {2,7}, /* X */
-                {3,1}, /* Y */ {1,4}, /* Z */
-            };
-            int idx = key[0] - 'A';
-            row = letter_map[idx][0];
-            col = letter_map[idx][1];
-        }
-        /* Numbers */
-        else if (strlen(key) == 1 && key[0] >= '0' && key[0] <= '9') {
-            static const int num_map[10][2] = {
-                {4,3}, /* 0 */ {7,0}, /* 1 */ {7,3}, /* 2 */ {1,0}, /* 3 */
-                {1,3}, /* 4 */ {2,0}, /* 5 */ {2,3}, /* 6 */ {3,0}, /* 7 */
-                {3,3}, /* 8 */ {4,0}, /* 9 */
-            };
-            int idx = key[0] - '0';
-            row = num_map[idx][0];
-            col = num_map[idx][1];
-        }
-        else {
+        /* C64 keyboard matrix (row, col): https://sta.c64.org/cbm64kbdlay.html */
+        if (matrix_key_name_to_row_col(key_item->valuestring, &row, &col, &shift) < 0) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "Unknown key name");
         }
     }
@@ -1139,20 +1121,31 @@ cJSON* mcp_tool_keyboard_matrix(cJSON *params)
         if (hold_frames < 1) hold_frames = 1;
     }
 
+    if (pressed && hold_frames > 0 && free_key_release_slots() < 1 + shift) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, NO_RELEASE_SLOT_MESSAGE);
+    }
+
     /* Set or release the key in VICE's keyboard matrix */
     if (pressed) {
+        if (shift) {
+            keyboard_set_keyarr(1, 7, 1);
+        }
         keyboard_set_keyarr(row, col, 1);
-        log_message(mcp_tools_log, "Key pressed: row=%d, col=%d", row, col);
+        log_message(mcp_tools_log, "Key pressed: row=%d, col=%d%s", row, col, shift ? " + SHIFT" : "");
 
-        /* Schedule auto-release if hold duration specified */
+        /* Schedule auto-release if hold duration specified (slots are free) */
         if (hold_frames > 0) {
-            if (add_pending_key_release(row, col, hold_frames) < 0) {
-                log_warning(mcp_tools_log, "Failed to schedule auto-release (no slots)");
+            add_pending_key_release(row, col, hold_frames);
+            if (shift) {
+                add_pending_key_release(1, 7, hold_frames);
             }
         }
     } else {
         keyboard_set_keyarr(row, col, 0);
-        log_message(mcp_tools_log, "Key released: row=%d, col=%d", row, col);
+        if (shift) {
+            keyboard_set_keyarr(1, 7, 0);
+        }
+        log_message(mcp_tools_log, "Key released: row=%d, col=%d%s", row, col, shift ? " + SHIFT" : "");
     }
 
     response = cJSON_CreateObject();
@@ -1164,6 +1157,9 @@ cJSON* mcp_tool_keyboard_matrix(cJSON *params)
     cJSON_AddNumberToObject(response, "row", row);
     cJSON_AddNumberToObject(response, "col", col);
     cJSON_AddBoolToObject(response, "pressed", pressed);
+    if (shift) {
+        cJSON_AddBoolToObject(response, "shift", 1);
+    }
 
     /* Report scheduled auto-release if applicable */
     if (hold_frames > 0 && pressed) {
@@ -1182,9 +1178,12 @@ cJSON* mcp_tool_keyboard_chord(cJSON *params)
     cJSON *response;
     cJSON *keys_item, *hold_frames_item, *hold_ms_item;
     cJSON *pressed_array;
-    int rows[MAX_PENDING_KEY_RELEASES];
-    int cols[MAX_PENDING_KEY_RELEASES];
+    int rows[MAX_PENDING_KEY_RELEASES + 1];
+    int cols[MAX_PENDING_KEY_RELEASES + 1];
     int key_count;
+    int requested;
+    int need_shift = 0;
+    int have_shift = 0;
     int hold_frames = 3;
     int hold_ms = 0;
     int i;
@@ -1200,16 +1199,32 @@ cJSON* mcp_tool_keyboard_chord(cJSON *params)
         return mcp_error(MCP_ERROR_INVALID_PARAMS, "Missing or invalid keys array");
     }
 
-    key_count = cJSON_GetArraySize(keys_item);
-    if (key_count < 1 || key_count > MAX_PENDING_KEY_RELEASES) {
+    requested = cJSON_GetArraySize(keys_item);
+    if (requested < 1 || requested > MAX_PENDING_KEY_RELEASES) {
         return mcp_error(MCP_ERROR_INVALID_PARAMS, "keys length must be 1-16");
     }
 
-    for (i = 0; i < key_count; i++) {
+    for (i = 0; i < requested; i++) {
         cJSON *key_item = cJSON_GetArrayItem(keys_item, i);
-        if (matrix_key_item_to_row_col(key_item, &rows[i], &cols[i]) < 0) {
+        int shift;
+
+        if (matrix_key_item_to_row_col(key_item, &rows[i], &cols[i], &shift) < 0) {
             return mcp_error(MCP_ERROR_INVALID_PARAMS, "Invalid key entry in keys array");
         }
+        need_shift |= shift;
+        have_shift |= (rows[i] == 1 && cols[i] == 7);
+    }
+    key_count = requested;
+
+    /* UP/LEFT are SHIFT + CRSR DOWN/RIGHT: add LSHIFT unless already there */
+    if (need_shift && !have_shift) {
+        if (key_count >= MAX_PENDING_KEY_RELEASES) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                             "keys length must be 1-16, counting the SHIFT that UP/LEFT add");
+        }
+        rows[key_count] = 1;
+        cols[key_count] = 7;
+        key_count++;
     }
 
     hold_frames_item = cJSON_GetObjectItem(params, "hold_frames");
@@ -1233,18 +1248,15 @@ cJSON* mcp_tool_keyboard_chord(cJSON *params)
         }
     }
 
-    for (i = 0; i < key_count; i++) {
-        keyboard_set_keyarr(rows[i], cols[i], 1);
+    if (free_key_release_slots() < key_count) {
+        return mcp_error(MCP_ERROR_INTERNAL_ERROR, NO_RELEASE_SLOT_MESSAGE);
     }
 
     for (i = 0; i < key_count; i++) {
-        if (add_pending_key_release(rows[i], cols[i], hold_frames) < 0) {
-            int j;
-            for (j = 0; j < key_count; j++) {
-                keyboard_set_keyarr(rows[j], cols[j], 0);
-            }
-            return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Failed to schedule chord key releases");
-        }
+        keyboard_set_keyarr(rows[i], cols[i], 1);
+    }
+    for (i = 0; i < key_count; i++) {
+        add_pending_key_release(rows[i], cols[i], hold_frames);
     }
 
     response = cJSON_CreateObject();

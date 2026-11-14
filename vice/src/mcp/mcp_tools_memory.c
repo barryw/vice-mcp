@@ -465,11 +465,11 @@ cJSON* mcp_tool_memory_search(cJSON *params)
     }
     for (i = 0; i < pattern_len; i++) {
         cJSON *byte_item = cJSON_GetArrayItem(pattern_item, i);
-        if (!cJSON_IsNumber(byte_item)) {
+        if (!cJSON_IsNumber(byte_item) || byte_item->valueint < 0 || byte_item->valueint > 255) {
             lib_free(pattern_buf);
-            return mcp_error(MCP_ERROR_INVALID_PARAMS, "pattern must contain numbers only");
+            return mcp_error(MCP_ERROR_INVALID_PARAMS, "pattern must contain bytes 0-255");
         }
-        pattern_buf[i] = (uint8_t)(byte_item->valueint & 0xFF);
+        pattern_buf[i] = (uint8_t)byte_item->valueint;
     }
 
     /* Get optional mask (default: all 0xFF for exact match) */
@@ -489,12 +489,12 @@ cJSON* mcp_tool_memory_search(cJSON *params)
         }
         for (i = 0; i < mask_len; i++) {
             cJSON *byte_item = cJSON_GetArrayItem(mask_item, i);
-            if (!cJSON_IsNumber(byte_item)) {
+            if (!cJSON_IsNumber(byte_item) || byte_item->valueint < 0 || byte_item->valueint > 255) {
                 lib_free(pattern_buf);
                 lib_free(mask_buf);
-                return mcp_error(MCP_ERROR_INVALID_PARAMS, "mask must contain numbers only");
+                return mcp_error(MCP_ERROR_INVALID_PARAMS, "mask must contain bytes 0-255");
             }
-            mask_buf[i] = (uint8_t)(byte_item->valueint & 0xFF);
+            mask_buf[i] = (uint8_t)byte_item->valueint;
         }
     } else {
         /* Default: exact match for all bytes */
@@ -731,6 +731,7 @@ cJSON* mcp_tool_memory_compare(cJSON *params)
     int range1_end;
     int range2_start;
     int max_differences = 100;  /* Default max differences to return */
+    int ram_bank;
     int total_differences = 0;
     int differences_returned = 0;
     long range_size;
@@ -1010,11 +1011,18 @@ cJSON* mcp_tool_memory_compare(cJSON *params)
         /* Calculate range size */
         range_size = (long)(end_addr - start_addr) + 1;
 
+        /* The snapshot holds RAM, so compare it with live RAM, not with the
+         * CPU view (where ROM or I/O may be banked in over it). */
+        ram_bank = mem_bank_from_name("ram");
+        if (ram_bank < 0) {
+            ram_bank = 0;
+        }
+
         /* Compare byte-by-byte: current memory vs snapshot */
         for (offset = 0; offset < range_size; offset++) {
             uint16_t addr = (uint16_t)(start_addr + offset);
 
-            byte1 = mem_bank_peek(0, addr, NULL);  /* Current memory (non-destructive) */
+            byte1 = mem_bank_peek(ram_bank, addr, NULL);  /* Live RAM (non-destructive) */
             byte2 = snapshot_ram[addr];   /* Snapshot memory */
 
             if (byte1 != byte2) {

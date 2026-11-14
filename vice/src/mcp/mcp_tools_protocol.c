@@ -32,25 +32,14 @@
 #include "version.h"
 
 /* =========================================================================
- * Tool Implementations - Phase 1
+ * Tool Implementations
  *
- * THREAD SAFETY NOTICE - PHASE 1 LIMITATION:
- *
- * These Phase 1 tool implementations directly access CPU registers and memory
- * without synchronization. They do NOT check if emulation is paused and do NOT
- * use VICE's interrupt system (IK_MONITOR) for safe CPU state access.
- *
- * CONSEQUENCE: Calling these tools while the emulator is running can cause:
- *   - Race conditions (reading partially-updated state)
- *   - Incorrect results (registers changing mid-read)
- *   - Undefined behavior (concurrent memory access)
- *
- * REQUIREMENT: Callers MUST ensure emulation is paused before invoking Phase 1
- * tools. The MCP transport layer or client application is responsible for this.
- *
- * FUTURE: Phase 2 will integrate with VICE's monitor/interrupt.h to properly
- * pause execution, access state safely via IK_MONITOR, and resume execution.
- * Phase 2 will also add execution control tools (run/pause/step).
+ * Threading: handlers do not lock anything themselves. The transport
+ * (mcp_transport.c, mcp_dispatch_via_trap) runs them on the emulator side:
+ * through a CPU trap while the machine runs, under the mainlock while the UI
+ * is paused or the machine is held, and directly while the monitor is open.
+ * vice.ping and vice.execution.pause bypass the dispatch slot; ping only
+ * reads flags.
  * ========================================================================= */
 
 cJSON* mcp_tool_ping(cJSON *params)
@@ -92,32 +81,40 @@ cJSON* mcp_tool_ping(cJSON *params)
  * MCP Base Protocol Handlers
  * ========================================================================= */
 
+/* Protocol versions this server speaks, newest first. It only offers tools,
+ * which every one of these revisions supports unchanged. */
+static const char *const supported_protocol_versions[] = {
+    "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", NULL
+};
+
 cJSON* mcp_tool_initialize(cJSON *params)
 {
     cJSON *response, *capabilities, *server_info;
     cJSON *protocol_version;
     cJSON *logging_cap;
     cJSON *tools_cap;
-    const char *version_str;
+    const char *negotiated = supported_protocol_versions[0];
+    int i;
 
     log_message(mcp_tools_log, "Initialize request received");
 
-    /* Get protocol version from params */
+    /* MCP lifecycle: answer with the requested version when we support it,
+     * otherwise with our latest one and let the client decide. */
     protocol_version = cJSON_GetObjectItem(params, "protocolVersion");
     if (protocol_version != NULL && cJSON_IsString(protocol_version)) {
-        version_str = protocol_version->valuestring;
-        log_message(mcp_tools_log, "Client protocol version: %s", version_str);
-
-        /* Verify we support this version */
-        if (strcmp(version_str, "2025-11-25") != 0 &&
-            strcmp(version_str, "2025-06-18") != 0 &&
-            strcmp(version_str, "2024-11-05") != 0) {
-            log_warning(mcp_tools_log, "Unsupported protocol version: %s", version_str);
-            return mcp_error(MCP_ERROR_INVALID_PARAMS,
-                           "Unsupported protocol version (supported: 2025-11-25, 2025-06-18, 2024-11-05)");
+        log_message(mcp_tools_log, "Client protocol version: %s", protocol_version->valuestring);
+        for (i = 0; supported_protocol_versions[i] != NULL; i++) {
+            if (strcmp(protocol_version->valuestring, supported_protocol_versions[i]) == 0) {
+                negotiated = supported_protocol_versions[i];
+                break;
+            }
+        }
+        if (supported_protocol_versions[i] == NULL) {
+            log_warning(mcp_tools_log, "Unsupported protocol version %s, offering %s",
+                        protocol_version->valuestring, negotiated);
         }
     } else {
-        log_warning(mcp_tools_log, "No protocol version specified, assuming 2024-11-05");
+        log_warning(mcp_tools_log, "No protocol version specified, offering %s", negotiated);
     }
 
     /* Build response */
@@ -126,8 +123,7 @@ cJSON* mcp_tool_initialize(cJSON *params)
         return mcp_error(MCP_ERROR_INTERNAL_ERROR, "Out of memory");
     }
 
-    /* Protocol version we're using */
-    cJSON_AddStringToObject(response, "protocolVersion", "2025-11-25");
+    cJSON_AddStringToObject(response, "protocolVersion", negotiated);
 
     /* Server capabilities */
     capabilities = cJSON_CreateObject();
@@ -159,7 +155,7 @@ cJSON* mcp_tool_initialize(cJSON *params)
         cJSON_AddItemToObject(response, "serverInfo", server_info);
     }
 
-    log_message(mcp_tools_log, "Initialize complete - protocol version 2025-11-25");
+    log_message(mcp_tools_log, "Initialize complete - protocol version %s", negotiated);
 
     return response;
 }
@@ -373,15 +369,32 @@ cJSON* mcp_tool_tools_list(cJSON *params)
         } else if (strcmp(name, "vice.vicii.set_state") == 0) {
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "registers", mcp_prop_array("object",
-                "Array of {offset, value} objects to set VIC-II registers (offset 0x00-0x2E)"));
-            /* No required params - all optional */
+                "Array of {offset, value} objects to set VIC-II registers (offset 0x00-0x2E, value 0-255)"));
+            cJSON_AddItemToObject(props, "border_color", mcp_prop_number("$D020, 0-15 (0-255 on the DTV)"));
+            cJSON_AddItemToObject(props, "background_color", mcp_prop_number("$D021, 0-15 (0-255 on the DTV)"));
+            cJSON_AddItemToObject(props, "background_color_1", mcp_prop_number("$D022, 0-15 (0-255 on the DTV)"));
+            cJSON_AddItemToObject(props, "background_color_2", mcp_prop_number("$D023, 0-15 (0-255 on the DTV)"));
+            cJSON_AddItemToObject(props, "background_color_3", mcp_prop_number("$D024, 0-15 (0-255 on the DTV)"));
+            cJSON_AddItemToObject(props, "control_1", mcp_prop_number("$D011 raw byte, 0-255"));
+            cJSON_AddItemToObject(props, "control_2", mcp_prop_number("$D016 raw byte, 0-255"));
+            cJSON_AddItemToObject(props, "memory_pointers", mcp_prop_number("$D018 raw byte, 0-255"));
+            cJSON_AddItemToObject(props, "irq_raster_line", mcp_prop_number("Raster IRQ compare line 0-511 ($D012 and bit 7 of $D011)"));
+            cJSON_AddItemToObject(props, "interrupt_enable", mcp_prop_number("$D01A, 0-15"));
+            /* No required params - all optional; an invalid value writes nothing */
             schema = mcp_schema_object(props, NULL);
 
         } else if (strcmp(name, "vice.sid.set_state") == 0) {
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "registers", mcp_prop_array("object",
-                "Array of {offset, value} objects to set SID registers (offset 0x00-0x1C)"));
-            /* No required params - all optional */
+                "Array of {offset, value} objects to set SID registers (offset 0x00-0x1C, value 0-255)"));
+            cJSON_AddItemToObject(props, "voice0", mcp_prop_object(
+                "Voice 1: {frequency 0-65535, pulse_width 0-4095, control, attack_decay, sustain_release (bytes)}"));
+            cJSON_AddItemToObject(props, "voice1", mcp_prop_object("Voice 2, same keys as voice0"));
+            cJSON_AddItemToObject(props, "voice2", mcp_prop_object("Voice 3, same keys as voice0"));
+            cJSON_AddItemToObject(props, "filter_cutoff", mcp_prop_number("11-bit filter cutoff, 0-2047"));
+            cJSON_AddItemToObject(props, "filter_resonance", mcp_prop_number("Resonance/routing register byte ($17), 0-255"));
+            cJSON_AddItemToObject(props, "filter_mode_volume", mcp_prop_number("Mode/volume register byte ($18), 0-255"));
+            /* No required params - all optional; an invalid value writes nothing */
             schema = mcp_schema_object(props, NULL);
 
         } else if (strcmp(name, "vice.cia.set_state") == 0) {
@@ -390,13 +403,17 @@ cJSON* mcp_tool_tools_list(cJSON *params)
                 "Array of {offset, value} objects to set CIA1 registers (offset 0x00-0x0F)"));
             cJSON_AddItemToObject(props, "cia2_registers", mcp_prop_array("object",
                 "Array of {offset, value} objects to set CIA2 registers (offset 0x00-0x0F)"));
-            /* No required params - all optional */
+            cJSON_AddItemToObject(props, "cia1", mcp_prop_object(
+                "Named CIA1 writes (bytes): port_a, port_b, ddr_a, ddr_b, timer_a_low, timer_a_high, "
+                "timer_b_low, timer_b_high, interrupt_control, control_a, control_b"));
+            cJSON_AddItemToObject(props, "cia2", mcp_prop_object("Named CIA2 writes, same keys as cia1"));
+            /* No required params - all optional; an invalid value writes nothing */
             schema = mcp_schema_object(props, NULL);
 
         } else if (strcmp(name, "vice.checkpoint.set_condition") == 0) {
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "checkpoint_num", mcp_prop_number("Checkpoint number"));
-            cJSON_AddItemToObject(props, "condition", mcp_prop_string("Condition expression (e.g., 'A == $42')"));
+            cJSON_AddItemToObject(props, "condition", mcp_prop_string("Condition: '<A|X|Y|PC|SP> == <value>' only ('=' also accepted; value $hex, 0xhex or decimal), e.g. 'A == $42'"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("checkpoint_num"));
             cJSON_AddItemToArray(required, cJSON_CreateString("condition"));
@@ -405,6 +422,7 @@ cJSON* mcp_tool_tools_list(cJSON *params)
         } else if (strcmp(name, "vice.disk.attach") == 0) {
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "unit", mcp_prop_number("Drive unit (8-11)"));
+            cJSON_AddItemToObject(props, "drive", mcp_prop_number("Drive 0 or 1 within a dual-drive unit (default: 0)"));
             cJSON_AddItemToObject(props, "path", mcp_prop_string("Path to disk image (.d64, .g64, etc)"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("unit"));
@@ -414,6 +432,7 @@ cJSON* mcp_tool_tools_list(cJSON *params)
         } else if (strcmp(name, "vice.disk.detach") == 0) {
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "unit", mcp_prop_number("Drive unit (8-11)"));
+            cJSON_AddItemToObject(props, "drive", mcp_prop_number("Drive 0 or 1 within a dual-drive unit (default: 0)"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("unit"));
             schema = mcp_schema_object(props, required);
@@ -441,14 +460,14 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "path", mcp_prop_string("Path to PRG file or disk image (.d64, .g64, .prg)"));
             cJSON_AddItemToObject(props, "program", mcp_prop_string("Program name to load from disk image (optional)"));
             cJSON_AddItemToObject(props, "run", mcp_prop_boolean("Run after loading (default: true)"));
-            cJSON_AddItemToObject(props, "index", mcp_prop_number("Program index on disk, 0-based (default: 0)"));
+            cJSON_AddItemToObject(props, "index", mcp_prop_number("Directory entry to load when program is omitted: 1 = first file, 2 = second, ...; 0 or omitted loads '*'"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("path"));
             schema = mcp_schema_object(props, required);
 
         } else if (strcmp(name, "vice.machine.reset") == 0) {
             props = cJSON_CreateObject();
-            cJSON_AddItemToObject(props, "mode", mcp_prop_string("Reset mode: 'soft' (CPU reset, default) or 'hard' (power cycle)"));
+            cJSON_AddItemToObject(props, "mode", mcp_prop_string("Reset mode: 'soft' (CPU reset, default; alias 'cpu') or 'hard' (power cycle; alias 'power')"));
             cJSON_AddItemToObject(props, "run_after", mcp_prop_boolean("Resume execution after reset (default: true)"));
             /* No required params - all optional */
             schema = mcp_schema_object(props, NULL);
@@ -456,7 +475,7 @@ cJSON* mcp_tool_tools_list(cJSON *params)
         } else if (strcmp(name, "vice.display.screenshot") == 0) {
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "path", mcp_prop_string("File path to save screenshot (optional if return_base64=true)"));
-            cJSON_AddItemToObject(props, "format", mcp_prop_string("Image format: PNG or BMP (default: PNG)"));
+            cJSON_AddItemToObject(props, "format", mcp_prop_string("Image format: PNG or BMP, lower case accepted (default: PNG; BMP when built without libpng)"));
             cJSON_AddItemToObject(props, "return_base64", mcp_prop_boolean("Return screenshot as base64 data URI (default: false)"));
             /* No required params since path is optional when return_base64 is true */
             schema = mcp_schema_object(props, NULL);
@@ -527,7 +546,7 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "stop", mcp_prop_boolean("Stop execution when hit (default=true)"));
             cJSON_AddItemToObject(props, "load", mcp_prop_boolean("Break on memory read (default=false)"));
             cJSON_AddItemToObject(props, "store", mcp_prop_boolean("Break on memory write (default=false)"));
-            cJSON_AddItemToObject(props, "exec", mcp_prop_boolean("Break on execution (default=true)"));
+            cJSON_AddItemToObject(props, "exec", mcp_prop_boolean("Break on execution (default: true only when load and store are unset)"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("start"));
             schema = mcp_schema_object(props, required);
@@ -589,17 +608,17 @@ cJSON* mcp_tool_tools_list(cJSON *params)
 
         } else if (strcmp(name, "vice.keyboard.key_press") == 0) {
             props = cJSON_CreateObject();
-            cJSON_AddItemToObject(props, "key", mcp_prop_string("Key name or VHK code. Names: Return, Space, BackSpace, Delete, Escape, Tab, Up, Down, Left, Right, Home, End, F1-F8, or single char"));
+            cJSON_AddItemToObject(props, "key", mcp_prop_string("Key name or VHK code. Names (case-sensitive): Return/Enter, Space, BackSpace, Delete, Escape, Tab, Up, Down, Left, Right, Home, End, F1-F8, or single char"));
             cJSON_AddItemToObject(props, "modifiers", mcp_prop_array("string", "Optional modifiers: shift, control, ctrl, alt, meta, command, cmd"));
-            cJSON_AddItemToObject(props, "hold_frames", mcp_prop_number("Hold duration in frames (1-300). Key auto-releases after this many frames (~16.7ms each at 60Hz)"));
-            cJSON_AddItemToObject(props, "hold_ms", mcp_prop_number("Hold duration in milliseconds (1-5000). Key auto-releases after this time. Overrides hold_frames if both specified"));
+            cJSON_AddItemToObject(props, "hold_frames", mcp_prop_number("Hold duration in frames (1-300). Key auto-releases after this many frames"));
+            cJSON_AddItemToObject(props, "hold_ms", mcp_prop_number("Hold duration in milliseconds (1-5000), converted at 20 ms/frame. Key auto-releases after this time. Overrides hold_frames if both specified"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("key"));
             schema = mcp_schema_object(props, required);
 
         } else if (strcmp(name, "vice.keyboard.key_release") == 0) {
             props = cJSON_CreateObject();
-            cJSON_AddItemToObject(props, "key", mcp_prop_string("Key name or VHK code. Names: Return, Space, BackSpace, Delete, Escape, Tab, Up, Down, Left, Right, Home, End, F1-F8, or single char"));
+            cJSON_AddItemToObject(props, "key", mcp_prop_string("Key name or VHK code. Names (case-sensitive): Return/Enter, Space, BackSpace, Delete, Escape, Tab, Up, Down, Left, Right, Home, End, F1-F8, or single char"));
             cJSON_AddItemToObject(props, "modifiers", mcp_prop_array("string", "Optional modifiers: shift, control, ctrl, alt, meta, command, cmd"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("key"));
@@ -608,17 +627,17 @@ cJSON* mcp_tool_tools_list(cJSON *params)
         } else if (strcmp(name, "vice.joystick.set") == 0) {
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "port", mcp_prop_number("Joystick port 1 or 2 (default=1)"));
-            cJSON_AddItemToObject(props, "direction", mcp_prop_string("Direction: up, down, left, right, center, or array for diagonals"));
+            cJSON_AddItemToObject(props, "direction", mcp_prop_string("Direction: up, down, left, right, center (or none); an array such as [\"up\",\"left\"] combines directions"));
             cJSON_AddItemToObject(props, "fire", mcp_prop_boolean("Fire button state (default=false)"));
             schema = mcp_schema_object(props, NULL);
 
         } else if (strcmp(name, "vice.joystick.tap") == 0) {
             props = cJSON_CreateObject();
             cJSON_AddItemToObject(props, "port", mcp_prop_number("Joystick port 1 or 2 (default=1)"));
-            cJSON_AddItemToObject(props, "direction", mcp_prop_string("Direction: up, down, left, right, center, or array for diagonals"));
+            cJSON_AddItemToObject(props, "direction", mcp_prop_string("Direction: up, down, left, right, center (or none); an array such as [\"up\",\"left\"] combines directions"));
             cJSON_AddItemToObject(props, "fire", mcp_prop_boolean("Fire button state (default=false)"));
             cJSON_AddItemToObject(props, "duration_frames", mcp_prop_number("Tap duration in frames (1-300, default=3)"));
-            cJSON_AddItemToObject(props, "duration_ms", mcp_prop_number("Tap duration in milliseconds (1-5000). Overrides duration_frames if both specified"));
+            cJSON_AddItemToObject(props, "duration_ms", mcp_prop_number("Tap duration in milliseconds (1-5000), converted at 20 ms/frame. Overrides duration_frames if both specified"));
             schema = mcp_schema_object(props, NULL);
 
         } else if (strcmp(name, "vice.paddle.set") == 0) {
@@ -680,25 +699,27 @@ cJSON* mcp_tool_tools_list(cJSON *params)
 
         } else if (strcmp(name, "vice.run_until") == 0) {
             props = cJSON_CreateObject();
-            cJSON_AddItemToObject(props, "address", mcp_prop_string("Target address: number, hex, or symbol (stops when PC reaches this)"));
-            cJSON_AddItemToObject(props, "cycles", mcp_prop_number("Max cycles to run (timeout, not yet implemented)"));
+            cJSON_AddItemToObject(props, "address", mcp_prop_string("Target address: number, $hex/0xhex string, or symbol. Sets a temporary breakpoint here and resumes; the call returns at once"));
+            cJSON_AddItemToObject(props, "cycles", mcp_prop_number("Not implemented: ignored when address is given; on its own returns error -32000"));
             schema = mcp_schema_object(props, NULL);
 
         } else if (strcmp(name, "vice.keyboard.matrix") == 0) {
             props = cJSON_CreateObject();
-            cJSON_AddItemToObject(props, "key", mcp_prop_string("Key name: A-Z, 0-9, SPACE, RETURN, F1, F3, F5, F7, UP, DOWN, LEFT, RIGHT, STOP"));
+            cJSON_AddItemToObject(props, "key", mcp_prop_string("C64 key name (case-insensitive): A-Z, 0-9, SPACE, RETURN, STOP, F1, F3, F5, F7, UP, DOWN, LEFT, RIGHT, "
+                "LSHIFT, RSHIFT, CTRL, CBM, HOME, DEL, POUND, ARROWUP, ARROWLEFT, PLUS, MINUS, ASTERISK, AT, COLON, SEMICOLON, EQUALS, COMMA, PERIOD, SLASH. "
+                "UP and LEFT also press SHIFT (they are SHIFT + CRSR DOWN/RIGHT)"));
             cJSON_AddItemToObject(props, "row", mcp_prop_number("Keyboard matrix row (0-7, alternative to key name)"));
             cJSON_AddItemToObject(props, "col", mcp_prop_number("Keyboard matrix column (0-7, alternative to key name)"));
             cJSON_AddItemToObject(props, "pressed", mcp_prop_boolean("Key pressed state (default: true)"));
-            cJSON_AddItemToObject(props, "hold_frames", mcp_prop_number("Hold duration in frames (1-300). Key auto-releases after this many frames (~16.7ms each at 60Hz)"));
-            cJSON_AddItemToObject(props, "hold_ms", mcp_prop_number("Hold duration in milliseconds (1-5000). Key auto-releases after this time. Overrides hold_frames if both specified"));
+            cJSON_AddItemToObject(props, "hold_frames", mcp_prop_number("Hold duration in frames (0-300, 0 = no auto-release)"));
+            cJSON_AddItemToObject(props, "hold_ms", mcp_prop_number("Hold duration in milliseconds (0-5000), converted at 20 ms/frame. Overrides hold_frames if both specified"));
             schema = mcp_schema_object(props, NULL);
 
         } else if (strcmp(name, "vice.keyboard.chord") == 0) {
             props = cJSON_CreateObject();
-            cJSON_AddItemToObject(props, "keys", mcp_prop_array("string", "Keys to press simultaneously. Entries may be key names or {row,col} objects."));
+            cJSON_AddItemToObject(props, "keys", mcp_prop_array("string", "1-16 keys to press simultaneously: key names (case-insensitive, as vice.keyboard.matrix; UP/LEFT add SHIFT) or {row,col} objects."));
             cJSON_AddItemToObject(props, "hold_frames", mcp_prop_number("Hold duration in frames (1-300, default=3)"));
-            cJSON_AddItemToObject(props, "hold_ms", mcp_prop_number("Hold duration in milliseconds (1-5000). Overrides hold_frames if both specified"));
+            cJSON_AddItemToObject(props, "hold_ms", mcp_prop_number("Hold duration in milliseconds (1-5000), converted at 20 ms/frame. Overrides hold_frames if both specified"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("keys"));
             schema = mcp_schema_object(props, required);
@@ -835,8 +856,9 @@ cJSON* mcp_tool_tools_list(cJSON *params)
 
         } else if (strcmp(name, "vice.machine.config.set") == 0) {
             props = cJSON_CreateObject();
-            cJSON_AddItemToObject(props, "resources", mcp_prop_string(
-                "Object of resource name/value pairs (e.g. {\"MachineVideoStandard\": 1, \"SidModel\": 0})"));
+            cJSON_AddItemToObject(props, "resources", mcp_prop_object(
+                "Object of resource name/value pairs (e.g. {\"MachineVideoStandard\": 1, \"SidModel\": 0}); "
+                "all or nothing"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("resources"));
             schema = mcp_schema_object(props, required);
@@ -846,7 +868,7 @@ cJSON* mcp_tool_tools_list(cJSON *params)
             cJSON_AddItemToObject(props, "sprite_number", mcp_prop_number(
                 "Sprite number 0-7 to inspect"));
             cJSON_AddItemToObject(props, "format", mcp_prop_string(
-                "Output format: 'ascii' (default), 'binary', or 'png_base64'"));
+                "Output format: 'ascii' (default) or 'binary'"));
             required = cJSON_CreateArray();
             cJSON_AddItemToArray(required, cJSON_CreateString("sprite_number"));
             schema = mcp_schema_object(props, required);

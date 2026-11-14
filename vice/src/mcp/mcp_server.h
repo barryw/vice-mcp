@@ -129,7 +129,7 @@ extern const char *mcp_server_get_host(void);
 
 /** @brief Register MCP server VICE resources.
  *
- *  Registers MCPServer, MCPServerPort, MCPServerHost, MCPServerToken,
+ *  Registers MCPServerEnabled, MCPServerPort, MCPServerHost, MCPServerToken,
  *  and MCPServerCORSOrigin resources
  *  with VICE's resource system for configuration persistence.
  *

@@ -117,7 +117,7 @@ const mcp_tool_t tool_registry[] = {
     { "vice.symbols.lookup", "Lookup symbol by name or address", mcp_tool_symbols_lookup },
     { "vice.watch.add", "Add memory watchpoint with optional condition (shorthand for checkpoint with store/load)", mcp_tool_watch_add },
     { "vice.backtrace", "Show call stack (JSR return addresses)", mcp_tool_backtrace },
-    { "vice.run_until", "Run until address or for N cycles (with timeout)", mcp_tool_run_until },
+    { "vice.run_until", "Set a temporary breakpoint at an address and resume; returns at once (cycle limit not implemented)", mcp_tool_run_until },
     { "vice.keyboard.matrix", "Direct keyboard matrix control (for games that scan keyboard directly)", mcp_tool_keyboard_matrix },
     { "vice.keyboard.chord", "Press multiple C64 keyboard matrix keys together for a fixed number of frames", mcp_tool_keyboard_chord },
 
@@ -125,7 +125,8 @@ const mcp_tool_t tool_registry[] = {
     { "vice.snapshot.save",
       "Save complete emulator state to a named snapshot. "
       "Use this to capture a debugging checkpoint that can be restored later with snapshot.load. "
-      "Snapshots are stored in ~/.config/vice/mcp_snapshots/ with JSON metadata.",
+      "Snapshots are stored in mcp_snapshots/ under the VICE user config directory, with JSON metadata. "
+      "Fails if a snapshot with that name already exists.",
       mcp_tool_snapshot_save },
     { "vice.snapshot.load",
       "Restore emulator state from a previously saved snapshot. "
@@ -260,7 +261,7 @@ int mcp_tools_init(void)
 
     log_message(mcp_tools_log, "MCP tools initializing...");
 
-    /* TODO: Register all tools */
+    /* Tools are registered statically in tool_registry[] above. */
 
     log_message(mcp_tools_log, "MCP tools initialized - %d tools registered",
                 (int)MCP_TOOL_COUNT);

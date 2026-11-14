@@ -160,16 +160,62 @@ int mem_bank_from_name(const char *name)
     return -1;  /* Not found */
 }
 
+/* Bank 2 is "rom": with test char ROM enabled, $D000-$DFFF reads it. */
+static uint8_t test_chargen_buffer[0x1000];
+static int test_chargen_enabled = 0;
+
+void test_chargen_set_byte(uint16_t offset, uint8_t value)
+{
+    if (!test_chargen_enabled) {
+        memset(test_chargen_buffer, 0, sizeof(test_chargen_buffer));
+        test_chargen_enabled = 1;
+    }
+    test_chargen_buffer[offset & 0x0FFF] = value;
+}
+
+void test_chargen_disable(void)
+{
+    test_chargen_enabled = 0;
+}
+
+/* When set, bank 0 (the CPU view) shows the I/O buffer at $D000-$DFFF, as
+ * on a C64 with I/O banked in; bank 1 ("ram") always shows RAM. */
+static int test_cpu_sees_io = 0;
+
+void test_set_cpu_sees_io(int on)
+{
+    test_cpu_sees_io = on;
+}
+
 uint8_t mem_bank_peek(int bank, uint16_t addr, void *context)
 {
     (void)context;
-    if (bank == 3 && test_io_memory_enabled && addr >= 0xD000 && addr < 0xE000) {
+    if ((bank == 3 || (bank == 0 && test_cpu_sees_io))
+        && test_io_memory_enabled && addr >= 0xD000 && addr < 0xE000) {
         return test_io_memory_buffer[addr - 0xD000];
+    }
+    if (bank == 2 && test_chargen_enabled && addr >= 0xD000 && addr < 0xE000) {
+        return test_chargen_buffer[addr - 0xD000];
     }
     if (!test_memory_buffer_initialized) {
         test_memory_init();
     }
     return test_memory_buffer[addr];
+}
+
+/* Bank 3 is "io": with test I/O memory enabled, $D000-$DFFF writes land in
+ * the I/O buffer, as mem_bank_peek reads them; otherwise they hit RAM. */
+void mem_bank_write(int bank, uint16_t addr, uint8_t byte, void *context)
+{
+    (void)context;
+    if (bank == 3 && test_io_memory_enabled && addr >= 0xD000 && addr < 0xE000) {
+        test_io_memory_buffer[addr - 0xD000] = byte;
+        return;
+    }
+    if (!test_memory_buffer_initialized) {
+        test_memory_init();
+    }
+    test_memory_buffer[addr] = byte;
 }
 
 /* CPU register stubs */
@@ -205,10 +251,18 @@ int kbdbuf_feed(const char *s)
     return 0;
 }
 
+static int test_key_presses = 0;
+
 void keyboard_key_pressed(signed long key, int mod)
 {
     (void)key;
     (void)mod;
+    test_key_presses++;
+}
+
+int test_keyboard_key_presses(void)
+{
+    return test_key_presses;
 }
 
 void keyboard_key_released(signed long key, int mod)
@@ -518,6 +572,7 @@ void test_checkpoint_reset(void)
     for (i = 0; i < MAX_TEST_CHECKPOINTS; i++) {
         test_checkpoints[i].checknum = 0;
         test_checkpoints[i].enabled = 1;  /* Default to enabled */
+        test_checkpoints[i].condition = NULL;
     }
 }
 
@@ -583,6 +638,7 @@ int mon_breakpoint_add_checkpoint(unsigned int start, unsigned int end, int stop
         test_checkpoints[idx].check_store = (operation & 2) != 0; /* e_store */
         test_checkpoints[idx].temporary = temporary;
         test_checkpoints[idx].enabled = 1;  /* Default enabled */
+        test_checkpoints[idx].condition = NULL;
     }
 
     return test_checkpoint_last_num;
@@ -608,9 +664,21 @@ void *mon_breakpoint_find_checkpoint(unsigned int id)
     return NULL;
 }
 
-void *mon_breakpoint_checkpoint_list_get(void)
+/* Like VICE: a lib_malloc'd array of the live checkpoints; caller frees it. */
+void *mon_breakpoint_checkpoint_list_get(unsigned int *len)
 {
-    return NULL;
+    test_checkpoint_t **list;
+    unsigned int n = 0;
+    int i;
+
+    list = malloc(sizeof(*list) * MAX_TEST_CHECKPOINTS);
+    for (i = 0; list != NULL && i < MAX_TEST_CHECKPOINTS; i++) {
+        if (test_checkpoints[i].checknum != 0) {
+            list[n++] = &test_checkpoints[i];
+        }
+    }
+    *len = n;
+    return list;
 }
 
 void mon_breakpoint_switch_checkpoint(int op, unsigned int id)
@@ -638,6 +706,9 @@ void mon_breakpoint_set_checkpoint_condition(int brk_num, void *cnode)
         test_checkpoint_last_has_condition = 1;
     }
     test_checkpoint_last_condition_node = cnode;
+    if (brk_num > 0 && brk_num <= MAX_TEST_CHECKPOINTS) {
+        test_checkpoints[brk_num - 1].condition = cnode;
+    }
 }
 
 /* Autostart stubs */
@@ -780,11 +851,20 @@ void machine_set_restore_key(int value)
 }
 
 /* Keyboard matrix stubs */
+static int test_keyarr_presses = 0;
+
 void keyboard_set_keyarr(int row, int col, int value)
 {
     (void)row;
     (void)col;
-    (void)value;
+    if (value) {
+        test_keyarr_presses++;
+    }
+}
+
+int test_keyboard_keyarr_presses(void)
+{
+    return test_keyarr_presses;
 }
 
 /* Alarm system stubs */
@@ -1049,6 +1129,11 @@ void test_io_set_byte(uint16_t addr, uint8_t value)
         test_io_memory_enabled = 1;
     }
     test_io_memory_buffer[addr - 0xD000] = value;
+}
+
+uint8_t test_io_get_byte(uint16_t addr)
+{
+    return test_io_memory_buffer[addr - 0xD000];
 }
 
 /* Clear test memory to all zeros */
@@ -1328,7 +1413,17 @@ void test_set_machine_class(int mc) {
 
 /* Simple key-value resource system for testing */
 #define MAX_TEST_RESOURCES 32
-static struct { const char *name; int value; } test_resources[MAX_TEST_RESOURCES];
+static struct { char name[64]; int value; } test_resources[MAX_TEST_RESOURCES];
+/* One (name, value) pair resources_set_int refuses, like a real resource
+ * rejecting an out-of-range value. */
+static char test_reject_name[64] = "";
+static int test_reject_value = 0;
+
+void test_resources_reject(const char *name, int value)
+{
+    snprintf(test_reject_name, sizeof(test_reject_name), "%s", name ? name : "");
+    test_reject_value = value;
+}
 static int test_resource_count = 0;
 
 int resources_get_int(const char *name, int *value_return) {
@@ -1344,6 +1439,10 @@ int resources_get_int(const char *name, int *value_return) {
 
 int resources_set_int(const char *name, int value) {
     int i;
+    if (test_reject_name[0] != '\0' && strcmp(name, test_reject_name) == 0
+        && value == test_reject_value) {
+        return -1;
+    }
     /* Update existing */
     for (i = 0; i < test_resource_count; i++) {
         if (strcmp(test_resources[i].name, name) == 0) {
@@ -1353,7 +1452,8 @@ int resources_set_int(const char *name, int value) {
     }
     /* Add new */
     if (test_resource_count < MAX_TEST_RESOURCES) {
-        test_resources[test_resource_count].name = name;
+        snprintf(test_resources[test_resource_count].name,
+                 sizeof(test_resources[test_resource_count].name), "%s", name);
         test_resources[test_resource_count].value = value;
         test_resource_count++;
         return 0;
@@ -1364,6 +1464,7 @@ int resources_set_int(const char *name, int value) {
 void test_resources_reset(void) {
     test_resource_count = 0;
     stub_warp_mode = 0;
+    test_reject_name[0] = '\0';
 }
 
 void test_resources_set(const char *name, int value) {

@@ -111,6 +111,15 @@ cJSON* mcp_prop_string(const char *desc)
     return prop;
 }
 
+cJSON* mcp_prop_object(const char *desc)
+{
+    cJSON *prop = cJSON_CreateObject();
+    if (prop == NULL) return NULL;
+    cJSON_AddStringToObject(prop, "type", "object");
+    if (desc) cJSON_AddStringToObject(prop, "description", desc);
+    return prop;
+}
+
 cJSON* mcp_prop_boolean(const char *desc)
 {
     cJSON *prop = cJSON_CreateObject();
@@ -536,6 +545,72 @@ cJSON* mcp_read_snapshot_metadata(const char *vsf_path)
 /* -------------------------------------------------------------------------
  * Simple condition parser for checkpoint conditions
  * ------------------------------------------------------------------------- */
+
+/* Appends to buf at *len, never past size - 1. */
+static void cond_append(char *buf, size_t size, size_t *len, const char *text)
+{
+    size_t n = strlen(text);
+
+    if (*len + n >= size) {
+        n = (*len < size) ? size - 1 - *len : 0;
+    }
+    memcpy(buf + *len, text, n);
+    *len += n;
+    buf[*len] = '\0';
+}
+
+static void cond_to_string(const cond_node_t *node, char *buf, size_t size, size_t *len)
+{
+    static const char *const ops[] = {
+        "?", "==", "!=", ">", "<", ">=", "<=", "&&", "||", "+", "-", "*", "/", "&", "|"
+    };
+    static const char *const regs[] = { "A", "X", "Y", "PC", "SP" };
+    char text[16];
+
+    if (node == NULL) {
+        return;
+    }
+    if (node->is_parenthized) {
+        cond_append(buf, size, len, "(");
+    }
+    if (node->child1 != NULL && node->child2 != NULL) {
+        int op = node->operation;
+
+        cond_to_string(node->child1, buf, size, len);
+        cond_append(buf, size, len, " ");
+        cond_append(buf, size, len,
+                    (op >= 0 && op < (int)(sizeof(ops) / sizeof(ops[0]))) ? ops[op] : "?");
+        cond_append(buf, size, len, " ");
+        cond_to_string(node->child2, buf, size, len);
+    } else if (node->is_reg) {
+        unsigned int id = reg_regid(node->reg_num);
+
+        if (id < sizeof(regs) / sizeof(regs[0])) {
+            cond_append(buf, size, len, regs[id]);
+        } else {
+            snprintf(text, sizeof(text), "R%u", id);
+            cond_append(buf, size, len, text);
+        }
+    } else {
+        snprintf(text, sizeof(text), node->value > 0xFF ? "$%04X" : "$%02X",
+                 (unsigned int)node->value);
+        cond_append(buf, size, len, text);
+    }
+    if (node->is_parenthized) {
+        cond_append(buf, size, len, ")");
+    }
+}
+
+void mcp_condition_to_string(const cond_node_t *node, char *buf, size_t size)
+{
+    size_t len = 0;
+
+    if (buf == NULL || size == 0) {
+        return;
+    }
+    buf[0] = '\0';
+    cond_to_string(node, buf, size, &len);
+}
 
 cond_node_t* parse_simple_condition(const char *condition_str)
 {

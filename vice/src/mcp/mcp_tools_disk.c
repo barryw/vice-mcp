@@ -397,7 +397,9 @@ cJSON* mcp_tool_autostart(cJSON *params)
     }
     cJSON_AddBoolToObject(response, "run", run);
     cJSON_AddNumberToObject(response, "index", program_index);
-    cJSON_AddStringToObject(response, "message", "Autostart initiated - program will load and run");
+    cJSON_AddStringToObject(response, "message",
+                            run ? "Autostart initiated - program will load and run"
+                                : "Autostart initiated - program will load without running");
 
     return response;
 }

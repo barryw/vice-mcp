@@ -227,9 +227,17 @@ cJSON* mcp_tool_symbols_load(cJSON *params)
     }
     path = path_item->valuestring;
 
-    /* Optional format hint: "vice", "kickasm", or "auto" (default) */
+    /* Optional format hint: "auto" (default), "kickasm", "vice" or "simple" */
     format_item = cJSON_GetObjectItem(params, "format");
-    if (format_item != NULL && cJSON_IsString(format_item)) {
+    if (format_item != NULL) {
+        if (!cJSON_IsString(format_item)
+            || (strcmp(format_item->valuestring, "auto") != 0
+                && strcmp(format_item->valuestring, "kickasm") != 0
+                && strcmp(format_item->valuestring, "vice") != 0
+                && strcmp(format_item->valuestring, "simple") != 0)) {
+            return mcp_error(MCP_ERROR_INVALID_PARAMS,
+                             "format must be 'auto', 'kickasm', 'vice' or 'simple'");
+        }
         format = format_item->valuestring;
     }
 
@@ -399,8 +407,10 @@ cJSON* mcp_tool_symbols_load(cJSON *params)
         /* VICE format: "al C:xxxx .label_name" */
         if (strcmp(format, "vice") == 0 || strcmp(format, "simple") == 0) {
             if (strncmp(p, "al ", 3) == 0) {
+                /* "al C:0810 .name", or ld65 -Ln's "al 000810 .name" */
                 if (sscanf(p, "al C:%x .%127s", &addr, label) == 2 ||
-                    sscanf(p, "al %*c:%x .%127s", &addr, label) == 2) {
+                    sscanf(p, "al %*c:%x .%127s", &addr, label) == 2 ||
+                    sscanf(p, "al %x .%127s", &addr, label) == 2) {
                     mon_addr = new_addr(e_comp_space, (uint16_t)addr);
                     /* Must strdup - mon_add_name_to_symbol_table stores pointer */
                     mon_add_name_to_symbol_table(mon_addr, lib_strdup(label));
@@ -410,10 +420,11 @@ cJSON* mcp_tool_symbols_load(cJSON *params)
             }
         }
 
-        /* Simple format: "label = $xxxx" or "label = xxxx" */
+        /* Simple format: "label = $xxxx" or "label = xxxx" (hex), spaces
+         * around '=' optional */
         if (strcmp(format, "simple") == 0 || strcmp(format, "vice") == 0) {
-            if (sscanf(p, "%127s = $%x", label, &addr) == 2 ||
-                sscanf(p, "%127s = %x", label, &addr) == 2) {
+            if (sscanf(p, " %127[^= \t] = $%x", label, &addr) == 2 ||
+                sscanf(p, " %127[^= \t] = %x", label, &addr) == 2) {
                 mon_addr = new_addr(e_comp_space, (uint16_t)addr);
                 /* Must strdup - mon_add_name_to_symbol_table stores pointer */
                 mon_add_name_to_symbol_table(mon_addr, lib_strdup(label));

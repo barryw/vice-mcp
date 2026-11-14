@@ -40,6 +40,8 @@ extern int mcp_transport_test_ping_and_pause_skip_dispatch_slot(void);
 extern int mcp_transport_test_other_tools_wait_for_dispatch_slot(void);
 extern int mcp_transport_test_all_interfaces_without_token_starts(void);
 extern int mcp_transport_test_cors_without_token_rejected(void);
+extern int mcp_transport_test_http_status(const char *method, const char *path,
+                                          char *allow, size_t allow_size);
 
 /* MCP Base Protocol tool declarations */
 extern cJSON* mcp_tool_initialize(cJSON *params);
@@ -113,6 +115,7 @@ extern void test_vsync_reset(void);
 extern void test_memory_set(uint16_t addr, const uint8_t *data, size_t len);
 extern void test_memory_set_byte(uint16_t addr, uint8_t value);
 extern void test_io_set_byte(uint16_t addr, uint8_t value);
+extern uint8_t test_io_get_byte(uint16_t addr);
 extern void test_memory_clear(void);
 extern uint8_t test_memory_get_byte(uint16_t addr);
 
@@ -154,6 +157,10 @@ static void test_auto_snapshot_configs_reset(void)
 extern int mon_breakpoint_add_checkpoint(unsigned int start, unsigned int end,
                                          int stop, int operation,
                                          int temporary, int do_print);
+extern void mon_breakpoint_set_checkpoint_condition(int brk_num, void *cnode);
+extern cJSON* mcp_tool_checkpoint_add(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_list(cJSON *params);
+extern cJSON* mcp_tool_checkpoint_set_condition(cJSON *params);
 
 /* Include stdbool for true/false */
 #include <stdbool.h>
@@ -192,12 +199,15 @@ static int test_tool_name_is_claude_safe(const char *name)
 #define TEST(name) \
     static void test_##name(void); \
     static void run_test_##name(void) { \
+        int failed_before = tests_failed; \
         printf("Running test: %s ... ", #name); \
         fflush(stdout); \
         tests_run++; \
         test_##name(); \
-        tests_passed++; \
-        printf("PASS\n"); \
+        if (tests_failed == failed_before) { \
+            tests_passed++; \
+            printf("PASS\n"); \
+        } \
     } \
     static void test_##name(void)
 
@@ -342,23 +352,51 @@ TEST(initialize_with_june_version_succeeds)
 }
 
 /* Test: Initialize with unsupported version returns error */
-TEST(initialize_with_unsupported_version_returns_error)
+/* MCP lifecycle: a server that does not support the requested version
+ * answers with a version it does support (its latest), not an error; the
+ * client then decides whether to disconnect. */
+TEST(initialize_with_unsupported_version_offers_latest)
 {
-    cJSON *response, *params, *code_item;
+    cJSON *response, *params, *protocol_item;
 
     params = cJSON_CreateObject();
     cJSON_AddStringToObject(params, "protocolVersion", "2099-99-99");
 
     response = mcp_tool_initialize(params);
     ASSERT_NOT_NULL(response);
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "code") == NULL);
 
-    /* Should be an error response */
-    code_item = cJSON_GetObjectItem(response, "code");
-    ASSERT_NOT_NULL(code_item);
-    ASSERT_INT_EQ(code_item->valueint, -32602);  /* MCP_ERROR_INVALID_PARAMS */
+    protocol_item = cJSON_GetObjectItem(response, "protocolVersion");
+    ASSERT_NOT_NULL(protocol_item);
+    ASSERT_STR_EQ(protocol_item->valuestring, "2025-11-25");
 
     cJSON_Delete(params);
     cJSON_Delete(response);
+}
+
+/* MCP lifecycle: a supported requested version is echoed back. */
+static int initialize_answers_version(const char *requested, const char *expected)
+{
+    cJSON *response, *params, *protocol_item;
+    int ok;
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "protocolVersion", requested);
+    response = mcp_tool_initialize(params);
+    protocol_item = response ? cJSON_GetObjectItem(response, "protocolVersion") : NULL;
+    ok = protocol_item != NULL && cJSON_IsString(protocol_item)
+         && strcmp(protocol_item->valuestring, expected) == 0;
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    return ok;
+}
+
+TEST(initialize_echoes_supported_requested_version)
+{
+    ASSERT_TRUE(initialize_answers_version("2025-11-25", "2025-11-25"));
+    ASSERT_TRUE(initialize_answers_version("2025-06-18", "2025-06-18"));
+    ASSERT_TRUE(initialize_answers_version("2025-03-26", "2025-03-26"));
+    ASSERT_TRUE(initialize_answers_version("2024-11-05", "2024-11-05"));
 }
 
 /* Test: Initialize without protocol version succeeds (defaults to 2024-11-05) */
@@ -2340,6 +2378,64 @@ TEST(tools_list_tools_have_required_fields)
 }
 
 /* Test: tools/list schemas are valid JSON Schema objects */
+extern cJSON* mcp_tool_tools_list(cJSON *params);
+
+/* Type of property `prop` in tool `tool`'s tools/list schema, or "" if absent. */
+static void tools_list_prop_type(const char *tool, const char *prop, char *buf, size_t size)
+{
+    cJSON *response = mcp_tool_tools_list(NULL);
+    cJSON *tools = response ? cJSON_GetObjectItem(response, "tools") : NULL;
+    cJSON *entry;
+
+    buf[0] = '\0';
+    cJSON_ArrayForEach(entry, tools) {
+        cJSON *name = cJSON_GetObjectItem(entry, "name");
+        if (name != NULL && strcmp(name->valuestring, tool) == 0) {
+            cJSON *props = cJSON_GetObjectItem(cJSON_GetObjectItem(entry, "inputSchema"), "properties");
+            cJSON *type = cJSON_GetObjectItem(cJSON_GetObjectItem(props, prop), "type");
+            if (type != NULL && cJSON_IsString(type)) {
+                snprintf(buf, size, "%s", type->valuestring);
+            }
+        }
+    }
+    cJSON_Delete(response);
+}
+
+/* The schemas advertise the named parameters the set_state handlers read. */
+TEST(tools_list_advertises_named_set_state_params)
+{
+    static const char *const expected[][3] = {
+        { "vice_vicii_set_state", "border_color", "number" },
+        { "vice_vicii_set_state", "background_color", "number" },
+        { "vice_vicii_set_state", "background_color_1", "number" },
+        { "vice_vicii_set_state", "background_color_2", "number" },
+        { "vice_vicii_set_state", "background_color_3", "number" },
+        { "vice_vicii_set_state", "control_1", "number" },
+        { "vice_vicii_set_state", "control_2", "number" },
+        { "vice_vicii_set_state", "memory_pointers", "number" },
+        { "vice_vicii_set_state", "irq_raster_line", "number" },
+        { "vice_vicii_set_state", "interrupt_enable", "number" },
+        { "vice_sid_set_state", "voice0", "object" },
+        { "vice_sid_set_state", "voice1", "object" },
+        { "vice_sid_set_state", "voice2", "object" },
+        { "vice_sid_set_state", "filter_cutoff", "number" },
+        { "vice_sid_set_state", "filter_resonance", "number" },
+        { "vice_sid_set_state", "filter_mode_volume", "number" },
+        { "vice_cia_set_state", "cia1", "object" },
+        { "vice_cia_set_state", "cia2", "object" },
+    };
+    char type[16];
+    size_t i;
+
+    for (i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
+        tools_list_prop_type(expected[i][0], expected[i][1], type, sizeof(type));
+        if (strcmp(type, expected[i][2]) != 0) {
+            printf("(%s.%s: '%s') ", expected[i][0], expected[i][1], type);
+        }
+        ASSERT_STR_EQ(type, expected[i][2]);
+    }
+}
+
 TEST(tools_list_schemas_are_valid)
 {
     cJSON *response, *tools, *first_tool, *schema, *type_item;
@@ -2441,6 +2537,32 @@ TEST(transport_all_interfaces_without_token_starts)
 TEST(transport_cors_without_token_rejected)
 {
     ASSERT_TRUE(mcp_transport_test_cors_without_token_rejected());
+}
+
+/* MCP Streamable HTTP: a server that offers no SSE stream answers GET on the
+ * MCP endpoint with 405 Method Not Allowed (and, per HTTP, an Allow header). */
+TEST(transport_get_mcp_returns_405_allowing_post)
+{
+    char allow[64];
+
+    ASSERT_INT_EQ(mcp_transport_test_http_status("GET", "/mcp", allow, sizeof(allow)), 405);
+    ASSERT_TRUE(strstr(allow, "POST") != NULL);
+}
+
+TEST(transport_delete_mcp_returns_405)
+{
+    ASSERT_INT_EQ(mcp_transport_test_http_status("DELETE", "/mcp", NULL, 0), 405);
+}
+
+/* /events is not part of MCP; it stays reserved and unimplemented. */
+TEST(transport_get_events_returns_501)
+{
+    ASSERT_INT_EQ(mcp_transport_test_http_status("GET", "/events", NULL, 0), 501);
+}
+
+TEST(transport_unknown_path_returns_404)
+{
+    ASSERT_INT_EQ(mcp_transport_test_http_status("GET", "/nope", NULL, 0), 404);
 }
 
 /* ===================================================================
@@ -2646,6 +2768,61 @@ TEST(symbols_load_simple_format)
     cJSON_Delete(params);
     cJSON_Delete(response);
     remove(path);
+}
+
+/* Loads content with an optional format; returns symbols_loaded, or -code
+ * on an error response. */
+static int symbols_load_count(const char *content, const char *suffix, const char *format)
+{
+    cJSON *params, *response, *item;
+    const char *path = write_temp_symbol_file(content, suffix);
+    int result = -1;
+
+    if (path == NULL) {
+        return -1;
+    }
+    test_symbol_table_clear();
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "path", path);
+    if (format != NULL) {
+        cJSON_AddStringToObject(params, "format", format);
+    }
+    response = mcp_tools_dispatch("vice.symbols.load", params);
+    if (response != NULL) {
+        if ((item = cJSON_GetObjectItem(response, "code")) != NULL) {
+            result = -item->valueint;
+        } else if ((item = cJSON_GetObjectItem(response, "symbols_loaded")) != NULL) {
+            result = item->valueint;
+        }
+    }
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    remove(path);
+    return result;
+}
+
+/* An unknown format is an error, not "ok, 0 symbols". */
+TEST(symbols_load_rejects_unknown_format)
+{
+    ASSERT_INT_EQ(symbols_load_count("start = $0801\n", "badfmt", "elf"), 32602);
+}
+
+/* "name=value" with or without spaces around '=' */
+TEST(symbols_load_simple_assignments_without_spaces)
+{
+    ASSERT_INT_EQ(symbols_load_count("start=$0801\nmain =$0810\nloop= $0820\n", "nospace", NULL), 3);
+    ASSERT_INT_EQ((int)(0xFFFF & test_symbol_table_get_addr(0)), 0x0801);
+    ASSERT_STR_EQ(test_symbol_table_get_name(0), "start");
+    ASSERT_INT_EQ((int)(0xFFFF & test_symbol_table_get_addr(2)), 0x0820);
+    ASSERT_STR_EQ(test_symbol_table_get_name(2), "loop");
+}
+
+/* ld65 -Ln writes "al 000810 .name", without a "C:" memory-space prefix. */
+TEST(symbols_load_ld65_labels)
+{
+    ASSERT_INT_EQ(symbols_load_count("al 000810 .start\nal 000820 .loop\n", "ld65", NULL), 2);
+    ASSERT_INT_EQ((int)(0xFFFF & test_symbol_table_get_addr(1)), 0x0820);
+    ASSERT_STR_EQ(test_symbol_table_get_name(1), "loop");
 }
 
 /* Test: symbols.load with explicit format override */
@@ -3378,6 +3555,73 @@ typedef struct test_cond_node_s {
     struct test_cond_node_s *child1;
     struct test_cond_node_s *child2;
 } test_cond_node_t;
+
+/* checkpoint.list returns the condition's text, not a placeholder. */
+static const char *checkpoint_list_condition(int checknum, char *buf, size_t size)
+{
+    cJSON *response = mcp_tool_checkpoint_list(NULL);
+    cJSON *array = response ? cJSON_GetObjectItem(response, "checkpoints") : NULL;
+    cJSON *cp;
+
+    buf[0] = '\0';
+    cJSON_ArrayForEach(cp, array) {
+        cJSON *num = cJSON_GetObjectItem(cp, "checkpoint_num");
+        cJSON *cond = cJSON_GetObjectItem(cp, "condition");
+        if (num != NULL && num->valueint == checknum && cond != NULL && cJSON_IsString(cond)) {
+            snprintf(buf, size, "%s", cond->valuestring);
+        }
+    }
+    cJSON_Delete(response);
+    return buf;
+}
+
+TEST(checkpoint_list_reports_condition_text)
+{
+    cJSON *params, *response;
+    char text[64];
+    int num;
+
+    test_checkpoint_reset();
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "start", "$1000");
+    response = mcp_tool_checkpoint_add(params);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    num = test_checkpoint_get_last_num();
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "checkpoint_num", num);
+    cJSON_AddStringToObject(params, "condition", "a = 66");
+    response = mcp_tool_checkpoint_set_condition(params);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    checkpoint_list_condition(num, text, sizeof(text));
+    test_checkpoint_reset();
+    ASSERT_STR_EQ(text, "A == $42");
+}
+
+/* Conditions set in the VICE monitor can be whole expression trees. */
+TEST(checkpoint_list_reports_monitor_condition_tree)
+{
+    static test_cond_node_t x = { 0, 0, -1, (1u << 16) | 0x01, true, false, NULL, NULL };   /* X */
+    static test_cond_node_t five = { 0, 5, -1, 0, false, false, NULL, NULL };
+    static test_cond_node_t pc = { 0, 0, -1, (1u << 16) | 0x03, true, false, NULL, NULL };  /* PC */
+    static test_cond_node_t c000 = { 0, 0xC000, -1, 0, false, false, NULL, NULL };
+    static test_cond_node_t neq = { 2 /* e_NEQ */, 0, -1, 0, false, true, &x, &five };
+    static test_cond_node_t gte = { 5 /* e_GTE */, 0, -1, 0, false, false, &pc, &c000 };
+    static test_cond_node_t and = { 7 /* e_LOGICAL_AND */, 0, -1, 0, false, false, &neq, &gte };
+    char text[64];
+    int num;
+
+    test_checkpoint_reset();
+    num = mon_breakpoint_add_checkpoint(0x2000, 0x2000, 1, 4, 0, 0);
+    mon_breakpoint_set_checkpoint_condition(num, &and);
+
+    checkpoint_list_condition(num, text, sizeof(text));
+    test_checkpoint_reset();
+    ASSERT_STR_EQ(text, "(X != $05) && PC >= $C000");
+}
 
 /* Test: a register condition names the computer's memory space. The monitor
  * reads A, X, Y and SP through the interface of the register's memory space,
@@ -5134,6 +5378,79 @@ TEST(memory_compare_snapshot_nonexistent_returns_error)
     cJSON_Delete(response);
 }
 
+extern void test_set_cpu_sees_io(int on);
+
+/* Snapshot mode compares the snapshot's RAM with live RAM, not with the CPU
+ * view: I/O (or ROM) banked in over RAM is not a difference. */
+TEST(memory_compare_snapshot_compares_ram_with_ram)
+{
+    cJSON *response, *params, *total;
+    char vsf_path[256];
+    int differences = -1;
+
+    test_memory_clear();
+    test_memory_set_byte(0xD020, 0x00);   /* live RAM under I/O */
+    test_io_set_byte(0xD020, 0xFE);       /* VIC-II border register */
+    test_set_cpu_sees_io(1);
+    test_snapshot_memory_clear();
+    test_snapshot_memory_set_byte(0xD020, 0x00);
+    snprintf(vsf_path, sizeof(vsf_path), "/tmp/vice-test-config/mcp_snapshots/test_compare_ram.vsf");
+    test_create_mock_vsf(vsf_path);
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "mode", "snapshot");
+    cJSON_AddStringToObject(params, "snapshot_name", "test_compare_ram");
+    cJSON_AddNumberToObject(params, "start", 0xD020);
+    cJSON_AddNumberToObject(params, "end", 0xD020);
+    response = mcp_tool_memory_compare(params);
+    total = response ? cJSON_GetObjectItem(response, "total_differences") : NULL;
+    differences = total ? total->valueint : -1;
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_set_cpu_sees_io(0);
+    test_memory_clear();
+    remove(vsf_path);
+
+    ASSERT_INT_EQ(differences, 0);
+}
+
+/* Pattern and mask bytes must be 0-255; 256 is not silently searched as 0. */
+TEST(memory_search_rejects_out_of_range_bytes)
+{
+    cJSON *params, *response, *pattern, *code;
+    int pattern_code = 0, mask_code = 0;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x1000);
+    cJSON_AddNumberToObject(params, "end", 0x1010);
+    pattern = cJSON_CreateArray();
+    cJSON_AddItemToArray(pattern, cJSON_CreateNumber(256));
+    cJSON_AddItemToObject(params, "pattern", pattern);
+    response = mcp_tool_memory_search(params);
+    code = response ? cJSON_GetObjectItem(response, "code") : NULL;
+    pattern_code = code ? code->valueint : 0;
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "start", 0x1000);
+    cJSON_AddNumberToObject(params, "end", 0x1010);
+    pattern = cJSON_CreateArray();
+    cJSON_AddItemToArray(pattern, cJSON_CreateNumber(1));
+    cJSON_AddItemToObject(params, "pattern", pattern);
+    pattern = cJSON_CreateArray();
+    cJSON_AddItemToArray(pattern, cJSON_CreateNumber(-1));
+    cJSON_AddItemToObject(params, "mask", pattern);
+    response = mcp_tool_memory_search(params);
+    code = response ? cJSON_GetObjectItem(response, "code") : NULL;
+    mask_code = code ? code->valueint : 0;
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    ASSERT_INT_EQ(pattern_code, -32602);
+    ASSERT_INT_EQ(mask_code, -32602);
+}
+
 /* Test: memory.compare snapshot mode finds differences */
 TEST(memory_compare_snapshot_finds_differences)
 {
@@ -5457,6 +5774,93 @@ TEST(checkpoint_group_create_with_checkpoint_ids)
 
     cJSON_Delete(params);
     cJSON_Delete(response);
+}
+
+static int group_call_code(int add, const char *name, cJSON *ids)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON *response, *code;
+    int result;
+
+    cJSON_AddStringToObject(params, add ? "group" : "name", name);
+    cJSON_AddItemToObject(params, "checkpoint_ids", ids);
+    response = add ? mcp_tool_checkpoint_group_add(params) : mcp_tool_checkpoint_group_create(params);
+    code = response ? cJSON_GetObjectItem(response, "code") : NULL;
+    result = code ? code->valueint : 0;
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    return result;
+}
+
+static int group_member_count(const char *name)
+{
+    cJSON *response = mcp_tool_checkpoint_group_list(NULL);
+    cJSON *groups = response ? cJSON_GetObjectItem(response, "groups") : NULL;
+    cJSON *group;
+    int count = -1;
+
+    cJSON_ArrayForEach(group, groups) {
+        cJSON *n = cJSON_GetObjectItem(group, "name");
+        if (n != NULL && strcmp(n->valuestring, name) == 0) {
+            count = cJSON_GetArraySize(cJSON_GetObjectItem(group, "checkpoint_ids"));
+        }
+    }
+    cJSON_Delete(response);
+    return count;
+}
+
+/* IDs that are not numbers or not existing checkpoints are rejected, and
+ * the group is not created, instead of being silently dropped. */
+TEST(checkpoint_group_create_rejects_invalid_ids)
+{
+    cJSON *ids;
+    int non_number, missing, members;
+
+    test_checkpoint_groups_reset();
+    test_checkpoint_reset();
+    mon_breakpoint_add_checkpoint(0x1000, 0x1000, 1, 4, 0, 1);  /* checkpoint 1 */
+
+    ids = cJSON_CreateArray();
+    cJSON_AddItemToArray(ids, cJSON_CreateNumber(1));
+    cJSON_AddItemToArray(ids, cJSON_CreateString("2"));
+    non_number = group_call_code(0, "bad_ids", ids);
+
+    ids = cJSON_CreateArray();
+    cJSON_AddItemToArray(ids, cJSON_CreateNumber(99));
+    missing = group_call_code(0, "bad_ids", ids);
+    members = group_member_count("bad_ids");
+    test_checkpoint_groups_reset();
+    test_checkpoint_reset();
+
+    ASSERT_INT_EQ(non_number, -32602);
+    ASSERT_INT_EQ(missing, -32602);
+    ASSERT_INT_EQ(members, -1);  /* not created */
+}
+
+/* Going past 64 members is an error and adds nothing. */
+TEST(checkpoint_group_add_rejects_overflow)
+{
+    cJSON *ids;
+    int i, code, members;
+
+    test_checkpoint_groups_reset();
+    test_checkpoint_reset();
+    mon_breakpoint_add_checkpoint(0x1000, 0x1000, 1, 4, 0, 1);  /* checkpoint 1 */
+    ids = cJSON_CreateArray();
+    cJSON_AddItemToArray(ids, cJSON_CreateNumber(1));
+    group_call_code(0, "full", ids);
+
+    ids = cJSON_CreateArray();
+    for (i = 0; i < 64; i++) {
+        cJSON_AddItemToArray(ids, cJSON_CreateNumber(1));
+    }
+    code = group_call_code(1, "full", ids);
+    members = group_member_count("full");
+    test_checkpoint_groups_reset();
+    test_checkpoint_reset();
+
+    ASSERT_INT_EQ(code, -32602);
+    ASSERT_INT_EQ(members, 1);
 }
 
 /* Test: checkpoint.group.create with duplicate name returns error */
@@ -7738,18 +8142,6 @@ extern cJSON* mcp_tool_sprite_get(cJSON *params);
 extern cJSON* mcp_tool_tools_list(cJSON *params);
 extern cJSON* mcp_tool_memory_read(cJSON *params);
 
-/* Validation function declarations - can't include mcp_tools_validation.h
- * because it pulls in types.h which needs VICE headers */
-extern int mcp_machine_has_vicii(void);
-extern int mcp_machine_has_vic(void);
-extern int mcp_machine_has_sid(void);
-extern int mcp_machine_has_cia(void);
-extern int mcp_machine_has_ted(void);
-extern int mcp_machine_has_crtc(void);
-extern int mcp_machine_has_vdc(void);
-extern int mcp_machine_has_acia(void);
-extern int mcp_machine_has_via(void);
-
 /* Local typedefs matching mcp_tools_validation.h */
 typedef struct {
     unsigned short start;
@@ -7782,86 +8174,6 @@ extern int machine_class;
 #define TEST_VICE_MACHINE_PLUS4      (1U<<6)
 #define TEST_VICE_MACHINE_C64DTV     (1U<<7)
 #define TEST_VICE_MACHINE_C64SC      (1U<<8)
-
-/* --- Machine Detection Tests --- */
-
-TEST(machine_has_vicii_true_for_c64)
-{
-    test_setup_c64_defaults();
-    ASSERT_TRUE(mcp_machine_has_vicii() == 1);
-    test_setup_c64_defaults();
-}
-
-TEST(machine_has_vicii_false_for_vic20)
-{
-    test_set_machine_class(TEST_VICE_MACHINE_VIC20);
-    ASSERT_TRUE(mcp_machine_has_vicii() == 0);
-    test_setup_c64_defaults();
-}
-
-TEST(machine_has_vic_true_for_vic20)
-{
-    test_set_machine_class(TEST_VICE_MACHINE_VIC20);
-    ASSERT_TRUE(mcp_machine_has_vic() == 1);
-    test_setup_c64_defaults();
-}
-
-TEST(machine_has_vic_false_for_c64)
-{
-    test_setup_c64_defaults();
-    ASSERT_TRUE(mcp_machine_has_vic() == 0);
-    test_setup_c64_defaults();
-}
-
-TEST(machine_has_sid_true_for_c64)
-{
-    test_setup_c64_defaults();
-    ASSERT_TRUE(mcp_machine_has_sid() == 1);
-    test_setup_c64_defaults();
-}
-
-TEST(machine_has_sid_false_for_pet)
-{
-    test_set_machine_class(TEST_VICE_MACHINE_PET);
-    ASSERT_TRUE(mcp_machine_has_sid() == 0);
-    test_setup_c64_defaults();
-}
-
-TEST(machine_has_cia_true_for_c64)
-{
-    test_setup_c64_defaults();
-    ASSERT_TRUE(mcp_machine_has_cia() == 1);
-    test_setup_c64_defaults();
-}
-
-TEST(machine_has_cia_false_for_vic20)
-{
-    test_set_machine_class(TEST_VICE_MACHINE_VIC20);
-    ASSERT_TRUE(mcp_machine_has_cia() == 0);
-    test_setup_c64_defaults();
-}
-
-TEST(machine_has_ted_true_for_plus4)
-{
-    test_set_machine_class(TEST_VICE_MACHINE_PLUS4);
-    ASSERT_TRUE(mcp_machine_has_ted() == 1);
-    test_setup_c64_defaults();
-}
-
-TEST(machine_has_crtc_true_for_pet)
-{
-    test_set_machine_class(TEST_VICE_MACHINE_PET);
-    test_resources_set("Crtc", 1);  /* PET CRTC resource must be enabled */
-    ASSERT_TRUE(mcp_machine_has_crtc() == 1);
-    test_setup_c64_defaults();
-}
-
-TEST(machine_has_vdc_true_for_c128)
-{
-    test_set_machine_class(TEST_VICE_MACHINE_C128);
-    ASSERT_TRUE(mcp_machine_has_vdc() == 1);
-    test_setup_c64_defaults();
-}
 
 /* --- Memory Map Builder Tests --- */
 
@@ -8717,6 +9029,223 @@ TEST(cia_get_state_reads_registers)
     cJSON_Delete(response);
 }
 
+extern cJSON* mcp_tool_sprite_set(cJSON *params);
+extern cJSON* mcp_tool_vicii_set_state(cJSON *params);
+extern cJSON* mcp_tool_sid_set_state(cJSON *params);
+extern cJSON* mcp_tool_cia_set_state(cJSON *params);
+
+/* Chip writes go to the I/O chips even when $01 maps RAM over $D000. */
+TEST(chip_writes_go_to_io_when_cpu_sees_ram)
+{
+    cJSON *params, *response, *regs, *reg, *voice;
+
+    test_memory_clear();               /* CPU view: zero-filled RAM */
+    test_io_set_byte(0xD015, 0x02);    /* sprite 1 already enabled */
+    test_io_set_byte(0xD011, 0x1B);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "border_color", 5);
+    cJSON_AddNumberToObject(params, "irq_raster_line", 0x150);
+    response = mcp_tool_vicii_set_state(params);
+    ASSERT_NOT_NULL(response);
+    ASSERT_TRUE(cJSON_GetObjectItem(response, "code") == NULL);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(test_io_get_byte(0xD020), 5);
+    ASSERT_INT_EQ(test_io_get_byte(0xD012), 0x50);
+    ASSERT_INT_EQ(test_io_get_byte(0xD011), 0x9B);  /* RST8 set, rest kept */
+    ASSERT_INT_EQ(test_memory_get_byte(0xD020), 0);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite", 0);
+    cJSON_AddBoolToObject(params, "enabled", 1);
+    response = mcp_tool_sprite_set(params);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(test_io_get_byte(0xD015), 0x03);  /* read-modify-write of I/O */
+    ASSERT_INT_EQ(test_memory_get_byte(0xD015), 0);
+
+    params = cJSON_CreateObject();
+    voice = cJSON_CreateObject();
+    cJSON_AddNumberToObject(voice, "frequency", 0x1234);
+    cJSON_AddItemToObject(params, "voice0", voice);
+    response = mcp_tool_sid_set_state(params);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(test_io_get_byte(0xD400), 0x34);
+    ASSERT_INT_EQ(test_io_get_byte(0xD401), 0x12);
+    ASSERT_INT_EQ(test_memory_get_byte(0xD400), 0);
+
+    params = cJSON_CreateObject();
+    regs = cJSON_CreateArray();
+    reg = cJSON_CreateObject();
+    cJSON_AddNumberToObject(reg, "offset", 0);
+    cJSON_AddNumberToObject(reg, "value", 0x3C);
+    cJSON_AddItemToArray(regs, reg);
+    cJSON_AddItemToObject(params, "cia2_registers", regs);
+    response = mcp_tool_cia_set_state(params);
+    ASSERT_NOT_NULL(response);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(test_io_get_byte(0xDD00), 0x3C);
+    ASSERT_INT_EQ(test_memory_get_byte(0xDD00), 0);
+
+    test_memory_clear();
+}
+
+/* CBM-II (5x0 and 6x0/7x0) maps its SID at $DA00, not $D400. */
+static int sid_roundtrip_on_machine(int machine)
+{
+    cJSON *params, *response, *voice, *voices, *freq;
+    int read_ok, write_ok;
+
+    test_memory_clear();
+    test_io_set_byte(0xDA00, 0x50);
+    test_io_set_byte(0xDA01, 0x10);
+    test_io_set_byte(0xD400, 0x00);
+    test_set_machine_class(machine);
+
+    response = mcp_tool_sid_get_state(NULL);
+    voices = response ? cJSON_GetObjectItem(response, "voices") : NULL;
+    freq = voices ? cJSON_GetObjectItem(cJSON_GetArrayItem(voices, 0), "frequency") : NULL;
+    read_ok = freq != NULL && freq->valueint == 0x1050;
+    cJSON_Delete(response);
+
+    params = cJSON_CreateObject();
+    voice = cJSON_CreateObject();
+    cJSON_AddNumberToObject(voice, "frequency", 0x2233);
+    cJSON_AddItemToObject(params, "voice0", voice);
+    response = mcp_tool_sid_set_state(params);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    write_ok = test_io_get_byte(0xDA00) == 0x33 && test_io_get_byte(0xDA01) == 0x22
+               && test_io_get_byte(0xD400) == 0x00;
+
+    test_set_machine_class(1);
+    test_memory_clear();
+    return read_ok && write_ok;
+}
+
+TEST(sid_tools_use_da00_on_cbm2)
+{
+    ASSERT_TRUE(sid_roundtrip_on_machine(32));  /* VICE_MACHINE_CBM6x0 */
+    ASSERT_TRUE(sid_roundtrip_on_machine(16));  /* VICE_MACHINE_CBM5x0 */
+}
+
+/* The VIC-II drives only the low nibble of its color registers; the high
+ * nibble reads back as 1s. Decoded colors are 0-15 (DTV registers are 8-bit). */
+TEST(chip_state_masks_unconnected_color_bits)
+{
+    cJSON *params, *response, *item;
+    int border, sprite_color, dtv_border;
+
+    test_memory_clear();
+    test_io_set_byte(0xD020, 0xFE);
+    test_io_set_byte(0xD027, 0xFA);
+
+    response = mcp_tool_vicii_get_state(NULL);
+    item = response ? cJSON_GetObjectItem(response, "border_color") : NULL;
+    border = item ? item->valueint : -1;
+    cJSON_Delete(response);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite", 0);
+    response = mcp_tool_sprite_get(params);
+    item = response ? cJSON_GetObjectItem(cJSON_GetObjectItem(response, "sprite_data"), "color") : NULL;
+    sprite_color = item ? item->valueint : -1;
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    test_set_machine_class(128);  /* VICE_MACHINE_C64DTV */
+    response = mcp_tool_vicii_get_state(NULL);
+    item = response ? cJSON_GetObjectItem(response, "border_color") : NULL;
+    dtv_border = item ? item->valueint : -1;
+    cJSON_Delete(response);
+    test_set_machine_class(1);
+    test_memory_clear();
+
+    ASSERT_INT_EQ(border, 0x0E);
+    ASSERT_INT_EQ(sprite_color, 0x0A);
+    ASSERT_INT_EQ(dtv_border, 0xFE);
+}
+
+/* An invalid value anywhere in a request is rejected before anything is
+ * written, instead of being masked or skipped after earlier writes landed. */
+TEST(chip_set_rejects_invalid_values_without_writing)
+{
+    cJSON *params, *response, *regs, *reg, *code;
+
+    test_memory_clear();
+    test_io_set_byte(0xD020, 0x01);
+    test_io_set_byte(0xD000, 0x10);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "border_color", 3);
+    cJSON_AddNumberToObject(params, "background_color", 16);
+    response = mcp_tool_vicii_set_state(params);
+    code = response ? cJSON_GetObjectItem(response, "code") : NULL;
+    ASSERT_NOT_NULL(code);
+    ASSERT_INT_EQ(code->valueint, -32602);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(test_io_get_byte(0xD020), 0x01);
+
+    params = cJSON_CreateObject();
+    regs = cJSON_CreateArray();
+    reg = cJSON_CreateObject();
+    cJSON_AddNumberToObject(reg, "offset", 0x2F);
+    cJSON_AddNumberToObject(reg, "value", 1);
+    cJSON_AddItemToArray(regs, reg);
+    cJSON_AddItemToObject(params, "registers", regs);
+    response = mcp_tool_vicii_set_state(params);
+    code = response ? cJSON_GetObjectItem(response, "code") : NULL;
+    ASSERT_NOT_NULL(code);
+    ASSERT_INT_EQ(code->valueint, -32602);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite", 0);
+    cJSON_AddNumberToObject(params, "x", 0x40);
+    cJSON_AddNumberToObject(params, "y", 300);
+    response = mcp_tool_sprite_set(params);
+    code = response ? cJSON_GetObjectItem(response, "code") : NULL;
+    ASSERT_NOT_NULL(code);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    ASSERT_INT_EQ(test_io_get_byte(0xD000), 0x10);  /* x not written */
+
+    test_memory_clear();
+}
+
+/* Filter EXT IN routing is $D417 bit 3; $D418 bit 3 is a volume bit. */
+TEST(sid_get_state_reads_filter_ext_from_d417)
+{
+    cJSON *response, *item;
+    int ext_from_d417, ext_from_d418;
+
+    test_memory_clear();
+    test_io_set_byte(0xD417, 0x08);
+    test_io_set_byte(0xD418, 0x00);
+    response = mcp_tool_sid_get_state(NULL);
+    item = response ? cJSON_GetObjectItem(response, "filter_ext") : NULL;
+    ext_from_d417 = item != NULL && cJSON_IsTrue(item);
+    cJSON_Delete(response);
+
+    test_io_set_byte(0xD417, 0x00);
+    test_io_set_byte(0xD418, 0x08);
+    response = mcp_tool_sid_get_state(NULL);
+    item = response ? cJSON_GetObjectItem(response, "filter_ext") : NULL;
+    ext_from_d418 = item != NULL && cJSON_IsTrue(item);
+    cJSON_Delete(response);
+    test_memory_clear();
+
+    ASSERT_TRUE(ext_from_d417);
+    ASSERT_TRUE(!ext_from_d418);
+}
+
 TEST(chip_state_reads_io_when_cpu_sees_ram)
 {
     cJSON *response, *item, *voices, *cia, *params;
@@ -8939,6 +9468,92 @@ TEST(disassemble_at_end_of_memory)
 
 /* --- Sprite Inspect VIC Bank Tests --- */
 
+extern void test_chargen_set_byte(uint16_t offset, uint8_t value);
+extern void test_chargen_disable(void);
+
+/* VIC bank ($DD00), screen base ($D018) and colors come from the I/O chips,
+ * not from RAM under them. */
+TEST(sprite_inspect_reads_vic_registers_from_io)
+{
+    cJSON *params, *response, *item, *raw;
+    char data_address[8] = "";
+    int first_byte = -1, main_color = -1;
+
+    test_memory_clear();
+    test_memory_set_byte(0xDD00, 0x00);  /* RAM under CIA2: would mean VIC bank 3 */
+    test_io_set_byte(0xDD00, 0x03);      /* CIA2: VIC bank 0 */
+    test_io_set_byte(0xD018, 0x14);      /* screen at $0400 */
+    test_io_set_byte(0xD027, 0xF1);      /* sprite 0 color 1, high nibble floating */
+    test_memory_set_byte(0x07F8, 0x0D);  /* pointer -> $0340 */
+    test_memory_set_byte(0x0340, 0xFF);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", 0);
+    response = mcp_tool_sprite_inspect(params);
+    if (response != NULL) {
+        item = cJSON_GetObjectItem(response, "data_address");
+        if (item != NULL && cJSON_IsString(item)) {
+            snprintf(data_address, sizeof(data_address), "%s", item->valuestring);
+        }
+        raw = cJSON_GetObjectItem(response, "raw_data");
+        item = raw ? cJSON_GetArrayItem(raw, 0) : NULL;
+        first_byte = item ? item->valueint : -1;
+        item = cJSON_GetObjectItem(cJSON_GetObjectItem(response, "colors"), "main");
+        main_color = item ? item->valueint : -1;
+    }
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_memory_clear();
+
+    ASSERT_STR_EQ(data_address, "$0340");
+    ASSERT_INT_EQ(first_byte, 0xFF);
+    ASSERT_INT_EQ(main_color, 1);
+}
+
+/* In VIC banks 0 and 2 the VIC-II sees the character ROM at $1000-$1FFF. */
+TEST(sprite_inspect_reads_char_rom_shadow)
+{
+    cJSON *params, *response, *raw, *item;
+    int first_byte = -1;
+
+    test_memory_clear();
+    test_io_set_byte(0xDD00, 0x03);      /* VIC bank 0 */
+    test_io_set_byte(0xD018, 0x14);      /* screen at $0400 */
+    test_memory_set_byte(0x07F8, 0x40);  /* pointer -> $1000 (char ROM) */
+    test_memory_set_byte(0x1000, 0x00);  /* RAM the CPU sees there */
+    test_chargen_set_byte(0x000, 0x3C);
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", 0);
+    response = mcp_tool_sprite_inspect(params);
+    raw = response ? cJSON_GetObjectItem(response, "raw_data") : NULL;
+    item = raw ? cJSON_GetArrayItem(raw, 0) : NULL;
+    first_byte = item ? item->valueint : -1;
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    test_chargen_disable();
+    test_memory_clear();
+
+    ASSERT_INT_EQ(first_byte, 0x3C);
+}
+
+/* png_base64 is not implemented: say so instead of returning a fake bitmap. */
+TEST(sprite_inspect_png_base64_reports_not_implemented)
+{
+    cJSON *params, *response, *code;
+
+    params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(params, "sprite_number", 0);
+    cJSON_AddStringToObject(params, "format", "png_base64");
+    response = mcp_tool_sprite_inspect(params);
+    ASSERT_NOT_NULL(response);
+    code = cJSON_GetObjectItem(response, "code");
+    ASSERT_NOT_NULL(code);
+    ASSERT_INT_EQ(code->valueint, -32000);
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+}
+
 TEST(sprite_inspect_uses_correct_vic_bank)
 {
     test_memory_clear();
@@ -9089,6 +9704,342 @@ TEST(vicii_set_state_reads_d011_nondestructively)
     cJSON_Delete(response);
 }
 
+extern void mcp_input_test_reset_pending(void);
+extern int test_keyboard_key_presses(void);
+extern int test_keyboard_keyarr_presses(void);
+extern void test_vsync_reset(void);
+extern cJSON* mcp_tool_keyboard_matrix(cJSON *params);
+extern cJSON* mcp_tool_keyboard_key_press(cJSON *params);
+
+/* Presses with hold_frames until one is refused. Returns the call number of
+ * the refusal (0 if none in 32 calls); *pressed_on_refusal tells whether the
+ * refused call still pressed its key. */
+static int hold_until_refused(int matrix, int *pressed_on_refusal, int *refusal_code)
+{
+    int call;
+
+    for (call = 1; call <= 32; call++) {
+        cJSON *params = cJSON_CreateObject();
+        cJSON *response, *code;
+        int before = matrix ? test_keyboard_keyarr_presses() : test_keyboard_key_presses();
+
+        cJSON_AddStringToObject(params, "key", matrix ? "A" : "a");
+        cJSON_AddNumberToObject(params, "hold_frames", 5);
+        response = matrix ? mcp_tool_keyboard_matrix(params) : mcp_tool_keyboard_key_press(params);
+        code = response ? cJSON_GetObjectItem(response, "code") : NULL;
+        cJSON_Delete(params);
+        if (code != NULL) {
+            *refusal_code = code->valueint;
+            *pressed_on_refusal =
+                (matrix ? test_keyboard_keyarr_presses() : test_keyboard_key_presses()) != before;
+            cJSON_Delete(response);
+            return call;
+        }
+        cJSON_Delete(response);
+    }
+    return 0;
+}
+
+/* With all 16 auto-release slots taken, a held press is refused and the key
+ * is not pressed, instead of reporting auto_release_scheduled: true for a key
+ * that would then stay down. */
+TEST(keyboard_matrix_refuses_hold_when_release_pool_full)
+{
+    int pressed = -1, code = 0, refused_at;
+
+    mcp_input_test_reset_pending();
+    test_vsync_reset();
+    refused_at = hold_until_refused(1, &pressed, &code);
+    mcp_input_test_reset_pending();
+    test_vsync_reset();
+
+    ASSERT_INT_EQ(refused_at, 17);
+    ASSERT_INT_EQ(pressed, 0);
+    ASSERT_INT_EQ(code, -32603);
+}
+
+TEST(keyboard_key_press_refuses_hold_when_release_pool_full)
+{
+    int pressed = -1, code = 0, refused_at;
+
+    mcp_input_test_reset_pending();
+    test_vsync_reset();
+    refused_at = hold_until_refused(0, &pressed, &code);
+    mcp_input_test_reset_pending();
+    test_vsync_reset();
+
+    ASSERT_INT_EQ(refused_at, 17);
+    ASSERT_INT_EQ(pressed, 0);
+    ASSERT_INT_EQ(code, -32603);
+}
+
+extern cJSON* mcp_tool_keyboard_chord(cJSON *params);
+
+/* A chord that cannot schedule every release is refused before any key is
+ * pressed. */
+TEST(keyboard_chord_refuses_when_release_pool_too_small)
+{
+    cJSON *params, *keys, *response, *code;
+    int i, before, code_value = 0, pressed;
+
+    mcp_input_test_reset_pending();
+    test_vsync_reset();
+    for (i = 0; i < 15; i++) {  /* leave one free slot */
+        params = cJSON_CreateObject();
+        cJSON_AddStringToObject(params, "key", "A");
+        cJSON_AddNumberToObject(params, "hold_frames", 5);
+        cJSON_Delete(mcp_tool_keyboard_matrix(params));
+        cJSON_Delete(params);
+    }
+
+    before = test_keyboard_keyarr_presses();
+    params = cJSON_CreateObject();
+    keys = cJSON_CreateArray();
+    cJSON_AddItemToArray(keys, cJSON_CreateString("SHIFT"));
+    cJSON_AddItemToArray(keys, cJSON_CreateString("DOWN"));
+    cJSON_AddItemToObject(params, "keys", keys);
+    response = mcp_tool_keyboard_chord(params);
+    code = response ? cJSON_GetObjectItem(response, "code") : NULL;
+    if (code != NULL) {
+        code_value = code->valueint;
+    }
+    pressed = test_keyboard_keyarr_presses() - before;
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    mcp_input_test_reset_pending();
+    test_vsync_reset();
+
+    ASSERT_INT_EQ(code_value, -32603);
+    ASSERT_INT_EQ(pressed, 0);
+}
+
+extern cJSON* mcp_tool_autostart(cJSON *params);
+
+/* autostart with run:false loads without running, and says so. */
+TEST(autostart_message_matches_run_flag)
+{
+    cJSON *params, *response, *message;
+    char text[96] = "";
+
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "path", "/tmp/game.prg");
+    cJSON_AddBoolToObject(params, "run", 0);
+    response = mcp_tool_autostart(params);
+    message = response ? cJSON_GetObjectItem(response, "message") : NULL;
+    if (message != NULL && cJSON_IsString(message)) {
+        snprintf(text, sizeof(text), "%s", message->valuestring);
+    }
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    ASSERT_STR_EQ(text, "Autostart initiated - program will load without running");
+}
+
+extern void test_resources_reject(const char *name, int value);
+extern int resources_get_int(const char *name, int *value_return);
+extern int vsync_get_warp_mode(void);
+extern cJSON* mcp_tool_machine_config_set(cJSON *params);
+
+static int config_set_code(cJSON *resources)
+{
+    cJSON *params = cJSON_CreateObject();
+    cJSON *response, *code;
+    int result;
+
+    cJSON_AddItemToObject(params, "resources", resources);
+    response = mcp_tool_machine_config_set(params);
+    code = response ? cJSON_GetObjectItem(response, "code") : NULL;
+    result = code ? code->valueint : 0;
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    return result;
+}
+
+/* An unknown resource anywhere in the request changes nothing. */
+TEST(machine_config_set_validates_every_pair_first)
+{
+    cJSON *resources = cJSON_CreateObject();
+    int code, warp;
+
+    test_setup_c64_defaults();
+    cJSON_AddNumberToObject(resources, "WarpMode", 1);
+    cJSON_AddNumberToObject(resources, "Bogus", 1);
+    code = config_set_code(resources);
+    warp = vsync_get_warp_mode();
+    test_resources_reset();
+
+    ASSERT_INT_EQ(code, -32602);
+    ASSERT_INT_EQ(warp, 0);
+}
+
+/* A value the resource rejects rolls back the pairs already applied. */
+TEST(machine_config_set_rolls_back_on_rejected_value)
+{
+    cJSON *resources = cJSON_CreateObject();
+    int code, sid = -1, warp;
+
+    test_setup_c64_defaults();               /* SidModel = 1 */
+    test_resources_reject("CIA1Model", 99);
+    cJSON_AddNumberToObject(resources, "WarpMode", 1);
+    cJSON_AddNumberToObject(resources, "SidModel", 0);
+    cJSON_AddNumberToObject(resources, "CIA1Model", 99);
+    code = config_set_code(resources);
+    resources_get_int("SidModel", &sid);
+    warp = vsync_get_warp_mode();
+    test_resources_reset();
+
+    ASSERT_INT_EQ(code, -32602);
+    ASSERT_INT_EQ(sid, 1);
+    ASSERT_INT_EQ(warp, 0);
+}
+
+extern cJSON* mcp_tool_machine_config_get(cJSON *params);
+extern void test_resources_set(const char *name, int value);
+
+/* Copies chip `name`'s `field` from config.get into buf ("" if absent). */
+static void config_chip_field(int machine, const char *name, const char *field,
+                              char *buf, size_t size)
+{
+    cJSON *response, *chips, *chip;
+
+    buf[0] = '\0';
+    test_set_machine_class(machine);
+    response = mcp_tool_machine_config_get(NULL);
+    chips = response ? cJSON_GetObjectItem(response, "chips") : NULL;
+    cJSON_ArrayForEach(chip, chips) {
+        cJSON *n = cJSON_GetObjectItem(chip, "name");
+        cJSON *f = cJSON_GetObjectItem(chip, field);
+        if (n != NULL && f != NULL && strcmp(n->valuestring, name) == 0) {
+            snprintf(buf, size, "%s", f->valuestring);
+        }
+    }
+    cJSON_Delete(response);
+    test_set_machine_class(1);
+}
+
+/* CBM-II decodes its chips at $D800-$DFFF; report where they really are. */
+TEST(machine_config_get_reports_cbm2_chip_addresses)
+{
+    char vicii[16], sid5[16], cia5[16], acia5[16], cia6[16], acia6[16], crtc[16];
+
+    config_chip_field(16, "VIC-II", "registers", vicii, sizeof(vicii));  /* CBM5x0 */
+    config_chip_field(16, "SID", "registers", sid5, sizeof(sid5));
+    config_chip_field(16, "CIA", "registers", cia5, sizeof(cia5));
+    config_chip_field(16, "ACIA", "registers", acia5, sizeof(acia5));
+    config_chip_field(32, "CIA", "registers", cia6, sizeof(cia6));      /* CBM6x0 */
+    config_chip_field(32, "ACIA", "registers", acia6, sizeof(acia6));
+    config_chip_field(32, "CRTC", "registers", crtc, sizeof(crtc));
+
+    ASSERT_STR_EQ(vicii, "D800-D8FF");
+    ASSERT_STR_EQ(sid5, "DA00-DAFF");
+    ASSERT_STR_EQ(cia5, "DC00-DCFF");
+    ASSERT_STR_EQ(acia5, "DD00-DDFF");
+    ASSERT_STR_EQ(cia6, "DC00-DCFF");
+    ASSERT_STR_EQ(acia6, "DD00-DDFF");
+    ASSERT_STR_EQ(crtc, "D800-D8FF");
+}
+
+/* SID and CIA models come from the SidModel / CIAnModel resources. */
+TEST(machine_config_get_reports_configured_models)
+{
+    char sid[16], cia1[16], cia2[16];
+
+    test_setup_c64_defaults();
+    test_resources_set("SidModel", 1);    /* 8580 */
+    test_resources_set("CIA1Model", 1);   /* 6526A */
+    test_resources_set("CIA2Model", 0);   /* 6526 */
+    config_chip_field(1, "SID", "model", sid, sizeof(sid));
+    config_chip_field(1, "CIA1", "model", cia1, sizeof(cia1));
+    config_chip_field(1, "CIA2", "model", cia2, sizeof(cia2));
+    test_resources_reset();
+
+    ASSERT_STR_EQ(sid, "8580");
+    ASSERT_STR_EQ(cia1, "6526A");
+    ASSERT_STR_EQ(cia2, "6526");
+}
+
+/* The DTV has both CIAs (and vice.cia.* works on it). */
+TEST(machine_config_get_lists_dtv_cias)
+{
+    char cia1[16], cia2[16];
+
+    config_chip_field(128, "CIA1", "registers", cia1, sizeof(cia1));
+    config_chip_field(128, "CIA2", "registers", cia2, sizeof(cia2));
+
+    ASSERT_STR_EQ(cia1, "DC00-DCFF");
+    ASSERT_STR_EQ(cia2, "DD00-DDFF");
+}
+
+/* Matrix key names are case-insensitive, like vice.keyboard.chord's. */
+TEST(keyboard_matrix_accepts_lowercase_names)
+{
+    cJSON *params, *response, *row, *col;
+    int r = -1, c = -1;
+
+    mcp_input_test_reset_pending();
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "key", "space");
+    response = mcp_tool_keyboard_matrix(params);
+    row = response ? cJSON_GetObjectItem(response, "row") : NULL;
+    col = response ? cJSON_GetObjectItem(response, "col") : NULL;
+    r = row ? row->valueint : -1;
+    c = col ? col->valueint : -1;
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    ASSERT_INT_EQ(r, 7);
+    ASSERT_INT_EQ(c, 4);
+}
+
+/* Cursor up/left are SHIFT + CRSR DOWN/RIGHT on the C64: "UP" must press
+ * SHIFT too, or it moves the cursor down. */
+TEST(keyboard_matrix_up_presses_shift_and_crsr_down)
+{
+    cJSON *params, *response;
+    int before, presses;
+
+    mcp_input_test_reset_pending();
+    before = test_keyboard_keyarr_presses();
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "key", "UP");
+    response = mcp_tool_keyboard_matrix(params);
+    presses = test_keyboard_keyarr_presses() - before;
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+
+    ASSERT_INT_EQ(presses, 2);
+}
+
+TEST(keyboard_chord_left_adds_shift)
+{
+    cJSON *params, *keys, *response, *pressed, *entry;
+    int has_shift = 0, has_crsr = 0, count = 0;
+
+    mcp_input_test_reset_pending();
+    test_vsync_reset();
+    params = cJSON_CreateObject();
+    keys = cJSON_CreateArray();
+    cJSON_AddItemToArray(keys, cJSON_CreateString("left"));
+    cJSON_AddItemToObject(params, "keys", keys);
+    response = mcp_tool_keyboard_chord(params);
+    pressed = response ? cJSON_GetObjectItem(response, "keys") : NULL;
+    cJSON_ArrayForEach(entry, pressed) {
+        int r = cJSON_GetObjectItem(entry, "row")->valueint;
+        int c = cJSON_GetObjectItem(entry, "col")->valueint;
+        has_shift |= (r == 1 && c == 7);
+        has_crsr |= (r == 0 && c == 2);
+        count++;
+    }
+    cJSON_Delete(params);
+    cJSON_Delete(response);
+    mcp_input_test_reset_pending();
+    test_vsync_reset();
+
+    ASSERT_INT_EQ(count, 2);
+    ASSERT_TRUE(has_shift);
+    ASSERT_TRUE(has_crsr);
+}
+
 /* Test: memory_banks returns valid response (exercises error path fix) */
 TEST(memory_banks_returns_valid_response)
 {
@@ -9120,9 +10071,12 @@ int main(void)
     RUN_TEST(valid_tool_dispatch_works);
 
     /* MCP Base Protocol tests */
+    RUN_TEST(checkpoint_list_reports_condition_text);
+    RUN_TEST(checkpoint_list_reports_monitor_condition_tree);
     RUN_TEST(initialize_with_valid_version_succeeds);
     RUN_TEST(initialize_with_june_version_succeeds);
-    RUN_TEST(initialize_with_unsupported_version_returns_error);
+    RUN_TEST(initialize_with_unsupported_version_offers_latest);
+    RUN_TEST(initialize_echoes_supported_requested_version);
     RUN_TEST(initialize_without_version_succeeds);
     RUN_TEST(initialize_returns_proper_capabilities);
     RUN_TEST(initialized_notification_returns_null);
@@ -9221,6 +10175,7 @@ int main(void)
     RUN_TEST(tools_list_returns_tools_array);
     RUN_TEST(tools_list_tools_have_required_fields);
     RUN_TEST(tools_list_schemas_are_valid);
+    RUN_TEST(tools_list_advertises_named_set_state_params);
     RUN_TEST(tools_list_names_are_claude_safe);
 
     /* MCP transport regression tests */
@@ -9231,6 +10186,10 @@ int main(void)
     RUN_TEST(transport_other_tools_wait_for_dispatch_slot);
     RUN_TEST(transport_all_interfaces_without_token_starts);
     RUN_TEST(transport_cors_without_token_rejected);
+    RUN_TEST(transport_get_mcp_returns_405_allowing_post);
+    RUN_TEST(transport_delete_mcp_returns_405);
+    RUN_TEST(transport_get_events_returns_501);
+    RUN_TEST(transport_unknown_path_returns_404);
 
     /* Symbol loading tests */
     RUN_TEST(symbols_load_kickasm_format);
@@ -9239,6 +10198,9 @@ int main(void)
     RUN_TEST(symbols_load_vice_format);
     RUN_TEST(symbols_load_simple_format);
     RUN_TEST(symbols_load_format_override);
+    RUN_TEST(symbols_load_rejects_unknown_format);
+    RUN_TEST(symbols_load_simple_assignments_without_spaces);
+    RUN_TEST(symbols_load_ld65_labels);
     RUN_TEST(symbols_load_missing_path_returns_error);
     RUN_TEST(symbols_load_nonexistent_file_returns_error);
     RUN_TEST(symbols_load_stores_valid_pointers);
@@ -9438,17 +10400,6 @@ int main(void)
     RUN_TEST(sprite_inspect_dispatch_works);
 
     /* Machine config & validation tests */
-    RUN_TEST(machine_has_vicii_true_for_c64);
-    RUN_TEST(machine_has_vicii_false_for_vic20);
-    RUN_TEST(machine_has_vic_true_for_vic20);
-    RUN_TEST(machine_has_vic_false_for_c64);
-    RUN_TEST(machine_has_sid_true_for_c64);
-    RUN_TEST(machine_has_sid_false_for_pet);
-    RUN_TEST(machine_has_cia_true_for_c64);
-    RUN_TEST(machine_has_cia_false_for_vic20);
-    RUN_TEST(machine_has_ted_true_for_plus4);
-    RUN_TEST(machine_has_crtc_true_for_pet);
-    RUN_TEST(machine_has_vdc_true_for_c128);
     RUN_TEST(build_memory_map_c64_has_regions);
     RUN_TEST(build_memory_map_c64_starts_zero_page);
     RUN_TEST(build_memory_map_c64_has_io_regions);
@@ -9503,6 +10454,11 @@ int main(void)
     RUN_TEST(sid_get_state_reads_voices);
     RUN_TEST(cia_get_state_reads_registers);
     RUN_TEST(chip_state_reads_io_when_cpu_sees_ram);
+    RUN_TEST(chip_writes_go_to_io_when_cpu_sees_ram);
+    RUN_TEST(sid_tools_use_da00_on_cbm2);
+    RUN_TEST(chip_state_masks_unconnected_color_bits);
+    RUN_TEST(chip_set_rejects_invalid_values_without_writing);
+    RUN_TEST(sid_get_state_reads_filter_ext_from_d417);
     RUN_TEST(watch_add_rejects_overflow_range);
     RUN_TEST(watch_add_load_flag_makes_read_watch);
     RUN_TEST(watch_add_stop_false_counts_without_stopping);
@@ -9513,6 +10469,9 @@ int main(void)
     RUN_TEST(memory_compare_rejects_overflow_range2);
     RUN_TEST(disassemble_at_end_of_memory);
     RUN_TEST(sprite_inspect_uses_correct_vic_bank);
+    RUN_TEST(sprite_inspect_reads_vic_registers_from_io);
+    RUN_TEST(sprite_inspect_reads_char_rom_shadow);
+    RUN_TEST(sprite_inspect_png_base64_reports_not_implemented);
 
     /* Re-review round 2 regression tests */
     RUN_TEST(sprite_get_does_not_clear_collision_registers);
@@ -9520,6 +10479,22 @@ int main(void)
     RUN_TEST(memory_compare_does_not_trigger_side_effects);
     RUN_TEST(vicii_set_state_reads_d011_nondestructively);
     RUN_TEST(memory_banks_returns_valid_response);
+    RUN_TEST(keyboard_matrix_refuses_hold_when_release_pool_full);
+    RUN_TEST(keyboard_key_press_refuses_hold_when_release_pool_full);
+    RUN_TEST(keyboard_chord_refuses_when_release_pool_too_small);
+    RUN_TEST(autostart_message_matches_run_flag);
+    RUN_TEST(memory_compare_snapshot_compares_ram_with_ram);
+    RUN_TEST(memory_search_rejects_out_of_range_bytes);
+    RUN_TEST(machine_config_set_validates_every_pair_first);
+    RUN_TEST(machine_config_set_rolls_back_on_rejected_value);
+    RUN_TEST(machine_config_get_reports_cbm2_chip_addresses);
+    RUN_TEST(machine_config_get_reports_configured_models);
+    RUN_TEST(machine_config_get_lists_dtv_cias);
+    RUN_TEST(checkpoint_group_create_rejects_invalid_ids);
+    RUN_TEST(checkpoint_group_add_rejects_overflow);
+    RUN_TEST(keyboard_matrix_accepts_lowercase_names);
+    RUN_TEST(keyboard_matrix_up_presses_shift_and_crsr_down);
+    RUN_TEST(keyboard_chord_left_adds_shift);
 
     printf("\n=== Test Results ===\n");
     printf("Tests run:    %d\n", tests_run);
