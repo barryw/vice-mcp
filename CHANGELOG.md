@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v4.0.0](https://github.com/barryw/vice-mcp/compare/e2b7883b5e1fa2c798ae506c0d5a4f3720e38422..v4.0.0) - 2026-11-14
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) (**mcp**) add execution coverage and fix the reverse-engineering pain points - ([e2b7883](https://github.com/barryw/vice-mcp/commit/e2b7883b5e1fa2c798ae506c0d5a4f3720e38422)) - Barry Walker, Claude Opus 5.5
+#### Bug Fixes
+- (**mcp**) refuse resources that attach host devices in config.set - ([b1d893d](https://github.com/barryw/vice-mcp/commit/b1d893d6fe43322fabb0b46640437d67158dd7f8)) - Barry Walker, Claude Opus 5.5
+
+- - -
+
 ## [v3.15.0](https://github.com/barryw/vice-mcp/compare/b417600119d2554e7f43d2a8956e4c62cebe47a3..v3.15.0) - 2026-11-14
 #### Features
 - (**mcp**) select the x128 display and add the run_until cycle limit - ([04d63b4](https://github.com/barryw/vice-mcp/commit/04d63b42daac5a9eedea1a01be75e002fe2e562b)) - Barry Walker, Claude Opus 5.5
